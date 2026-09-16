@@ -153,6 +153,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "mpls-rsvp-frr",
+    title: "MPLS RSVP-TE Fast Reroute",
+    tagline: "Local repair, PLR, Merge Point, and pre-built bypass tunnels — link and node protection.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["mpls-rsvp-te"],
+    estimatedMinutes: 40,
+    simulationPath: "/demo/mpls-rsvp-frr",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "When a link or transit router on an active RSVP-TE LSP fails, waiting for the headend to detect the failure, recompute CSPF, and re-signal an entire new end-to-end LSP is too slow for traffic that can't tolerate the interruption." },
+      { id: "solution", heading: "How Fast Reroute solves it", body: "A Point of Local Repair (PLR) sits right next to the protected resource with a bypass tunnel already signaled, labeled, and reserved before any failure occurs. On local link/interface-down detection, the PLR activates that bypass in an instant — pushing an outer bypass label on top of the protected LSP's own inner label — without waiting for the headend. A Merge Point rejoins the bypass to the ordinary protected LSP, which resumes completely normal forwarding. The headend may still reoptimize a new end-to-end path later, but FRR itself is local, not global." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",

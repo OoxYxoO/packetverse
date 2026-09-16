@@ -28,6 +28,7 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: "convergence-engineer", title: "Convergence Engineer", description: "Repaired a stale EVPN aliasing next-hop set by processing a Mass Withdrawal, restoring known-unicast reachability to a multihomed server without touching DF election." },
   { id: "virtual-wire-engineer", title: "Virtual Wire Engineer", description: "Repaired an L2 MTU mismatch to restore an EVPN-VPWS point-to-point service, then verified it survived a live Primary/Backup failover." },
   { id: "traffic-engineer", title: "Traffic Engineer", description: "Used CSPF and RSVP-TE to steer a bandwidth-guaranteed LSP off the IGP shortest path, then repaired a bandwidth-constraint failure by releasing a competing reservation." },
+  { id: "fast-reroute-engineer", title: "Fast Reroute Engineer", description: "Traced local repair through a facility-backup bypass at the Point of Local Repair, then diagnosed and fixed a link-protection bypass that could not survive a full node failure by establishing genuine node protection." },
   { id: "fabric-detective", title: "Fabric Detective", description: "Solved a Professional-difficulty incident in the EVPN Troubleshooting Arena — investigate, hypothesize, repair, and verify without being told the fault." },
   { id: "evpn-troubleshooter", title: "EVPN Troubleshooter", description: "Solved Arena incidents spanning a broad range of EVPN fault families — underlay, control-plane, service, and forwarding alike." },
 ];
