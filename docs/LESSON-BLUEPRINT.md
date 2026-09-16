@@ -1,0 +1,84 @@
+# PacketVerse Lesson Blueprint
+
+The standard shape every flagship interactive lesson in this repo follows, and how the five lessons built so far actually map onto it. Read `docs/ARCHITECTURE.md` first — this document assumes that architecture and only talks about lesson *content* structure.
+
+## The standard arc
+
+```
+Problem
+  ↓
+Why the protocol exists
+  ↓
+Control plane
+  ↓
+Interactive protocol exchange
+  ↓
+Internal device processing
+  ↓
+Tables / state change
+  ↓
+Data-plane consequence
+  ↓
+Fault injection
+  ↓
+Troubleshooting
+  ↓
+Engineer Challenge
+```
+
+This is a *teaching* arc, not a literal 1:1 step list — a real lesson interleaves prediction questions, "build it yourself" mini-steps, and X-Ray/device-entry moments throughout, and some lessons (MPLS L3VPN, EVPN/VXLAN) run the data-plane consequence *twice* (once naively/assumed, once after the control plane makes it verifiable) before ever reaching the fault. What must never move is the underlying causality: the learner should never be asked to troubleshoot a mechanism they haven't first watched work correctly, and a fault must always be introduced against an otherwise-fully-healthy system (never "five simultaneous faults").
+
+### 1. Problem
+One paragraph, concrete, no protocol names yet if avoidable. State a real constraint the topology creates (two hosts can't talk / a provider core can't hold every customer's routes / iBGP's O(n²) mesh doesn't scale / a routed fabric doesn't carry Layer 2). This is also the lesson's `WHY_<PROTOCOL>` "WHAT/WHY/WHEN/WITHOUT" quad-panel content on the page.
+
+### 2. Why the protocol exists
+Usually collapsed into the Problem step's own narrative plus one `predict-*` question whose wrong options are other plausible-sounding "solutions" that don't actually work (a bigger cable, a static route, forcing non-overlapping addressing, a VLAN trunk across a routed core). The point of the question is to make the learner reject the naive answers before being handed the real one.
+
+### 3. Control plane
+Introduce the signaling/adjacency mechanism *before* any data moves, if the protocol has one that predates data flow (OSPF Hello/adjacency states; BGP OPEN/KEEPALIVE/UPDATE; MP-BGP VPNv4; BGP EVPN session). If the lesson is explicitly teaching a data-plane mechanism that can and should be understood *without* its control plane first (VXLAN before BGP EVPN), see the EVPN/VXLAN exception below — the control plane still comes, just later, once its absence has been felt as a real limitation.
+
+### 4. Interactive protocol exchange
+The actual packet(s) animate hop to hop, each one clickable (`PacketDetailPanel`/`PacketInspector`), summary + badge distinguishing message subtype (OPEN vs. KEEPALIVE vs. UPDATE; VPNv4 UPDATE vs. reflected VPNv4 UPDATE; EVPN Type 2 UPDATE). Reuse an existing packet-layer shape before inventing a new one — MPLS L3VPN's VPNv4 layer and EVPN's Type-2 EVPN layer are both literally "a BGP UPDATE with a different NLRI," reusing `protocol: "BGP"` and the generic multi-field `PacketLayer`.
+
+### 5. Internal device processing
+Enter at least one device (usually the one doing the most interesting work) in 3D and show its Conceptual [X] Pipeline (`DeviceProcessingTrace` → `ForwardingPipeline3D`). Name the pipeline after what it conceptually does, not generically ("Conceptual VXLAN Ingress Pipeline", not "Conceptual Forwarding Pipeline", when a better name exists). Show physical interfaces (`DeviceInterfaceData`) with real generic fields plus protocol-specific `extra` fields.
+
+### 6. Tables / state change
+Whatever table the protocol actually maintains, shown as a real, inspectable object — OSPF's LSDB and routing table; BGP's Adj-RIB-In/best-path table; MPLS L3VPN's VRF + received-VPNv4-route table; EVPN's per-leaf MAC/EVPN table with local-vs-remote clearly distinguished. This is also where a "before/after" dramatic contrast lands well (unknown MAC → flooding required, vs. known MAC → table → unicast).
+
+### 7. Data-plane consequence
+Send an actual user packet/frame through the now-informed forwarding path and watch it arrive. X-Ray focus (`focusLayerIndices`) should highlight only the field(s) *this* hop actually acts on, dimming the rest as "present — not used for this hop's decision" — this is one of the most reliably impressive moments in every lesson (a P router ignoring the VPN label underneath; a spine ignoring the inner MAC entirely).
+
+### 8. Fault injection
+Exactly **one** fault, chosen so that most of the stack is still healthy — this is what makes troubleshooting a skill rather than a coin flip. The proven house style is a **policy-layer** fault (Route Target import mismatch) rather than a link-down/session-down fault, because it demonstrates the more subtle, more realistic lesson: "the session is Established, the route is received, and it *still* doesn't work." Both MPLS L3VPN and EVPN/VXLAN use literally the same shape of fault (an import-RT mismatch) at different layers (IPv4 VPN route vs. MAC/IP EVPN route) — reuse this shape again for the next lesson unless there's a specific pedagogical reason to introduce a different failure mode (and if introducing multihoming/DF-election lessons later, a DF-election tie or an ESI mismatch would be the natural next *kind* of fault).
+
+### 9. Troubleshooting
+A short "diagnostic layers" ladder (`TroubleshootingLayers`, generic ✓/✕/? per layer, bottom-up: interface → underlay/IGP → session/adjacency → the specific policy that's actually broken), plus one `trouble-question` (a real multiple-choice diagnosis, with progressive `hints` on the question) before the repair. Never skip straight to "here's the fix" — the learner must be asked to *locate* the fault first.
+
+### 10. Engineer Challenge
+A `repair-challenge` step using `action`/`requiresState` (not `question`) — 3-4 plausible repair options, exactly one correct, `WRONG_FEEDBACK` explaining *why* each wrong option doesn't fix it (not just "incorrect"). At least one wrong option should be a real anti-pattern the lesson's own accuracy rules warn against (MPLS L3VPN doesn't offer "redistribute into the global table"; EVPN/VXLAN's wrong options include "manually configure a static MAC entry," which is explicitly rejected as abandoning the whole point of having a control plane). Verify with a `verify-dataplane` step, then `complete` — award XP via `completeLesson` and a real, dashboard-visible achievement via `unlockAchievement` (see ARCHITECTURE.md §13 — **add the achievement to the `ACHIEVEMENTS` catalog in the same change**).
+
+## The EVPN/VXLAN exception: data plane before its control plane
+
+Most lessons teach control plane → data plane, because the control plane is *why the data plane works at all* (an LSP doesn't exist without LDP; a VPN route can't be imported without MP-BGP). EVPN/VXLAN deliberately inverts this for one arc: VXLAN (the encapsulation) is taught completely, successfully, end-to-end **before** BGP EVPN is introduced — with the one missing piece (how did the ingress VTEP know the remote MAC's location?) explicitly flagged in the state model as `learnedVia: "assumed"` and called out in the narrative ("assume this was known for now — we'll explain how shortly"), never silently hand-waved. This is the right pattern whenever a protocol has **two genuinely separable questions** — "does the mechanism work" and "how did it learn what it needed to know" — where teaching them interleaved would obscure which failure belongs to which layer. The upcoming BUM/Type-3 lesson has exactly this shape too: ingress replication needs to be demonstrated as a data-plane mechanism, but the flood-list membership question is fundamentally a control-plane (Type-3/IMET) topic — keep that same "assumed, then explained" honesty if the lesson reuses a pre-existing flood list before deriving it live.
+
+## Reference implementations
+
+| Lesson | File | What it's the best example of |
+|---|---|---|
+| OSPF | `scenarios/ospfArea0.ts` + `app/demo/ospf-area0/` | Neighbor state machine (Down→Init→2-Way→ExStart→Exchange→Loading→Full) as the "control plane"; LSA flooding as a `FloodCopy3D` moment; SPF recompute on a cost change; a link-layer fault (MTU mismatch) rather than a policy fault — the simplest full arc to copy structurally for a brand-new protocol family. |
+| BGP Enterprise | `scenarios/bgpEnterprise.ts` + `app/demo/bgp-enterprise/` | TCP-before-BGP layering (the "why TCP first" prediction question), OPEN/KEEPALIVE/UPDATE message-subtype badges on one `protocol: "BGP"` packet type, best-path selection as a real multi-attribute decision (`BestPathDecisionViewer`), and policy manipulation (prepend, Local Preference) as the "Engineer Challenge" instead of a break/repair — a good model for a lesson whose climax is *design*, not *fault repair*. |
+| BGP Route Reflector | `scenarios/bgpRouteReflector.ts` + `app/demo/bgp-route-reflector/` | Teaching a scaling *problem* first (predicted session counts at 4/10/... routers building to "this doesn't scale"), then the one deliberate exception to a rule the learner already knows (iBGP split-horizon), `Region3D` used for RR clusters, and `ReflectionDecisionViewer` as a generic reflect/withhold-per-candidate component — the best template for any lesson whose core idea is "a scaling problem forces one new rule." |
+| MPLS L3VPN | `scenarios/mplsL3vpn.ts` + `app/demo/mpls-l3vpn/` | The fullest expression of the standard arc: VRF → RD → RT → MP-BGP VPNv4 (control) → two-label push/swap/pop (data) → RT-import-mismatch fault → repair. Also the reference for **integrating a second, already-completed lesson's real logic** without duplicating it (`rrIntegration.ts` reusing `bgpRouteReflector.ts`'s `evaluateReflection`) — copy this pattern instead of re-deriving reflection/RR logic if a future lesson needs an RR again. |
+| EVPN / VXLAN Foundations | `scenarios/evpnVxlan.ts` + `app/demo/evpn-vxlan/` | Data-plane-before-control-plane sequencing (see above); a *reused* fault shape (RT-mismatch, now on a MAC/IP route) applied to a new protocol family instead of inventing a new failure category; strict, explicit scope boundaries recorded directly in the scenario file's own doc comment (what's deferred and why) so a future contributor doesn't accidentally re-derive Route Type 1/3/4/5 logic inside what's supposed to be the foundations lesson. |
+
+## Practical checklist for the next lesson
+
+1. **Scope boundary first.** Write the doc-comment at the top of the new scenario file listing exactly what this lesson covers and what's explicitly deferred (with a one-line reason each), before writing a single step. Copy the style from `evpnVxlan.ts`'s header.
+2. **Reuse before inventing:** check `PVEventType`, `PacketVisual["protocol"]`, and the `components/protocol/*` viewer components for something close enough before adding new ones. A new `protocol` union member (e.g. adding `"VXLAN"`) is fine when it's a genuinely new wire format; a new generic table/list viewer is fine when the existing ones don't fit the shape (EVPN needed `EvpnRouteTable` because MAC/IP/VNI/remote-VTEP didn't fit `VpnRouteViewer`'s RD/RT/prefix shape) — but always check first.
+3. **Scene Adapter split**: `deviceTrace.ts` (traces/interfaces/packet frames/link detail) + `explain.ts` (per-device NodeExplanation, tense derived from `state.journey`) + the scenario file itself (state + steps + packet builders). Nothing protocol-specific in `page.tsx` beyond wiring and toolbar/tab layout.
+4. **One fault, otherwise-healthy stack, policy-layer where it fits the protocol** (see §8 above).
+5. **Register the lesson**: `lessons/index.ts` (new `Lesson` entry, correct `prerequisites`, `simulationPath`), `learningPaths.ts` (point the relevant track node's `lessonId`/`status` at it), and `ACHIEVEMENTS` in `useProgressStore.ts` (new completion achievement, real title/description).
+6. **Quality gates, every time, no exceptions**: `npx tsc --noEmit`, `npx eslint <changed paths>`, `npx next build` — all clean before calling it done.
+7. **Browser-verify the full arc** before reporting complete: every prediction question renders with the right options; at least one full device-entry X-Ray pass per enterable device; the fault genuinely breaks only the intended layer (diagnostic ladder shows the right ✓/✕/? pattern); the wrong repair option(s) are rejected with real feedback and the correct one repairs and re-verifies; completion awards XP and an achievement that will actually render on the Dashboard; zero new console errors across the whole run; Previous/goTo/Restart don't leak stale state (ARCHITECTURE.md §15).
+8. **Report what was implemented and what was explicitly deferred** — every lesson prompt in this project ends with that ask; treat it as a hard requirement of "done," not a nice-to-have summary.

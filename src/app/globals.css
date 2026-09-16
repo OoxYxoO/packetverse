@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+/* ============================================================
+   PACKETVERSE DESIGN SYSTEM
+   Dark network-operations-center aesthetic. Deep navy surfaces,
+   glass panels, restrained glow, protocol-specific accent colors.
+   Color is never the only signal — every state also carries an
+   icon, label or shape (see /lib/design/protocol-tokens.ts).
+   ============================================================ */
+
+:root {
+  /* Core surfaces */
+  --pv-bg: #05070d;
+  --pv-bg-elevated: #0a0e18;
+  --pv-surface: #0d1220;
+  --pv-surface-2: #121a2e;
+  --pv-border: rgba(148, 163, 184, 0.14);
+  --pv-border-strong: rgba(148, 163, 184, 0.28);
+
+  /* Text */
+  --pv-text: #e8edf9;
+  --pv-text-muted: #8b96ac;
+  --pv-text-faint: #5b6478;
+
+  /* Brand / accent */
+  --pv-cyan: #22d3ee;
+  --pv-cyan-soft: #67e8f9;
+  --pv-violet: #8b8cf8;
+  --pv-blue: #5b8cff;
+
+  /* Semantic */
+  --pv-success: #34d399;
+  --pv-warning: #fbbf24;
+  --pv-danger: #fb7185;
+  --pv-info: #60a5fa;
+
+  /* Protocol accent palette (paired with icon+shape, never color alone) */
+  --pv-proto-ethernet: #64748b;
+  --pv-proto-arp: #f59e0b;
+  --pv-proto-ip: #60a5fa;
+  --pv-proto-tcp: #34d399;
+  --pv-proto-udp: #a78bfa;
+  --pv-proto-ospf: #22d3ee;
+  --pv-proto-bgp: #fb7185;
+  --pv-proto-mpls: #f472b6;
+  --pv-proto-vxlan: #facc15;
+
+  --background: var(--pv-bg);
+  --foreground: var(--pv-text);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-pv-bg: var(--pv-bg);
+  --color-pv-bg-elevated: var(--pv-bg-elevated);
+  --color-pv-surface: var(--pv-surface);
+  --color-pv-surface-2: var(--pv-surface-2);
+  --color-pv-border: var(--pv-border);
+  --color-pv-border-strong: var(--pv-border-strong);
+
+  --color-pv-text: var(--pv-text);
+  --color-pv-text-muted: var(--pv-text-muted);
+  --color-pv-text-faint: var(--pv-text-faint);
+
+  --color-pv-cyan: var(--pv-cyan);
+  --color-pv-cyan-soft: var(--pv-cyan-soft);
+  --color-pv-violet: var(--pv-violet);
+  --color-pv-blue: var(--pv-blue);
+
+  --color-pv-success: var(--pv-success);
+  --color-pv-warning: var(--pv-warning);
+  --color-pv-danger: var(--pv-danger);
+  --color-pv-info: var(--pv-info);
+
+  --color-pv-ethernet: var(--pv-proto-ethernet);
+  --color-pv-arp: var(--pv-proto-arp);
+  --color-pv-ip: var(--pv-proto-ip);
+  --color-pv-tcp: var(--pv-proto-tcp);
+  --color-pv-udp: var(--pv-proto-udp);
+  --color-pv-ospf: var(--pv-proto-ospf);
+  --color-pv-bgp: var(--pv-proto-bgp);
+  --color-pv-mpls: var(--pv-proto-mpls);
+  --color-pv-vxlan: var(--pv-proto-vxlan);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  --animate-packet-pulse: packet-pulse 1.6s ease-in-out infinite;
+  --animate-glow: pv-glow 3s ease-in-out infinite;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Grid backdrop used behind hero / topology surfaces */
+.pv-grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+  background-size: 44px 44px;
+  background-position: center;
+}
+
+/* Fades the 3D scene OUT behind the headline/CTA column, keeping it
+   vivid toward the edges of the hero where it won't fight the text. */
+.pv-radial-fade {
+  -webkit-mask-image: radial-gradient(ellipse 42% 60% at 50% 46%, transparent 0%, transparent 45%, black 100%);
+  mask-image: radial-gradient(ellipse 42% 60% at 50% 46%, transparent 0%, transparent 45%, black 100%);
+}
+
+/* Glass panel — the base surface for cards, inspectors, terminals */
+.pv-glass {
+  background: linear-gradient(180deg, rgba(18, 26, 46, 0.72), rgba(10, 14, 24, 0.72));
+  border: 1px solid var(--pv-border);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.pv-glass-strong {
+  background: linear-gradient(180deg, rgba(18, 26, 46, 0.92), rgba(10, 14, 24, 0.92));
+  border: 1px solid var(--pv-border-strong);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.pv-glow-cyan {
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.25), 0 0 24px rgba(34, 211, 238, 0.18);
+}
+
+.pv-glow-success {
+  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.3), 0 0 24px rgba(52, 211, 153, 0.2);
+}
+
+.pv-glow-danger {
+  box-shadow: 0 0 0 1px rgba(251, 113, 133, 0.3), 0 0 24px rgba(251, 113, 133, 0.2);
+}
+
+.pv-mono {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+@keyframes packet-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+
+@keyframes pv-glow {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.3);
+  color: #fff;
+}
+
+/* Scrollbars — kept subtle, dark-native */
+* {
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+  scrollbar-width: thin;
+}

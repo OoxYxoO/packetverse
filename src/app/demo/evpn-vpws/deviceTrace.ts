@@ -1,0 +1,274 @@
+import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
+import type { EvpnRibRow } from "@/components/protocol/EvpnRouteTable";
+import {
+  ESI,
+  GRAPH_EDGES,
+  LOCAL_AC_VLAN,
+  REMOTE_AC_VLAN,
+  VPWS_SERVICE_ID,
+  discoverVpwsEndpoint,
+  evpnVpwsSteps,
+  pbRoleFor,
+  type EvpnVpwsDeviceId,
+  type EvpnVpwsState,
+  type PeId,
+} from "@/lib/sim-engine/scenarios/evpnVpws";
+
+const stepIndex = (id: string) => evpnVpwsSteps.findIndex((s) => s.id === id);
+
+const CONTROL_PIPELINE_STAGES: ProcessingStage[] = [
+  { id: "es-configured", label: "Ethernet Segment Configured" },
+  { id: "election", label: "Single-Active Election" },
+  { id: "adevi-advertised", label: "A-D Per-EVI Advertised" },
+  { id: "remote-discovered", label: "Remote Endpoint Discovered" },
+  { id: "service-installed", label: "VPWS Service Installed" },
+];
+const PE1_PE2_FORWARD_STAGES: ProcessingStage[] = [
+  { id: "ac-ingress", label: "Access Circuit Ingress" },
+  { id: "service-lookup", label: "Service Lookup (VPWS-500)" },
+  { id: "remote-endpoint", label: "Remote Endpoint = PE3" },
+  { id: "push-labels", label: "Push Service + Transport Labels" },
+  { id: "egress", label: "Egress Toward Core" },
+];
+const PE3_EGRESS_STAGES: ProcessingStage[] = [
+  { id: "mpls-ingress", label: "MPLS Ingress" },
+  { id: "transport-processing", label: "Transport Processing" },
+  { id: "service-label", label: "VPWS Service Label" },
+  { id: "identify-service", label: "Identify VPWS-500" },
+  { id: "identify-ac", label: "Identify CE-B AC" },
+  { id: "vlan-translation", label: "Optional VLAN/Tag Translation" },
+  { id: "forward-ce", label: "Forward Customer Ethernet Frame" },
+];
+const CORE_STAGES: ProcessingStage[] = [
+  { id: "underlay-ingress", label: "MPLS Ingress" },
+  { id: "top-label", label: "Top Transport Label" },
+  { id: "transport-forward", label: "Transport Forward (Swap)" },
+];
+
+function allIds(stages: ProcessingStage[]) {
+  return stages.map((s) => s.id);
+}
+
+export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpwsState, currentStepId: string): DeviceProcessingTrace {
+  const i = stepIndex(currentStepId);
+
+  if (device === "CORE") {
+    const base: DeviceProcessingTrace = { deviceId: "CORE", stages: CORE_STAGES, completedStageIds: [] };
+    if (!state.packetAt) return base;
+    return { ...base, activeStageId: "transport-forward", completedStageIds: ["underlay-ingress", "top-label"] };
+  }
+
+  const controlEnd = stepIndex("act2-intro");
+  if (device === "PE1" || device === "PE2") {
+    if (i < controlEnd) {
+      const base: DeviceProcessingTrace = { deviceId: device, stages: CONTROL_PIPELINE_STAGES, completedStageIds: [] };
+      const adIndex = stepIndex(device === "PE1" ? "pe1-advertises-adevi" : "pe2-advertises-adevi");
+      const electionIndex = stepIndex("single-active-election");
+      if (i < electionIndex) return { ...base, activeStageId: "es-configured", completedStageIds: [] };
+      if (i < adIndex) return { ...base, activeStageId: "election", completedStageIds: ["es-configured"] };
+      if (i < stepIndex("vpws-route-discovery")) return { ...base, activeStageId: "adevi-advertised", completedStageIds: ["es-configured", "election"] };
+      return { ...base, completedStageIds: allIds(CONTROL_PIPELINE_STAGES) };
+    }
+    const base: DeviceProcessingTrace = { deviceId: device, stages: PE1_PE2_FORWARD_STAGES, completedStageIds: [] };
+    const forwarded = state.journey.some((h) => h.device === device && (h.action === "PUSH_LABELS" || h.action === "SERVICE_LOOKUP"));
+    if (!forwarded) return base;
+    return { ...base, completedStageIds: allIds(PE1_PE2_FORWARD_STAGES) };
+  }
+
+  // PE3
+  if (i < controlEnd) {
+    const base: DeviceProcessingTrace = { deviceId: "PE3", stages: CONTROL_PIPELINE_STAGES, completedStageIds: [] };
+    return { ...base, activeStageId: "es-configured", completedStageIds: [] };
+  }
+  const base: DeviceProcessingTrace = { deviceId: "PE3", stages: PE3_EGRESS_STAGES, completedStageIds: [] };
+  const delivered = state.journey.some((h) => h.device === "PE3" && h.action === "POP_SERVICE");
+  if (!delivered) return { ...base, activeStageId: state.perEviAdRoutes.PE3 ? "identify-service" : undefined, completedStageIds: state.perEviAdRoutes.PE3 ? ["mpls-ingress", "transport-processing", "service-label"] : [] };
+  return { ...base, completedStageIds: allIds(PE3_EGRESS_STAGES) };
+}
+
+export function packetFramesFor(state: EvpnVpwsState): PacketStackFrame[] | undefined {
+  if (!state.packet && state.journey.length === 0) return undefined;
+  return [
+    { id: "ethernet", text: "Ethernet", tone: "generic" },
+  ];
+}
+
+interface IfaceDef { id: string; name: string; ip?: string; neighborId: EvpnVpwsDeviceId; neighborLabel: string; linkType: string; mtu: number; protocols: string[]; extra?: { label: string; value: string }[]; }
+
+const INTERFACES: Record<"PE1" | "CORE" | "PE2" | "PE3", IfaceDef[]> = {
+  PE1: [
+    { id: "PE1-cea", name: "ge-0/0/0", neighborId: "CE-A", neighborLabel: "CE-A", linkType: `Access (VPWS-${VPWS_SERVICE_ID}, VLAN ${LOCAL_AC_VLAN})`, mtu: 9000, protocols: ["Ethernet"], extra: [{ label: "ESI", value: ESI }] },
+    { id: "PE1-core", name: "et-0/1/0", ip: "10.0.21.1/31", neighborId: "CORE", neighborLabel: "CORE", linkType: "MPLS Core (Uplink)", mtu: 9216, protocols: ["IGP", "LDP/RSVP", "BGP EVPN"] },
+  ],
+  CORE: [
+    { id: "CORE-pe1", name: "et-0/0/0", ip: "10.0.21.0/31", neighborId: "PE1", neighborLabel: "PE1", linkType: "MPLS Core", mtu: 9216, protocols: ["IGP"] },
+    { id: "CORE-pe2", name: "et-0/0/1", ip: "10.0.22.0/31", neighborId: "PE2", neighborLabel: "PE2", linkType: "MPLS Core", mtu: 9216, protocols: ["IGP"] },
+    { id: "CORE-pe3", name: "et-0/0/2", ip: "10.0.23.0/31", neighborId: "PE3", neighborLabel: "PE3", linkType: "MPLS Core", mtu: 9216, protocols: ["IGP"] },
+  ],
+  PE2: [
+    { id: "PE2-cea", name: "ge-0/0/0", neighborId: "CE-A", neighborLabel: "CE-A", linkType: `Access (VPWS-${VPWS_SERVICE_ID}, VLAN ${LOCAL_AC_VLAN})`, mtu: 9000, protocols: ["Ethernet"], extra: [{ label: "ESI", value: ESI }] },
+    { id: "PE2-core", name: "et-0/1/0", ip: "10.0.22.1/31", neighborId: "CORE", neighborLabel: "CORE", linkType: "MPLS Core (Uplink)", mtu: 9216, protocols: ["IGP", "LDP/RSVP", "BGP EVPN"] },
+  ],
+  PE3: [
+    { id: "PE3-core", name: "et-0/1/0", ip: "10.0.23.1/31", neighborId: "CORE", neighborLabel: "CORE", linkType: "MPLS Core (Uplink)", mtu: 9216, protocols: ["IGP", "LDP/RSVP", "BGP EVPN"] },
+    { id: "PE3-ceb", name: "ge-0/0/0", neighborId: "CE-B", neighborLabel: "CE-B", linkType: `Access (VPWS-${VPWS_SERVICE_ID}, VLAN ${REMOTE_AC_VLAN})`, mtu: 1500, protocols: ["Ethernet"] },
+  ],
+};
+
+export function interfacesFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpwsState, currentStepId: string): DeviceInterfaceData[] {
+  const trace = traceFor(device, state, currentStepId);
+  const processing = trace.activeStageId !== undefined;
+  return INTERFACES[device]
+    .filter((def) => !(def.neighborId === "CE-A" && device === "PE1" && state.pe1AcFailed))
+    .map((def) => ({
+      id: def.id,
+      name: def.name,
+      status: def.neighborId === "CE-A" && device === "PE1" && state.pe1AcFailed ? "down" : "up",
+      ip: def.ip,
+      neighborId: def.neighborId,
+      neighborLabel: def.neighborLabel,
+      linkType: def.linkType,
+      mtu: def.mtu,
+      protocols: def.protocols,
+      packetCount: trace.completedStageIds.length > 0 || processing ? 1 : 0,
+      role: processing ? "ingress" : "idle",
+      extra: def.extra,
+    }));
+}
+
+export function esTabRowsFor(state: EvpnVpwsState, pe: PeId) {
+  if (pe === "PE3") return [{ label: "Ethernet Segment", value: "Not attached — PE3 is not part of this ES" }];
+  const role = pbRoleFor(state.election, pe);
+  const roleLabel = { "not-elected": "Not elected", primary: "Primary", backup: "Backup", ineligible: "Ineligible" }[role];
+  return [
+    { label: "ESI", value: ESI },
+    { label: "Redundancy Mode", value: "SINGLE-ACTIVE" },
+    { label: "Primary", value: state.election.primaryPe ?? "(not yet elected)" },
+    { label: "Backup", value: state.election.backupPe ?? "(none)" },
+    { label: "Local Role", value: roleLabel },
+    { label: "Service", value: `VPWS-${VPWS_SERVICE_ID}` },
+  ];
+}
+
+export function pbTabRowsFor(state: EvpnVpwsState, pe: PeId) {
+  if (pe === "PE3") return [{ label: "Primary / Backup", value: "Not applicable — PE3 is the single remote endpoint, not part of the Single-Active ES" }];
+  const route = state.perEviAdRoutes[pe];
+  const role = pbRoleFor(state.election, pe);
+  return [
+    { label: "Role", value: { "not-elected": "Not elected", primary: "PRIMARY", backup: "BACKUP", ineligible: "Ineligible" }[role] },
+    { label: "P Flag (Advanced)", value: role === "primary" ? "1" : "0" },
+    { label: "B Flag (Advanced)", value: role === "backup" ? "1" : "0" },
+    { label: "L2 MTU (Advanced)", value: route ? String(route.l2Mtu) : "(not advertised)" },
+    { label: "Control-Word Indicator (Advanced)", value: "Not modeled in this lesson" },
+  ];
+}
+
+export function labelsTabRowsFor(state: EvpnVpwsState, device: "PE1" | "PE2" | "PE3") {
+  const route = state.perEviAdRoutes[device as PeId];
+  return [
+    { label: "VPWS Service Label (local)", value: route ? String(route.serviceLabel) : "(not advertised)" },
+    { label: "Transport Label", value: state.packet ? String(state.packet.labels.find((l) => l.purpose === "transport")?.value ?? "—") : "(no active packet)" },
+    { label: "Note", value: "Service label ≠ MPLS L3VPN VPN label — different mechanisms, kept visually distinct" },
+  ];
+}
+
+export function vpwsServicesTabRowsFor(state: EvpnVpwsState, device: EvpnVpwsDeviceId) {
+  const svc = state.vpwsService;
+  return [
+    { label: "Service", value: `VPWS-${VPWS_SERVICE_ID}` },
+    { label: "Local AC", value: `VLAN ${LOCAL_AC_VLAN} (CE-A side)` },
+    { label: "Remote AC / Endpoint", value: `VLAN ${REMOTE_AC_VLAN} (CE-B side)` },
+    { label: "Local Service ID", value: String(VPWS_SERVICE_ID) },
+    { label: "Remote Service ID", value: String(VPWS_SERVICE_ID) },
+    { label: "Redundancy Mode", value: "Single-Active" },
+    { label: "Primary", value: state.election.primaryPe ?? "(not yet elected)" },
+    { label: "Backup", value: state.election.backupPe ?? "(none)" },
+    { label: "Remote PE", value: device === "PE3" ? (discoverVpwsEndpoint(state.perEviAdRoutes, "PE3") ?? "(none usable)") : discoverVpwsEndpoint(state.perEviAdRoutes, device as PeId) ?? "(none)" },
+    { label: "Service Label", value: state.perEviAdRoutes[device as PeId] ? String(state.perEviAdRoutes[device as PeId]!.serviceLabel) : "(not advertised)" },
+    { label: "L2 MTU", value: svc ? String(svc.pe3ExpectedMtu) : "9000" },
+    { label: "Status", value: svc ? svc.status.toUpperCase() : "DOWN" },
+  ];
+}
+
+export function remoteEndpointsTabRowsFor(state: EvpnVpwsState) {
+  return (["PE1", "PE2"] as PeId[]).map((pe) => {
+    const route = state.perEviAdRoutes[pe];
+    const role = pbRoleFor(state.election, pe);
+    return { label: pe, value: !route || route.withdrawn ? "Withdrawn / unavailable" : `${role.toUpperCase()} — service label ${route.serviceLabel}` };
+  });
+}
+
+export function evpnRibRowsFor(state: EvpnVpwsState, device: EvpnVpwsDeviceId): EvpnRibRow[] {
+  const rows: EvpnRibRow[] = [];
+  const pushRoute = (pe: PeId) => {
+    const r = state.perEviAdRoutes[pe];
+    if (!r) return;
+    const role = r.role === "remote" ? "Remote Endpoint" : { "not-elected": "Not elected", primary: "Primary", backup: "Backup", ineligible: "Ineligible" }[r.role as Exclude<typeof r.role, "remote">];
+    rows.push({
+      routeType: "1",
+      subKind: "PER EVI",
+      summary: `${pe} — ESI ${r.esi ? r.esi.slice(-8) : "0"}${r.withdrawn ? " (WITHDRAWN)" : ""}`,
+      nextHop: pe,
+      rd: r.rd,
+      rt: r.rt,
+      extra: [
+        { label: "VPWS Service", value: `ID ${r.vpwsServiceId}` },
+        { label: "Service Label", value: String(r.serviceLabel) },
+        { label: "P/B Role", value: role },
+        { label: "L2 MTU", value: String(r.l2Mtu) },
+      ],
+    });
+  };
+  if (device === "PE3") {
+    pushRoute("PE1");
+    pushRoute("PE2");
+  } else if (device === "PE1" || device === "PE2") {
+    pushRoute("PE3");
+  }
+  return rows;
+}
+
+export function linkDetailFor(linkId: string, state: EvpnVpwsState): LinkDetail | undefined {
+  const edge = GRAPH_EDGES.find((e) => e.id === linkId);
+  if (!edge) return undefined;
+  const a = edge.a as EvpnVpwsDeviceId;
+  const b = edge.b as EvpnVpwsDeviceId;
+  const allIfaces: Record<string, IfaceDef[]> = {
+    "CE-A": [
+      { id: "cea-pe1", name: "eth0", neighborId: "PE1", neighborLabel: "PE1", linkType: `Access (ESI, VLAN ${LOCAL_AC_VLAN})`, mtu: 9000, protocols: ["Ethernet"], extra: [{ label: "ESI", value: ESI }, { label: "Role", value: pbRoleFor(state.election, "PE1").toUpperCase() }] },
+      { id: "cea-pe2", name: "eth1", neighborId: "PE2", neighborLabel: "PE2", linkType: `Access (ESI, VLAN ${LOCAL_AC_VLAN})`, mtu: 9000, protocols: ["Ethernet"], extra: [{ label: "ESI", value: ESI }, { label: "Role", value: pbRoleFor(state.election, "PE2").toUpperCase() }] },
+    ],
+    ...INTERFACES,
+    "CE-B": [{ id: "ceb-pe3", name: "eth0", neighborId: "PE3", neighborLabel: "PE3", linkType: `Access (VLAN ${REMOTE_AC_VLAN})`, mtu: 1500, protocols: ["Ethernet"] }],
+  };
+  const aIface = allIfaces[a]?.find((f) => f.neighborId === b);
+  const bIface = allIfaces[b]?.find((f) => f.neighborId === a);
+  if (!aIface || !bIface) return undefined;
+  const isCore = aIface.linkType.startsWith("MPLS Core");
+  return {
+    aLabel: a,
+    bLabel: b,
+    aInterface: { id: aIface.id, name: aIface.name, status: "up", ip: aIface.ip, neighborId: b, neighborLabel: b, linkType: aIface.linkType, mtu: aIface.mtu, protocols: aIface.protocols, role: "idle" },
+    bInterface: { id: bIface.id, name: bIface.name, status: "up", ip: bIface.ip, neighborId: a, neighborLabel: a, linkType: bIface.linkType, mtu: bIface.mtu, protocols: bIface.protocols, role: "idle" },
+    status: "up",
+    mtu: aIface.mtu,
+    protocols: isCore ? [{ label: "IGP", value: "Converged" }, { label: "BGP EVPN", value: state.bgpSessionUp ? "Established" : "Not yet formed" }] : [{ label: "ESI", value: a === "CE-A" || b === "CE-A" ? ESI : "—" }],
+  };
+}
+
+export interface CliOutput { cmd: string; output: string; }
+export interface CliCommandEntry { id: string; label: string; cisco: CliOutput; juniper: CliOutput; }
+
+export function buildVpwsCliCommands(state: EvpnVpwsState, device: EvpnVpwsDeviceId): CliCommandEntry[] {
+  if (device === "CORE") return [{ id: "mpls", label: "mpls forwarding", cisco: { cmd: "show mpls forwarding-table", output: "Label 16003 -> swap -> PE3" }, juniper: { cmd: "show route table mpls.0", output: "16003 Swap 16003 -> PE3" } }];
+  if (device === "CE-A" || device === "CE-B") return [{ id: "iface", label: "interface status", cisco: { cmd: "show interfaces status", output: "Gi0/0 up" }, juniper: { cmd: "show interfaces terse", output: "ge-0/0/0 up" } }];
+  const pe = device as PeId;
+  const svc: CliOutput = { cmd: `show evpn vpws instance ${VPWS_SERVICE_ID}`, output: `VPWS-${VPWS_SERVICE_ID}  Status: ${state.vpwsService?.status.toUpperCase() ?? "DOWN"}` };
+  const svcJ: CliOutput = { cmd: `show evpn instance vpws-${VPWS_SERVICE_ID} extensive`, output: `Service ${VPWS_SERVICE_ID}: ${state.vpwsService?.status ?? "down"}` };
+  const ad: CliOutput = { cmd: "show bgp l2vpn evpn route-type 1", output: pe === "PE3" ? `Remote: PE1/PE2 A-D per-EVI` : `Local: A-D per-EVI advertised, Role ${pbRoleFor(state.election, pe as PeId)}` };
+  const adJ: CliOutput = { cmd: "show route table bgp.evpn.0 match-prefix 1:*", output: "1:*:500 A-D per-EVI" };
+  return [
+    { id: "vpws", label: "vpws service", cisco: svc, juniper: svcJ },
+    { id: "adroutes", label: "a-d per-evi", cisco: ad, juniper: adJ },
+  ];
+}
