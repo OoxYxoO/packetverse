@@ -377,6 +377,21 @@ export const lessons: Lesson[] = [
       { id: "solution", heading: "How Single-Active + EVPN-VPWS solve it", body: "A Single-Active election picks one Primary and one Backup PE for a multihomed Ethernet Segment. EVPN-VPWS then rides on that redundancy: Ethernet A-D per-EVI routes — not Type-2 MAC routes — discover the remote endpoint and signal the service label for a point-to-point Ethernet service." },
     ],
   },
+  {
+    id: "mpls-l2vpn-vpws",
+    title: "Traditional MPLS L2VPN / VPWS",
+    tagline: "Attachment circuits, targeted LDP, pseudowire labels, and two-label forwarding — the classic point-to-point pseudowire.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["mpls-l3vpn", "evpn-single-active-vpws"],
+    estimatedMinutes: 45,
+    simulationPath: "/demo/mpls-l2vpn-vpws",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "How can two customer Ethernet ports behave like one virtual wire even though an MPLS provider network sits between them? Ordinary transport reachability between the two PEs isn't enough — the egress PE still has to know which local customer service should receive a given frame." },
+      { id: "solution", heading: "How traditional LDP-signaled VPWS solves it", body: "A targeted LDP session between the two PE loopbacks signals a pseudowire FEC — PW type and PW ID — that both PEs must agree on. Each PE independently allocates and advertises its own directional receive label, so the outer transport label gets a frame to the far PE while the inner pseudowire label tells that PE which virtual wire it belongs to. P routers only ever touch the outer label, never the pseudowire state — the same signaling model EVPN-VPWS replaces with BGP." },
+    ],
+  },
 ];
 
 export const getLessonById = (id: string) => lessons.find((l) => l.id === id);
