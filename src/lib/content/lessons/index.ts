@@ -213,6 +213,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "sr-flex-algo",
+    title: "SR-MPLS Flex-Algo",
+    tagline: "Algorithm-specific SPF, Flex-Algo Definitions, affinities, metrics, and algorithm-specific Prefix-SIDs.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["sr-ti-lfa"],
+    estimatedMinutes: 55,
+    simulationPath: "/demo/sr-flex-algo",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "Normal Node-SID forwarding follows the IGP shortest path — Algorithm 0. But an operator sometimes wants the IGP itself to calculate an entirely different shortest-path topology, using different constraints, alongside the normal one — not a headend policy layered on top, a genuinely different distributed calculation." },
+      { id: "solution", heading: "How Flex-Algo solves it", body: "A Flex-Algo Definition (FAD) — algorithm ID, metric type, and affinity constraints — is distributed via the IGP. Every participating router computes its OWN algorithm-specific SPF from it, and the same destination prefix gets a second, independently-derived Prefix-SID whose forwarding follows that algorithm's calculated topology instead of the default one. Link metrics or affinities can change the resulting path without ever changing the algorithm ID, and a router that stops participating is removed from that algorithm's topology entirely, not merely deprioritized." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",

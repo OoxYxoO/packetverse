@@ -30,6 +30,7 @@ interface SidTableViewerProps {
  * permits folding SRGB display in here instead of a separate viewer).
  */
 export function SidTableViewer({ title = "SID Database", rows, srgb }: SidTableViewerProps) {
+  const showAlgorithm = rows.some((r) => r.algorithm !== undefined);
   return (
     <GlassPanel className="p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -45,6 +46,7 @@ export function SidTableViewer({ title = "SID Database", rows, srgb }: SidTableV
           <thead>
             <tr className="text-left text-[9px] uppercase tracking-wide text-pv-text-faint">
               <th className="pb-1.5 pr-3">Prefix / Meaning</th>
+              {showAlgorithm && <th className="pb-1.5 pr-3">Algorithm</th>}
               <th className="pb-1.5 pr-3">Type</th>
               <th className="pb-1.5 pr-3">Index</th>
               <th className="pb-1.5 pr-3">Label</th>
@@ -57,6 +59,7 @@ export function SidTableViewer({ title = "SID Database", rows, srgb }: SidTableV
             {rows.map((r, i) => (
               <tr key={i} className={clsx(r.installed === false && "opacity-50")}>
                 <td className="py-1.5 pr-3 text-pv-text">{r.prefix ?? r.meaning ?? "—"}</td>
+                {showAlgorithm && <td className="py-1.5 pr-3 text-pv-text-muted">{r.algorithm ?? "—"}</td>}
                 <td className="py-1.5 pr-3">
                   <Badge tone={r.sidType === "NODE" ? "cyan" : "violet"}>{r.sidType}</Badge>
                 </td>

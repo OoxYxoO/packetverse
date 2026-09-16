@@ -55,6 +55,7 @@ export const learningPaths: LearningPath[] = [
       { id: "sr", label: "Segment Routing", lessonId: "sr-mpls-foundations", status: "available" },
       { id: "sr-policy", label: "SR Policy", lessonId: "sr-policy", status: "available" },
       { id: "ti-lfa", label: "TI-LFA", lessonId: "sr-ti-lfa", status: "available" },
+      { id: "flex-algo", label: "Flex-Algo", lessonId: "sr-flex-algo", status: "available" },
     ],
   },
   {
