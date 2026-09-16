@@ -14,9 +14,13 @@ export function ProtectionPathViewer({
   title,
   primaryPath,
   backupPath,
+  backupPathLabel = "Bypass Path",
   protectedResource,
   plr,
+  plrLabel = "PLR",
   mergePoint,
+  mergePointLabel = "MP",
+  mergePointTitle = "Merge Point",
   protectionType,
   readiness,
   active,
@@ -25,9 +29,17 @@ export function ProtectionPathViewer({
   title: string;
   primaryPath: string[];
   backupPath?: string[];
+  /** Section heading over the backup path — defaults to "Bypass Path" (RSVP-TE FRR); pass e.g. "Repair Path" for an SR repair segment list. */
+  backupPathLabel?: string;
   protectedResource: string;
   plr: string;
+  /** Badge text on the PLR hop — defaults to "PLR" (a term shared by RSVP FRR and TI-LFA). */
+  plrLabel?: string;
   mergePoint?: string;
+  /** Badge text on the mergePoint hop — defaults to "MP". Pass e.g. "REPAIR PT" for a TI-LFA repair point, which isn't formally a "Merge Point" in SR terminology. */
+  mergePointLabel?: string;
+  /** Row label for the mergePoint value — defaults to "Merge Point". */
+  mergePointTitle?: string;
   protectionType: "LINK" | "NODE";
   readiness: "READY" | "UNAVAILABLE" | "NOT CONFIGURED";
   active: boolean;
@@ -52,8 +64,8 @@ export function ProtectionPathViewer({
             <span key={hop + i} className="flex items-center gap-1">
               <span className={clsx("rounded-lg border px-2 py-1", hop === plr ? "border-pv-cyan/50 bg-pv-cyan/10 text-pv-cyan-soft" : hop === mergePoint ? "border-pv-violet/50 bg-pv-violet/10 text-pv-violet" : "border-pv-border text-pv-text")}>
                 {hop}
-                {hop === plr && <span className="ml-1 text-[9px] text-pv-cyan-soft">PLR</span>}
-                {hop === mergePoint && <span className="ml-1 text-[9px] text-pv-violet">MP</span>}
+                {hop === plr && <span className="ml-1 text-[9px] text-pv-cyan-soft">{plrLabel}</span>}
+                {hop === mergePoint && <span className="ml-1 text-[9px] text-pv-violet">{mergePointLabel}</span>}
               </span>
               {i < primaryPath.length - 1 && <span className={clsx("text-pv-text-faint", failure && protectedResource.includes(hop) && protectedResource.includes(primaryPath[i + 1]) && "text-pv-danger")}>{failure && protectedResource.includes(hop) && protectedResource.includes(primaryPath[i + 1]) ? "✕" : "→"}</span>}
             </span>
@@ -63,7 +75,7 @@ export function ProtectionPathViewer({
 
       {backupPath && (
         <div>
-          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-pv-text-faint">Bypass Path</p>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-pv-text-faint">{backupPathLabel}</p>
           <div className={clsx("flex flex-wrap items-center gap-1 pv-mono text-xs", !active && "opacity-60")}>
             {backupPath.map((hop, i) => (
               <span key={hop + i} className="flex items-center gap-1">
@@ -78,9 +90,9 @@ export function ProtectionPathViewer({
       <div className="grid grid-cols-2 gap-x-3 gap-y-1 border-t border-pv-border pt-2 pv-mono text-[11px]">
         <span className="text-pv-text-faint">Protected Resource</span>
         <span className="text-pv-text">{protectedResource}</span>
-        <span className="text-pv-text-faint">PLR</span>
+        <span className="text-pv-text-faint">{plrLabel}</span>
         <span className="text-pv-text">{plr}</span>
-        <span className="text-pv-text-faint">Merge Point</span>
+        <span className="text-pv-text-faint">{mergePointTitle}</span>
         <span className="text-pv-text">{mergePoint ?? "—"}</span>
       </div>
 

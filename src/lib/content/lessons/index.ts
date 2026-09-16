@@ -198,6 +198,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "sr-ti-lfa",
+    title: "SR-MPLS TI-LFA",
+    tagline: "P-Space, Q-Space, PQ nodes, repair lists, and local fast reroute — SR's answer to RSVP-TE FRR.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["sr-policy"],
+    estimatedMinutes: 55,
+    simulationPath: "/demo/sr-ti-lfa",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "SR Policy showed how to turn SIDs into steered intent, and RSVP-TE Fast Reroute showed local repair via a pre-signaled bypass LSP. Neither answers this: how can an SR router repair traffic locally after a failure — without waiting for the headend, and without pre-signaling anything?" },
+      { id: "solution", heading: "How TI-LFA solves it", body: "Topology Independent Loop-Free Alternate precomputes, before any failure, a post-convergence SPF path, the PLR's own P-Space and the destination's Q-Space, a safe PQ repair point in their intersection, and a minimal SR repair segment list toward it. On local failure detection the PLR pushes that repair segment on top of the original SR instruction immediately — no signaling, no headend involvement, and the original segment resumes automatically once the repair point is reached." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",

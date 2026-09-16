@@ -12,6 +12,8 @@ export interface CliVendorOutput {
 export interface CliCommandEntry {
   id: string;
   label: string;
+  /** Optional plain-language "what this actually means" perspective — when present on every entry, a CONCEPT tab appears alongside Cisco/Junos. Omit entirely (as every existing caller does) to keep the original two-vendor panel unchanged. */
+  concept?: string;
   cisco: CliVendorOutput;
   juniper: CliVendorOutput;
 }
@@ -30,17 +32,19 @@ interface CLIOutputPanelProps {
  * changing how a lesson supplies its commands.
  */
 export function CLIOutputPanel({ commands }: CLIOutputPanelProps) {
-  const [vendor, setVendor] = useState<"cisco" | "juniper">("cisco");
+  const hasConcept = commands.length > 0 && commands.every((c) => c.concept !== undefined);
+  const perspectives = hasConcept ? (["concept", "cisco", "juniper"] as const) : (["cisco", "juniper"] as const);
+  const [vendor, setVendor] = useState<(typeof perspectives)[number]>(hasConcept ? "concept" : "cisco");
   const [activeId, setActiveId] = useState(commands[0]?.id);
   const active = commands.find((c) => c.id === activeId) ?? commands[0];
-  const entry = active ? active[vendor] : undefined;
+  const entry = active && vendor !== "concept" ? active[vendor] : undefined;
 
   return (
     <GlassPanel className="p-4">
       <div className="mb-3 flex items-center justify-between">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-pv-text-muted">CLI</h4>
         <div className="flex gap-1 rounded-full border border-pv-border p-0.5">
-          {(["cisco", "juniper"] as const).map((v) => (
+          {perspectives.map((v) => (
             <button
               key={v}
               type="button"
@@ -50,7 +54,7 @@ export function CLIOutputPanel({ commands }: CLIOutputPanelProps) {
                 vendor === v ? "bg-pv-cyan/15 text-pv-cyan-soft" : "text-pv-text-faint hover:text-pv-text",
               )}
             >
-              {v === "cisco" ? "Cisco IOS" : "Junos"}
+              {v === "cisco" ? "Cisco IOS" : v === "juniper" ? "Junos" : "Concept"}
             </button>
           ))}
         </div>
@@ -73,6 +77,7 @@ export function CLIOutputPanel({ commands }: CLIOutputPanelProps) {
       </div>
 
       <div className="rounded-lg border border-pv-border bg-black/40 p-3">
+        {vendor === "concept" && active?.concept && <p className="text-xs leading-relaxed text-pv-text-muted">{active.concept}</p>}
         {entry && (
           <>
             <p className="pv-mono text-[11px] text-pv-cyan-soft">
