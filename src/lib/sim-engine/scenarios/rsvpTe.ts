@@ -1019,6 +1019,12 @@ export const rsvpTeSteps: ScenarioStep<RsvpTeState>[] = [
         backgroundReservations: [{ id: "bg-custb", linkId: "R3-R5", mbps: 400, label: "CUST-B (existing LSP)" }],
         lsp: { ...state.lsp, requestedBandwidthMbps: 700, state: "DOWN", cspf: undefined, path: undefined, hops: {}, reservedLinkIds: [], reservedBandwidthMbps: undefined },
         faultActive: true,
+        // The prior 500 Mbps LSP's data-plane journey no longer describes anything
+        // current — the tunnel must be re-signaled from scratch for the new
+        // requirement, so its packet/journey must not linger into this phase.
+        packet: undefined,
+        packetAt: undefined,
+        journey: [],
       },
       events: [{ type: "MPLS_LSP_CHANGED", stepId: "fault-injected", timestamp: Date.now(), message: "New requirement: grow the tunnel to 700 Mbps; CUST-B already reserves 400 Mbps on R3-R5" }],
     }),
