@@ -168,6 +168,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "sr-mpls-foundations",
+    title: "SR-MPLS Foundations",
+    tagline: "Node SID, Prefix-SID, Adjacency SID, SRGB, and segment stacks — steering without RSVP.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["mpls-rsvp-frr"],
+    estimatedMinutes: 45,
+    simulationPath: "/demo/sr-mpls-foundations",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "RSVP-TE engineers a path by signaling PATH/RESV hop by hop and maintaining per-LSP state along the way. Can traffic be steered with a short list of instructions instead — without signaling an end-to-end LSP for every path?" },
+      { id: "solution", heading: "How SR-MPLS solves it", body: "The IGP distributes Segment Routing information alongside ordinary topology — a Node SID means \"reach this router via the shortest path,\" an Adjacency SID means \"use this one specific link, but only at the router that owns it.\" The headend imposes an ordered MPLS label stack once; each router along the way executes whichever segment is currently active, without recomputing anything end to end." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",
