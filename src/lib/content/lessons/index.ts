@@ -138,6 +138,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "mpls-rsvp-te",
+    title: "MPLS RSVP-TE",
+    tagline: "CSPF, PATH/RESV signaling, and bandwidth-reserved, traffic-engineered LSPs.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["mpls-l3vpn"],
+    estimatedMinutes: 40,
+    simulationPath: "/demo/mpls-rsvp-te",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "The IGP's shortest path is sometimes a path that can never satisfy a bandwidth requirement — a link's maximum reservable bandwidth is a hard TE ceiling, not a measure of momentary congestion." },
+      { id: "solution", heading: "How RSVP-TE solves it", body: "Constrained Shortest Path First (CSPF) prunes every link that violates a constraint from the Traffic Engineering Database before computing a path at all. RSVP-TE then signals that constrained path — PATH downstream, RESV upstream — installing downstream-assigned labels and reserving real bandwidth hop by hop, so MPLS traffic follows the engineered path instead of the IGP shortest path." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",

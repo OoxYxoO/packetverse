@@ -47,7 +47,7 @@ export const learningPaths: LearningPath[] = [
       { id: "mpls", label: "MPLS", lessonId: "mpls-fundamentals", status: "locked" },
       { id: "ldp", label: "LDP", status: "locked" },
       { id: "rr", label: "Route Reflector", lessonId: "bgp-route-reflector", status: "available" },
-      { id: "rsvp", label: "RSVP", status: "locked" },
+      { id: "rsvp", label: "RSVP", lessonId: "mpls-rsvp-te", status: "available" },
       { id: "l3vpn", label: "L3VPN", lessonId: "mpls-l3vpn", status: "available" },
       { id: "l2vpn", label: "L2VPN", status: "locked" },
       { id: "evpn", label: "EVPN", lessonId: "evpn-vxlan-foundations", status: "available" },
