@@ -183,6 +183,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "sr-policy",
+    title: "SR Traffic Engineering / SR Policy",
+    tagline: "Color, endpoint, candidate paths, segment lists, BSID, and traffic steering — turning SIDs into intent.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["sr-mpls-foundations"],
+    estimatedMinutes: 50,
+    simulationPath: "/demo/sr-policy",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "SR-MPLS Foundations showed how individual SIDs work. But an operator rarely wants \"one segment list\" — they want intent that survives topology change: GOLD traffic toward R6 must use a specific engineered path, with a defined fallback if that path stops working, distinct from ordinary IGP reachability." },
+      { id: "solution", heading: "How SR Policy solves it", body: "An SR Policy is identified by <Headend, Color, Endpoint> — not a label stack. It holds one or more candidate paths — an explicit, operator-specified segment list and/or a dynamic one computed from TE constraints — and the highest-preference VALID candidate becomes active, resolving a Binding SID and a real segment list. Traffic must still be explicitly steered into the policy; an UP policy does not itself redirect every packet toward its endpoint." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",
