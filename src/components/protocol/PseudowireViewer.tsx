@@ -23,6 +23,7 @@ export function PseudowireViewer({
   remoteReceiveLabel,
   transportState,
   targetedLdpState,
+  signalingProtocolLabel = "Targeted LDP",
   pwState,
   mtu,
   controlWord,
@@ -39,7 +40,10 @@ export function PseudowireViewer({
   localReceiveLabel: number;
   remoteReceiveLabel?: number;
   transportState: string;
+  /** The PW/service-signaling protocol's own readiness state — historically always targeted LDP (e.g. "OPERATIONAL"), but a backward-compatible field name kept as-is so every existing caller (VPWS, traditional VPLS) needs zero changes. A BGP-signaled caller passes its own state string here (e.g. "ESTABLISHED") together with `signalingProtocolLabel` below. */
   targetedLdpState: string;
+  /** Overrides the "Targeted LDP" badge/row label when the PW was actually signaled by something else (e.g. "BGP (RFC 4761)") — added for bgp-vpls reuse; every existing caller omits this and sees identical output. */
+  signalingProtocolLabel?: string;
   pwState: "UP" | "DOWN";
   mtu: number;
   controlWord: boolean;
@@ -83,7 +87,9 @@ export function PseudowireViewer({
 
       <div className="flex flex-wrap items-center gap-2 border-t border-pv-border pt-2.5 pv-mono text-[11px]">
         <Badge tone={transportState === "UP" ? "success" : "muted"}>Transport {transportState}</Badge>
-        <Badge tone={targetedLdpState === "OPERATIONAL" ? "success" : "muted"}>Targeted LDP {targetedLdpState}</Badge>
+        <Badge tone={targetedLdpState === "OPERATIONAL" || targetedLdpState === "ESTABLISHED" ? "success" : "muted"}>
+          {signalingProtocolLabel} {targetedLdpState}
+        </Badge>
         {status && <span className="text-pv-text-muted">{status}</span>}
       </div>
     </GlassPanel>

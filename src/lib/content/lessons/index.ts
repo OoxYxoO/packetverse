@@ -407,6 +407,21 @@ export const lessons: Lesson[] = [
       { id: "solution", heading: "How traditional VPLS solves it", body: "Every PE runs a per-service virtual Ethernet bridge, full-meshed with a direct pseudowire to every other PE. Each PE learns MAC addresses purely from the data plane — on its local attachment circuit and on every pseudowire alike — floods unknown/broadcast/multicast traffic, and forwards known unicast to a single port. One rule keeps the mesh loop-free: a frame received from one mesh pseudowire is never relayed out another mesh pseudowire (split horizon), which is exactly why the mesh must be full in the first place." },
     ],
   },
+  {
+    id: "bgp-vpls",
+    title: "BGP-Signaled VPLS",
+    tagline: "RFC 4761 BGP auto-discovery, VE IDs, and label-block PW signaling — replacing targeted LDP with MP-BGP over a Route Reflector, without changing how MACs are learned.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["mpls-vpls", "bgp-route-reflector"],
+    estimatedMinutes: 55,
+    simulationPath: "/demo/bgp-vpls",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "Targeted LDP works, but every PW still needed its own manually-configured, per-pair session — nothing discovers VPLS membership automatically, and nothing signals a new PE's pseudowires without touching every existing PE." },
+      { id: "solution", heading: "How BGP-signaled VPLS solves it", body: "RFC 4761 replaces targeted LDP with MP-BGP: each PE advertises an RD, a Route Target, a VE ID, and a label block (VE Block Offset + Size + Label Base) over a Route Reflector. A Route Target match auto-discovers membership; the actual per-pair label is derived from the label block and the sender's own VE ID, never read off the advertisement directly. Crucially, BGP never carries a customer MAC address — remote MAC learning stays exactly what it always was in classic VPLS: data-plane source-MAC learning, flooding, and split horizon." },
+    ],
+  },
 ];
 
 export const getLessonById = (id: string) => lessons.find((l) => l.id === id);

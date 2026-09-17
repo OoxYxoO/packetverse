@@ -457,7 +457,7 @@ export const SERVICE_GRAPH_EDGES: { id: string; a: RouterId; b: RouterId; label?
 // ---------------------------------------------------------------------------
 // Packet / control-message builders
 // ---------------------------------------------------------------------------
-function ethLayer(frame: EthernetFrame): PacketLayer {
+export function ethLayer(frame: EthernetFrame): PacketLayer {
   return { name: "Ethernet", color: "var(--pv-proto-ip)", fields: [{ label: "Src MAC", value: frame.srcMac }, { label: "Dst MAC", value: frame.dstMac }, { label: "Note", value: frame.note }] };
 }
 function shimLayer(label: MplsLabel): PacketLayer {
@@ -479,7 +479,7 @@ function vplsPacket(id: string, from: RouterId, to: RouterId, summary: string, b
 function ldpPacket(id: string, from: RouterId, to: RouterId, summary: string, badge: string, fields: { label: string; value: string }[]): PacketVisual {
   return { id, protocol: "MPLS", from, to, summary, badge, layers: [{ name: "Targeted LDP", color: "var(--pv-proto-mpls)", fields }] };
 }
-function ceFrame(src: "CE1" | "CE2" | "CE3", dst: "CE1" | "CE2" | "CE3" | "BROADCAST", note: string): EthernetFrame {
+export function ceFrame(src: "CE1" | "CE2" | "CE3", dst: "CE1" | "CE2" | "CE3" | "BROADCAST", note: string): EthernetFrame {
   return { srcMac: CE_MAC[src], dstMac: dst === "BROADCAST" ? BROADCAST_MAC : CE_MAC[dst], note };
 }
 
