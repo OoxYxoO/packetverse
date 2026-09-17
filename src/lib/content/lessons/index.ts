@@ -243,6 +243,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "srv6-endpoint-behaviors",
+    title: "SRv6 Endpoint Behaviors",
+    tagline: "End, End.X, End.T, End.DX6/DX4, End.DT6/DT4, End.DX2 — the local instruction bound to a SID, not just the address that reaches it.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["srv6-foundations"],
+    estimatedMinutes: 60,
+    simulationPath: "/demo/srv6-endpoint-behaviors",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "SRv6 Foundations built one SID bound to one behavior — End. But if every SID is already routed to its owner by ordinary IPv6 forwarding, why does SRv6 define many different endpoint behaviors at all?" },
+      { id: "solution", heading: "How endpoint behaviors solve it", body: "Reaching the node is only half the operation — the locally instantiated behavior bound to that exact SID decides what happens next. End.X forces forwarding through one bound adjacency instead of the ordinary FIB; End.T continues the program through a specific table; End.DX6/End.DX4/End.DT6/End.DT4/End.DX2 decapsulate the outer IPv6 header and cross-connect or table-route the exposed IPv6, IPv4, or Ethernet payload to a customer service — each a genuinely different forwarding decision, not a cosmetic label." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",

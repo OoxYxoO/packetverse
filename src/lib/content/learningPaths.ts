@@ -61,6 +61,7 @@ export const learningPaths: LearningPath[] = [
       { id: "ti-lfa", label: "TI-LFA", lessonId: "sr-ti-lfa", status: "available" },
       { id: "flex-algo", label: "Flex-Algo", lessonId: "sr-flex-algo", status: "available" },
       { id: "srv6-foundations", label: "SRv6 Foundations", lessonId: "srv6-foundations", status: "available" },
+      { id: "srv6-endpoint-behaviors", label: "SRv6 Endpoint Behaviors", lessonId: "srv6-endpoint-behaviors", status: "available" },
     ],
   },
   {
