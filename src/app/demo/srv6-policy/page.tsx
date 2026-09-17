@@ -201,12 +201,12 @@ export default function Srv6PolicyDemo() {
     { label: "CP-DYNAMIC Valid", status: evaluations.find((e) => e.def.id === "cp-dynamic")?.valid ? "healthy" : "failing" },
   ];
 
-  const labList = useMemo(() => selectSegmentListForFlow(labFlow, WEIGHTED_LAB_LISTS), [labFlow]);
+  const labSelection = useMemo(() => selectSegmentListForFlow(labFlow, WEIGHTED_LAB_LISTS), [labFlow]);
   const labDistribution = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const f of PSEUDO_FLOWS) {
-      const l = selectSegmentListForFlow(f, WEIGHTED_LAB_LISTS);
-      counts[l.id] = (counts[l.id] ?? 0) + 1;
+      const sel = selectSegmentListForFlow(f, WEIGHTED_LAB_LISTS);
+      if (sel.status === "SELECTED") counts[sel.list.id] = (counts[sel.list.id] ?? 0) + 1;
     }
     return counts;
   }, []);
@@ -663,7 +663,14 @@ export default function Srv6PolicyDemo() {
               </div>
               <div className="rounded-lg border border-pv-border p-3 text-xs">
                 <p className="mb-1 text-pv-text">
-                  {labFlow} → <span className="pv-mono font-semibold text-pv-cyan-soft">{labList.id}</span> (weight {labList.weight})
+                  {labFlow} →{" "}
+                  {labSelection.status === "SELECTED" ? (
+                    <>
+                      <span className="pv-mono font-semibold text-pv-cyan-soft">{labSelection.list.id}</span> (weight {labSelection.list.weight})
+                    </>
+                  ) : (
+                    <span className="pv-mono font-semibold text-pv-danger">NO VALID SEGMENT LIST</span>
+                  )}
                 </p>
                 <p className="pv-mono text-[11px] text-pv-text-faint">Distribution across all 20 flows: {Object.entries(labDistribution).map(([id, n]) => `${id}=${n}`).join(", ")}</p>
               </div>

@@ -475,18 +475,20 @@ function deterministicHash(text: string): number {
   for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
   return h;
 }
-/** Deterministic FLOW-based selection (never packet-by-packet round robin): the same flow id always maps to the same list. A zero-weight list (RFC 9256 §5.1: invalid) is excluded from the candidate set before bucketing, exactly like an invalid explicit candidate is excluded from selection. */
-export function selectSegmentListForFlow(flowId: string, lists: WeightedSegmentListEntry[]): WeightedSegmentListEntry {
+export type SegmentListSelection = { status: "SELECTED"; list: WeightedSegmentListEntry } | { status: "NO_VALID_SEGMENT_LIST"; reason: string };
+
+/** Deterministic FLOW-based selection (never packet-by-packet round robin): the same flow id always maps to the same list. A zero-weight list (RFC 9256 §5.1: invalid) is excluded from the candidate set before bucketing, exactly like an invalid explicit candidate is excluded from selection — and if EVERY list is invalid, there is no fallback to the unfiltered set: selection reports NO_VALID_SEGMENT_LIST rather than reviving an invalid list or dividing by a zero total weight. */
+export function selectSegmentListForFlow(flowId: string, lists: WeightedSegmentListEntry[]): SegmentListSelection {
   const usable = lists.filter((l) => validateSegmentListWeight(l.weight).valid);
-  const pool = usable.length > 0 ? usable : lists;
-  const total = pool.reduce((sum, l) => sum + l.weight, 0);
+  if (usable.length === 0) return { status: "NO_VALID_SEGMENT_LIST", reason: "Every segment list has weight 0 (RFC 9256 §5.1)." };
+  const total = usable.reduce((sum, l) => sum + l.weight, 0);
   const bucket = deterministicHash(flowId) % total;
   let acc = 0;
-  for (const l of pool) {
+  for (const l of usable) {
     acc += l.weight;
-    if (bucket < acc) return l;
+    if (bucket < acc) return { status: "SELECTED", list: l };
   }
-  return pool[pool.length - 1];
+  return { status: "SELECTED", list: usable[usable.length - 1] };
 }
 
 // ---------------------------------------------------------------------------
