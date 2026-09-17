@@ -258,6 +258,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "srv6-policy",
+    title: "SRv6 Traffic Engineering / SR Policy",
+    tagline: "RFC 9256 candidate paths, validity, preference, H.Encaps, and a Binding SID — the layer that decides which SIDs traffic uses, not just what they do.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["srv6-endpoint-behaviors"],
+    estimatedMinutes: 65,
+    simulationPath: "/demo/srv6-policy",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "SRv6 Endpoint Behaviors taught what a SID does once traffic arrives. Ordinary IPv6 forwarding still only answers \"how do I reach R6?\" — it can't express \"reach R6 while satisfying a specific intent,\" like the lowest-delay path instead of the IGP-shortest one." },
+      { id: "solution", heading: "How SR Policy solves it", body: "An SR Policy (RFC 9256) is identified by <Headend, Color, Endpoint>, carries one or more candidate paths (explicit or dynamically computed), and activates the highest-preference candidate that is actually VALID — never the other way around. The headend steers matching traffic onto it with H.Encaps, building a fresh outer IPv6 + SRH from whichever candidate is active, reusing the exact same End/End.X/End.DX6 endpoint-behavior processing already proven in the prior lesson." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",

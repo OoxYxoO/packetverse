@@ -42,6 +42,7 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: "l2vpn-architect", title: "L2VPN Architect", description: "Traced one customer through VPWS, LDP-VPLS, BGP-VPLS, H-VPLS, and EVPN, diagnosed a BGP-VPLS mental-model incident without breaking anything that wasn't broken, and matched a mixed 8-site requirement to the right architecture on its technical merits." },
   { id: "srv6-programmer", title: "SRv6 Programmer", description: "Decomposed an SRv6 SID into LOC:FUNCT:ARG, read a Local SID Table, built a correct full SRH with reversed segment-list storage order, traced a real End execution end to end, and repaired a missing local SID binding without touching MPLS." },
   { id: "srv6-behavior-engineer", title: "SRv6 Behavior Engineer", description: "Proved End.X forces forwarding through a bound adjacency without rewriting the DA, traced End.T's table-bound next hop, walked the full decapsulation family (DX6/DX4/DT6/DT4/DX2) with real payload and final-segment validation, and repaired a cross-connect-vs-table-lookup service binding fault." },
+  { id: "srv6-policy-architect", title: "SRv6 Policy Architect", description: "Built SR Policy <R1,100,R6>, validated an explicit candidate and computed a dynamic one, proved invalid preference never beats a valid lower one, steered traffic with H.Encaps, survived a real candidate failure and dynamic failover, and repaired an SR-Database verification fault without touching the candidate's preference." },
 ];
 
 export interface ArenaResult {
