@@ -7,6 +7,7 @@ export const PROTOCOL_META: Record<PacketVisual["protocol"], { glyph: string; co
   ARP: { glyph: "ARP", color: "var(--pv-proto-arp)" },
   ETHERNET: { glyph: "ETH", color: "var(--pv-proto-ethernet)" },
   IP: { glyph: "IP", color: "var(--pv-proto-ip)" },
+  IPV6: { glyph: "IPv6", color: "var(--pv-proto-ipv6)" },
   TCP: { glyph: "TCP", color: "var(--pv-proto-tcp)" },
   HTTPS: { glyph: "TLS", color: "var(--pv-proto-udp)" },
   OSPF: { glyph: "OSPF", color: "var(--pv-proto-ospf)" },

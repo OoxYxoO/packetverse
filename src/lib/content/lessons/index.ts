@@ -228,6 +228,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "srv6-foundations",
+    title: "SRv6 Foundations",
+    tagline: "IPv6 SIDs, locators, functions, the Local SID Table, the SRH, and End processing — Segment Routing directly in the IPv6 data plane.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["sr-flex-algo"],
+    estimatedMinutes: 55,
+    simulationPath: "/demo/srv6-foundations",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "SR-MPLS steers traffic with a segment list imposed as an MPLS label stack — but that requires an MPLS data plane underneath. What happens when Segment Routing is instantiated directly in the IPv6 data plane instead of MPLS?" },
+      { id: "solution", heading: "How SRv6 solves it", body: "A segment becomes a 128-bit IPv6 SID (LOC:FUNCT:ARG), routed to its owner by an ordinary locator prefix and bound to a behavior in that owner's Local SID Table. The active segment IS the IPv6 Destination Address; a Segment Routing Header carries the rest of the program — in reversed storage order — only when more than one segment is needed. The base End behavior decrements Segments Left and rewrites the DA — no MPLS label stack anywhere underneath." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",

@@ -40,6 +40,7 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: "fabric-detective", title: "Fabric Detective", description: "Solved a Professional-difficulty incident in the EVPN Troubleshooting Arena — investigate, hypothesize, repair, and verify without being told the fault." },
   { id: "evpn-troubleshooter", title: "EVPN Troubleshooter", description: "Solved Arena incidents spanning a broad range of EVPN fault families — underlay, control-plane, service, and forwarding alike." },
   { id: "l2vpn-architect", title: "L2VPN Architect", description: "Traced one customer through VPWS, LDP-VPLS, BGP-VPLS, H-VPLS, and EVPN, diagnosed a BGP-VPLS mental-model incident without breaking anything that wasn't broken, and matched a mixed 8-site requirement to the right architecture on its technical merits." },
+  { id: "srv6-programmer", title: "SRv6 Programmer", description: "Decomposed an SRv6 SID into LOC:FUNCT:ARG, read a Local SID Table, built a correct full SRH with reversed segment-list storage order, traced a real End execution end to end, and repaired a missing local SID binding without touching MPLS." },
 ];
 
 export interface ArenaResult {

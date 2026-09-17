@@ -44,6 +44,8 @@
   --pv-proto-bgp: #fb7185;
   --pv-proto-mpls: #f472b6;
   --pv-proto-vxlan: #facc15;
+  --pv-proto-ipv6: #38bdf8;
+  --pv-proto-srh: #fb923c;
 
   --background: var(--pv-bg);
   --foreground: var(--pv-text);
@@ -83,6 +85,8 @@
   --color-pv-bgp: var(--pv-proto-bgp);
   --color-pv-mpls: var(--pv-proto-mpls);
   --color-pv-vxlan: var(--pv-proto-vxlan);
+  --color-pv-ipv6: var(--pv-proto-ipv6);
+  --color-pv-srh: var(--pv-proto-srh);
 
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);

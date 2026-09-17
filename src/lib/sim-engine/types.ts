@@ -152,7 +152,7 @@ export interface PacketLayer {
 
 export interface PacketVisual {
   id: string;
-  protocol: "ARP" | "ETHERNET" | "IP" | "TCP" | "HTTPS" | "OSPF" | "BGP" | "MPLS" | "VXLAN";
+  protocol: "ARP" | "ETHERNET" | "IP" | "IPV6" | "TCP" | "HTTPS" | "OSPF" | "BGP" | "MPLS" | "VXLAN";
   from: string;
   to: string;
   summary: string;
