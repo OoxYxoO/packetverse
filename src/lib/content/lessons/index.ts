@@ -273,6 +273,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "srv6-l3vpn",
+    title: "SRv6 L3VPN",
+    tagline: "RFC 9252 BGP Overlay Services — the same VRF/RD/RT/MP-BGP control plane, now advertising a real SRv6 Service SID instead of an MPLS VPN label.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["srv6-policy"],
+    estimatedMinutes: 70,
+    simulationPath: "/demo/srv6-l3vpn",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "MPLS L3VPN builds private Layer-3 connectivity with a VRF, an RD, a Route Target policy, MP-BGP, and a two-label MPLS stack. What happens to that whole model when the provider core stops running MPLS and forwards on plain IPv6/SRv6 instead?" },
+      { id: "solution", heading: "How SRv6 L3VPN solves it", body: "VRF, RD, RT, and MP-BGP VPN routes all survive completely unchanged (RFC 4364). What changes is the egress service instruction: the BGP Prefix-SID Attribute's SRv6 L3 Service TLV (RFC 9252) carries a real SRv6 Service SID bound to a per-VRF End.DT4/End.DT6 behavior, resolved through that PE's own SRv6 locator — a dependency genuinely separate from ordinary BGP next-hop reachability." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",

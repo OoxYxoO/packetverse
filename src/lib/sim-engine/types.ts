@@ -113,7 +113,16 @@ export type PVEventType =
   | "ROUTED_VXLAN_ENCAPSULATED"
   | "ROUTED_VXLAN_DECAPSULATED"
   | "EGRESS_IRB_COMPLETED"
-  | "L3VNI_MAPPING_MISMATCH";
+  | "L3VNI_MAPPING_MISMATCH"
+  // SRv6 L3VPN (RFC 9252 — Service SID reachability is a genuinely new
+  // kind of state: distinct from BGP next-hop reachability and from
+  // MPLS VPN-label lookup, so it gets its own event vocabulary)
+  | "SRV6_SERVICE_SID_ATTACHED"
+  | "SRV6_VPN_PACKET_ENCAPSULATED"
+  | "SRV6_LOCATOR_WITHDRAWN"
+  | "SRV6_LOCATOR_RESTORED"
+  | "SRV6_SERVICE_SID_RESOLVED"
+  | "SRV6_SERVICE_SID_UNRESOLVABLE";
 
 export interface PVEvent<TPayload = Record<string, unknown>> {
   type: PVEventType;
