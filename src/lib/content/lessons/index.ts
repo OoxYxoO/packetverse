@@ -422,6 +422,21 @@ export const lessons: Lesson[] = [
       { id: "solution", heading: "How BGP-signaled VPLS solves it", body: "RFC 4761 replaces targeted LDP with MP-BGP: each PE advertises an RD, a Route Target, a VE ID, and a label block (VE Block Offset + Size + Label Base) over a Route Reflector. A Route Target match auto-discovers membership; the actual per-pair label is derived from the label block and the sender's own VE ID, never read off the advertisement directly. Crucially, BGP never carries a customer MAC address — remote MAC learning stays exactly what it always was in classic VPLS: data-plane source-MAC learning, flooding, and split horizon." },
     ],
   },
+  {
+    id: "h-vpls",
+    title: "Hierarchical VPLS",
+    tagline: "MTU-s access bridges, spoke pseudowires, and a smaller PE-rs core mesh — RFC 4762's answer to a flat VPLS mesh that can't scale to dozens of access sites.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["mpls-vpls"],
+    estimatedMinutes: 55,
+    simulationPath: "/demo/h-vpls",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "A flat VPLS mesh costs n(n-1)/2 pseudowires. If dozens or hundreds of access sites need the same service, must every one of them become another full-mesh core PE, paying that same quadratic cost as the mesh grows?" },
+      { id: "solution", heading: "How H-VPLS solves it", body: "RFC 4762 splits the service into two tiers. Access-tier MTU-s bridges reach the service through exactly one spoke pseudowire to a PE-rs hub; only the PE-rs tier maintains a (much smaller) core full mesh. The split-horizon rule generalizes accordingly: a spoke PW behaves like an access-side bridging port — AC, spoke, and mesh may all freely forward to one another — and only mesh-to-mesh relay stays forbidden, the one loop-prevention rule carried over unchanged from flat VPLS." },
+    ],
+  },
 ];
 
 export const getLessonById = (id: string) => lessons.find((l) => l.id === id);

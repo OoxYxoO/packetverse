@@ -3,11 +3,14 @@ import { Badge } from "@/components/ui/Badge";
 
 export interface EthernetFdbRow {
   mac: string;
-  portKind: "AC" | "PW";
+  /** "SPOKE_PW"/"MESH_PW" added for H-VPLS's hierarchical port roles — every existing caller only ever passes "AC"/"PW" and renders identically. */
+  portKind: "AC" | "PW" | "SPOKE_PW" | "MESH_PW";
   portPeer: string;
   age?: number;
   justChanged?: boolean;
 }
+
+const PORT_KIND_TONE: Record<EthernetFdbRow["portKind"], "cyan" | "violet" | "warning"> = { AC: "cyan", PW: "violet", SPOKE_PW: "warning", MESH_PW: "violet" };
 
 /**
  * Generic Ethernet MAC/FDB table viewer — plain rows in, plain table
@@ -37,7 +40,7 @@ export function EthernetFdbViewer({ title, rows }: { title: string; rows: Ethern
               <tr key={r.mac} className={`border-t border-pv-border ${r.justChanged ? "bg-pv-cyan-soft/10" : ""}`}>
                 <td className="py-1.5">{r.mac}</td>
                 <td className="py-1.5">
-                  <Badge tone={r.portKind === "AC" ? "cyan" : "violet"}>
+                  <Badge tone={PORT_KIND_TONE[r.portKind]}>
                     {r.portKind}: {r.portPeer}
                   </Badge>
                 </td>

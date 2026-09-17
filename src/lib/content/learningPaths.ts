@@ -53,6 +53,7 @@ export const learningPaths: LearningPath[] = [
       { id: "l2vpn", label: "L2VPN", lessonId: "mpls-l2vpn-vpws", status: "available" },
       { id: "vpls", label: "VPLS", lessonId: "mpls-vpls", status: "available" },
       { id: "bgp-vpls", label: "BGP-VPLS", lessonId: "bgp-vpls", status: "available" },
+      { id: "h-vpls", label: "H-VPLS", lessonId: "h-vpls", status: "available" },
       { id: "evpn", label: "EVPN", lessonId: "evpn-vxlan-foundations", status: "available" },
       { id: "sr", label: "Segment Routing", lessonId: "sr-mpls-foundations", status: "available" },
       { id: "sr-policy", label: "SR Policy", lessonId: "sr-policy", status: "available" },

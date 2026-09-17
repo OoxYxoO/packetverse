@@ -225,12 +225,30 @@ export function pwUpBetween(pwLinks: PwLinkState[], a: RouterId, b: RouterId): b
 // bridge-facing ports — never described as ordinary physical Ethernet
 // ports (brief §7).
 // ---------------------------------------------------------------------------
-export type FdbPort = { kind: "AC"; peer: RouterId } | { kind: "PW"; peer: RouterId };
-export function portsEqual(a: FdbPort, b: FdbPort): boolean {
+// FdbPort and everything derived from it (FdbEntry/Fdb/DestinationLookup +
+// the learn/lookup/age functions below) are generic over the port-KIND
+// union, defaulting to "AC" | "PW" so every existing call site (this file,
+// bgpVpls.ts, both pages) keeps its exact prior concrete type with zero
+// changes. `peer` itself is typed as plain `string` (RouterId already IS a
+// string union, and every existing use of `.peer` is display/equality only
+// — never a Record<RouterId, _> index) rather than a second generic
+// parameter: a second inferred type parameter here actively breaks
+// existing call sites' inference (a port literal's `peer` value would get
+// inferred/widened per call, fragmenting Fdb<K, P> across differently
+// inferred P's for the same PE's table) — `string` avoids that entirely
+// while still being wide enough for H-VPLS's own device-id union (hVpls.ts),
+// which mplsVpls.ts's own RouterId type has never heard of (no MTU-s nodes).
+// This is what lets H-VPLS reuse the identical MAC learning/lookup/aging
+// algorithms over its own three-role port union ("AC" | "SPOKE_PW" |
+// "MESH_PW") instead of re-deriving them — only the mesh-only split-horizon
+// RULE differs there (see applySplitHorizon's own doc comment), never the
+// learning/lookup mechanics themselves.
+export type FdbPort<K extends string = "AC" | "PW"> = { kind: K; peer: string };
+export function portsEqual<K extends string>(a: FdbPort<K>, b: FdbPort<K>): boolean {
   return a.kind === b.kind && a.peer === b.peer;
 }
-export function portLabel(port: FdbPort): string {
-  return port.kind === "AC" ? `AC: ${port.peer}` : `PW: ${port.peer}`;
+export function portLabel<K extends string>(port: FdbPort<K>): string {
+  return `${port.kind}: ${port.peer}`;
 }
 export function bridgePortsFor(self: RouterId, ac: AttachmentCircuit | undefined, pwLinks: PwLinkState[]): FdbPort[] {
   const ports: FdbPort[] = [];
@@ -246,16 +264,16 @@ export function bridgePortsFor(self: RouterId, ac: AttachmentCircuit | undefined
 // like EVPN's sequence-numbered route-based mobility (evpnMacMobility.ts)
 // — this is plain "newest observed source wins" relearning.
 // ---------------------------------------------------------------------------
-export interface FdbEntry {
+export interface FdbEntry<K extends string = "AC" | "PW"> {
   mac: string;
-  port: FdbPort;
+  port: FdbPort<K>;
   age: number;
 }
-export type Fdb = FdbEntry[];
+export type Fdb<K extends string = "AC" | "PW"> = FdbEntry<K>[];
 export type LearnChange = "NEW" | "REFRESH" | "MOVE";
 
 /** Handles first learn, refresh (same port seen again), and move (a different port now sources this MAC) — the single entry point every ingress path uses. */
-export function learnSourceMac(fdb: Fdb, mac: string, port: FdbPort): { fdb: Fdb; change: LearnChange; previousPort?: FdbPort } {
+export function learnSourceMac<K extends string = "AC" | "PW">(fdb: Fdb<K>, mac: string, port: FdbPort<K>): { fdb: Fdb<K>; change: LearnChange; previousPort?: FdbPort<K> } {
   const existing = fdb.find((e) => e.mac === mac);
   if (!existing) {
     return { fdb: [...fdb, { mac, port, age: 0 }], change: "NEW" };
@@ -266,12 +284,12 @@ export function learnSourceMac(fdb: Fdb, mac: string, port: FdbPort): { fdb: Fdb
   return { fdb: fdb.map((e) => (e.mac === mac ? { ...e, port, age: 0 } : e)), change: "MOVE", previousPort: existing.port };
 }
 /** Thin semantic wrapper over learnSourceMac for the explicit "a host moved sites" teaching moment (brief §38-39) — same mechanism, named separately so the lesson can call out exactly when a MOVE happens. */
-export function moveMacEntry(fdb: Fdb, mac: string, newPort: FdbPort): { fdb: Fdb; previousPort?: FdbPort } {
+export function moveMacEntry<K extends string = "AC" | "PW">(fdb: Fdb<K>, mac: string, newPort: FdbPort<K>): { fdb: Fdb<K>; previousPort?: FdbPort<K> } {
   const result = learnSourceMac(fdb, mac, newPort);
   return { fdb: result.fdb, previousPort: result.previousPort };
 }
 /** Simulates a full age-out in one step (brief §37's controlled lab) — the entry is removed entirely, returning that destination to unknown. */
-export function ageMacEntry(fdb: Fdb, mac: string): Fdb {
+export function ageMacEntry<K extends string = "AC" | "PW">(fdb: Fdb<K>, mac: string): Fdb<K> {
   return fdb.filter((e) => e.mac !== mac);
 }
 
@@ -282,13 +300,13 @@ export function classifyDestinationMac(mac: string): MacClass {
   if (!Number.isNaN(firstOctet) && (firstOctet & 1) === 1) return "MULTICAST";
   return "UNICAST";
 }
-export type DestinationLookup =
-  | { kind: "LOCAL_UNICAST"; port: FdbPort }
-  | { kind: "REMOTE_UNICAST"; port: FdbPort }
+export type DestinationLookup<K extends string = "AC" | "PW"> =
+  | { kind: "LOCAL_UNICAST"; port: FdbPort<K> }
+  | { kind: "REMOTE_UNICAST"; port: FdbPort<K> }
   | { kind: "UNKNOWN_UNICAST" }
   | { kind: "BROADCAST" }
   | { kind: "MULTICAST" };
-export function lookupDestinationMac(fdb: Fdb, mac: string): DestinationLookup {
+export function lookupDestinationMac<K extends string = "AC" | "PW">(fdb: Fdb<K>, mac: string): DestinationLookup<K> {
   const cls = classifyDestinationMac(mac);
   if (cls === "BROADCAST") return { kind: "BROADCAST" };
   if (cls === "MULTICAST") return { kind: "MULTICAST" };
@@ -299,15 +317,26 @@ export function lookupDestinationMac(fdb: Fdb, mac: string): DestinationLookup {
 
 export type ForwardingDecision = "LOCAL_UNICAST" | "REMOTE_UNICAST" | "UNKNOWN_UNICAST" | "BROADCAST" | "MULTICAST" | "SPLIT_HORIZON_BLOCKED";
 
-/** Raw eligible egress ports before split horizon — known unicast goes to exactly one port (never the ingress port); BUM goes to every port except ingress. */
-export function computeVplsEgressSet(allPorts: FdbPort[], ingressPort: FdbPort | undefined, lookup: DestinationLookup): FdbPort[] {
+/** Raw eligible egress ports before split horizon — known unicast goes to exactly one port (never the ingress port); BUM goes to every port except ingress. Generic over the port-kind union (see FdbPort above) — reused as-is by H-VPLS, since which ports are ELIGIBLE before any loop-prevention policy is applied has nothing to do with how many port kinds exist. */
+export function computeVplsEgressSet<K extends string = "AC" | "PW">(allPorts: FdbPort<K>[], ingressPort: FdbPort<K> | undefined, lookup: DestinationLookup<K>): FdbPort<K>[] {
   if (lookup.kind === "LOCAL_UNICAST" || lookup.kind === "REMOTE_UNICAST") {
     if (ingressPort && portsEqual(lookup.port, ingressPort)) return [];
     return [lookup.port];
   }
   return allPorts.filter((p) => !ingressPort || !portsEqual(p, ingressPort));
 }
-/** The signature VPLS loop-prevention rule (brief §25): a frame that ingressed on a mesh PW must never egress on another mesh PW. AC ingress carries no such restriction. */
+/**
+ * The signature FLAT-VPLS loop-prevention rule (brief §25): a frame that
+ * ingressed on a mesh PW must never egress on another mesh PW. AC ingress
+ * carries no such restriction. Deliberately NOT genericized/reused by
+ * H-VPLS's hierarchical model (hVpls.ts's own applyHierarchicalSplitHorizon)
+ * — flat VPLS has only ever seen ONE non-AC port kind ("PW"), so "ingress
+ * was a PW → block every PW egress" is the correct, complete rule here.
+ * H-VPLS introduces a SECOND non-AC port kind (a spoke PW behaves like an
+ * access-side port for bridging purposes) where that same blanket rule
+ * would be wrong — see hVpls.ts for the corrected, role-aware version.
+ * This function's own behavior is untouched by any of that.
+ */
 export function applySplitHorizon(egress: FdbPort[], ingressPort: FdbPort | undefined): FdbPort[] {
   if (!ingressPort || ingressPort.kind !== "PW") return egress;
   return egress.filter((p) => p.kind !== "PW");
