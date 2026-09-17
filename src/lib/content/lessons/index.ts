@@ -437,6 +437,21 @@ export const lessons: Lesson[] = [
       { id: "solution", heading: "How H-VPLS solves it", body: "RFC 4762 splits the service into two tiers. Access-tier MTU-s bridges reach the service through exactly one spoke pseudowire to a PE-rs hub; only the PE-rs tier maintains a (much smaller) core full mesh. The split-horizon rule generalizes accordingly: a spoke PW behaves like an access-side bridging port — AC, spoke, and mesh may all freely forward to one another — and only mesh-to-mesh relay stays forbidden, the one loop-prevention rule carried over unchanged from flat VPLS." },
     ],
   },
+  {
+    id: "l2vpn-evolution",
+    title: "L2VPN Evolution Capstone",
+    tagline: "VPWS → LDP-VPLS → BGP-VPLS → H-VPLS → EVPN — one customer, five architectures, compared on discovery, MAC reachability, BUM, split horizon, and multihoming.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["mpls-l2vpn-vpws", "mpls-vpls", "bgp-vpls", "h-vpls", "evpn-vxlan-foundations", "evpn-multihoming-foundations", "evpn-mac-mobility"],
+    estimatedMinutes: 60,
+    simulationPath: "/demo/l2vpn-evolution",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "VPWS, VPLS, BGP-VPLS, H-VPLS, and EVPN can all provide some form of Layer-2 service. If one architecture can already do it, why do all five exist — and which one should an engineer actually reach for?" },
+      { id: "solution", heading: "How this capstone answers it", body: "The same customer, CUST-A, is carried across all five architectures. Each one changes exactly one axis: VPWS solves point-to-point transport; VPLS makes it multipoint; BGP-VPLS changes discovery/signaling without touching MAC learning; H-VPLS changes topology/hierarchy without touching MAC learning; EVPN is the one that changes the Ethernet control-plane model itself, distributing MAC/IP reachability through BGP." },
+    ],
+  },
 ];
 
 export const getLessonById = (id: string) => lessons.find((l) => l.id === id);

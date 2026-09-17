@@ -39,6 +39,7 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: "h-vpls-architect", title: "H-VPLS Architect", description: "Built a hierarchical VPLS service — a PE-rs core full mesh plus one spoke pseudowire per access MTU-s — proved local switching stays local, traced a frame end to end through spoke → mesh → spoke, and diagnosed a misclassified spoke pseudowire without ever disabling split horizon globally." },
   { id: "fabric-detective", title: "Fabric Detective", description: "Solved a Professional-difficulty incident in the EVPN Troubleshooting Arena — investigate, hypothesize, repair, and verify without being told the fault." },
   { id: "evpn-troubleshooter", title: "EVPN Troubleshooter", description: "Solved Arena incidents spanning a broad range of EVPN fault families — underlay, control-plane, service, and forwarding alike." },
+  { id: "l2vpn-architect", title: "L2VPN Architect", description: "Traced one customer through VPWS, LDP-VPLS, BGP-VPLS, H-VPLS, and EVPN, diagnosed a BGP-VPLS mental-model incident without breaking anything that wasn't broken, and matched a mixed 8-site requirement to the right architecture on its technical merits." },
 ];
 
 export interface ArenaResult {
