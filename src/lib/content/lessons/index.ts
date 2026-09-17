@@ -392,6 +392,21 @@ export const lessons: Lesson[] = [
       { id: "solution", heading: "How traditional LDP-signaled VPWS solves it", body: "A targeted LDP session between the two PE loopbacks signals a pseudowire FEC — PW type and PW ID — that both PEs must agree on. Each PE independently allocates and advertises its own directional receive label, so the outer transport label gets a frame to the far PE while the inner pseudowire label tells that PE which virtual wire it belongs to. P routers only ever touch the outer label, never the pseudowire state — the same signaling model EVPN-VPWS replaces with BGP." },
     ],
   },
+  {
+    id: "mpls-vpls",
+    title: "Traditional MPLS VPLS",
+    tagline: "Full-mesh pseudowires, data-plane MAC learning, BUM flooding, and pseudowire split horizon — turning point-to-point wires into one virtual LAN.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["mpls-l2vpn-vpws"],
+    estimatedMinutes: 50,
+    simulationPath: "/demo/mpls-vpls",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "A VPWS pseudowire connects exactly two sites. How does a provider connect three or more customer sites into what looks, to the customer, like one shared Ethernet LAN — without any single pseudowire being multipoint?" },
+      { id: "solution", heading: "How traditional VPLS solves it", body: "Every PE runs a per-service virtual Ethernet bridge, full-meshed with a direct pseudowire to every other PE. Each PE learns MAC addresses purely from the data plane — on its local attachment circuit and on every pseudowire alike — floods unknown/broadcast/multicast traffic, and forwards known unicast to a single port. One rule keeps the mesh loop-free: a frame received from one mesh pseudowire is never relayed out another mesh pseudowire (split horizon), which is exactly why the mesh must be full in the first place." },
+    ],
+  },
 ];
 
 export const getLessonById = (id: string) => lessons.find((l) => l.id === id);
