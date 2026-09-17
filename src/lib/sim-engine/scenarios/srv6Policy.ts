@@ -278,6 +278,20 @@ export interface CandidatePathDef {
   preference: number;
   explicitSpecs?: ExplicitSegmentSpec[];
   objective?: "MIN_DELAY";
+  weight?: number;
+}
+
+/** Weight assumed for an explicit segment list that never declared one (e.g. EXPLICIT_CANDIDATE's single implicit list) — any positive value works since a lone list is never divided against another. */
+export const DEFAULT_EXPLICIT_SEGMENT_LIST_WEIGHT = 1;
+
+export interface SegmentListValidity {
+  valid: boolean;
+  reason: string;
+}
+/** RFC 9256 §5.1: a candidate-path segment list with weight 0 is invalid — checked generically for any weight value, never special-cased to particular lab numbers. */
+export function validateSegmentListWeight(weight: number): SegmentListValidity {
+  if (weight === 0) return { valid: false, reason: "ZERO_WEIGHT: a segment list with weight 0 is invalid (RFC 9256 §5.1)." };
+  return { valid: true, reason: "Weight is non-zero." };
 }
 
 export const EXPLICIT_CANDIDATE: CandidatePathDef = {
@@ -329,6 +343,8 @@ function toResolvedSegment(e: EndpointLocalSidEntry): ResolvedSegment {
 export function validateExplicitCandidate(def: CandidatePathDef, table: LocalSidTable, srDb: SrDatabaseEntry[], upLinks: LinkDef[], headend: RouterId, destination: RouterId): CandidateEvaluation {
   const specs = def.explicitSpecs ?? [];
   if (specs.length === 0) return { def, valid: false, reason: "Segment list is empty.", segments: [] };
+  const weightCheck = validateSegmentListWeight(def.weight ?? DEFAULT_EXPLICIT_SEGMENT_LIST_WEIGHT);
+  if (!weightCheck.valid) return { def, valid: false, reason: weightCheck.reason, segments: [] };
 
   const segments: ResolvedSegment[] = [];
   for (const spec of specs) {
@@ -459,16 +475,18 @@ function deterministicHash(text: string): number {
   for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
   return h;
 }
-/** Deterministic FLOW-based selection (never packet-by-packet round robin): the same flow id always maps to the same list. */
+/** Deterministic FLOW-based selection (never packet-by-packet round robin): the same flow id always maps to the same list. A zero-weight list (RFC 9256 §5.1: invalid) is excluded from the candidate set before bucketing, exactly like an invalid explicit candidate is excluded from selection. */
 export function selectSegmentListForFlow(flowId: string, lists: WeightedSegmentListEntry[]): WeightedSegmentListEntry {
-  const total = lists.reduce((sum, l) => sum + l.weight, 0);
+  const usable = lists.filter((l) => validateSegmentListWeight(l.weight).valid);
+  const pool = usable.length > 0 ? usable : lists;
+  const total = pool.reduce((sum, l) => sum + l.weight, 0);
   const bucket = deterministicHash(flowId) % total;
   let acc = 0;
-  for (const l of lists) {
+  for (const l of pool) {
     acc += l.weight;
     if (bucket < acc) return l;
   }
-  return lists[lists.length - 1];
+  return pool[pool.length - 1];
 }
 
 // ---------------------------------------------------------------------------
