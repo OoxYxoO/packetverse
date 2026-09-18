@@ -22,6 +22,7 @@ export function RepairSpaceViewer({
   title = "P-Space / Q-Space",
   nodes,
   pSpace,
+  extendedPSpace,
   qSpace,
   pqCandidates,
   selectedRepairNode,
@@ -32,6 +33,8 @@ export function RepairSpaceViewer({
   title?: string;
   nodes: RepairSpaceNode[];
   pSpace: string[];
+  /** Optional — nodes reachable only via each eligible PLR neighbor's own SPT (RFC 9855 §6.2). Omit entirely for callers (e.g. /demo/sr-ti-lfa) that don't compute it; existing behavior is unchanged when omitted. */
+  extendedPSpace?: string[];
   qSpace: string[];
   pqCandidates: string[];
   selectedRepairNode?: string;
@@ -53,6 +56,7 @@ export function RepairSpaceViewer({
           .filter((n) => n.id !== plr && n.id !== destination)
           .map((n) => {
             const inP = pSpace.includes(n.id);
+            const inExtP = !!extendedPSpace?.includes(n.id) && !inP;
             const inQ = qSpace.includes(n.id);
             const isPq = pqCandidates.includes(n.id);
             const isSelected = selectedRepairNode === n.id;
@@ -67,18 +71,20 @@ export function RepairSpaceViewer({
                 <span className="font-semibold text-pv-text">{n.label}</span>
                 <span className="flex gap-1">
                   {inP && <Badge tone="cyan">P</Badge>}
+                  {inExtP && <Badge tone="cyan">EXT-P</Badge>}
                   {inQ && <Badge tone="violet">Q</Badge>}
                   {isPq && <Badge tone="success">PQ</Badge>}
                   {isSelected && <Badge tone="warning">SELECTED</Badge>}
-                  {!inP && !inQ && <span className="text-pv-text-faint">unsafe</span>}
+                  {!inP && !inExtP && !inQ && <span className="text-pv-text-faint">unsafe</span>}
                 </span>
               </div>
             );
           })}
       </div>
 
-      <div className="grid grid-cols-3 gap-2 border-t border-pv-border pt-2.5 pv-mono text-[10px] text-pv-text-faint">
+      <div className={clsx("grid gap-2 border-t border-pv-border pt-2.5 pv-mono text-[10px] text-pv-text-faint", extendedPSpace ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3")}>
         <span>P-Space: {pSpace.join(", ") || "(empty)"}</span>
+        {extendedPSpace && <span>Extended P-Space: {extendedPSpace.join(", ") || "(empty)"}</span>}
         <span>Q-Space: {qSpace.join(", ") || "(empty)"}</span>
         <span>PQ: {pqCandidates.join(", ") || "(none)"}</span>
       </div>

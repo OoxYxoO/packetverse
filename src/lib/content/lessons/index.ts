@@ -288,6 +288,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "srv6-ti-lfa",
+    title: "SRv6 Protection / TI-LFA",
+    tagline: "RFC 9855 Topology Independent Fast Reroute — a precomputed outgoing interface plus a globally-routed End.X+USD repair SID, activated locally the instant a failure is detected.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["srv6-l3vpn"],
+    estimatedMinutes: 75,
+    simulationPath: "/demo/srv6-ti-lfa",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "IGP convergence eventually repairs a failed link or node, but it isn't instantaneous — and while it's still in progress, a router that simply redirects traffic toward its own new best next hop can hand it to a neighbor whose FIB hasn't converged yet, creating a genuine transient forwarding loop." },
+      { id: "solution", heading: "How TI-LFA solves it", body: "RFC 9855's TI-LFA precomputes, before any failure, a repair path — an outgoing interface plus a short SRv6 repair list — from real P-Space/extended P-Space/Q-Space analysis of the current topology. On local failure detection, the Point of Local Repair activates that precomputed repair immediately: a globally-routed End.X SID with the USD flavor forces traffic through a genuinely safe node, bypassing any neighbor's stale forwarding entirely, until IGP convergence catches up and the temporary repair is released." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",

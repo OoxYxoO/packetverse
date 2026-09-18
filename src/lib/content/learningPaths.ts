@@ -64,6 +64,7 @@ export const learningPaths: LearningPath[] = [
       { id: "srv6-endpoint-behaviors", label: "SRv6 Endpoint Behaviors", lessonId: "srv6-endpoint-behaviors", status: "available" },
       { id: "srv6-policy", label: "SRv6 Traffic Engineering", lessonId: "srv6-policy", status: "available" },
       { id: "srv6-l3vpn", label: "SRv6 L3VPN", lessonId: "srv6-l3vpn", status: "available" },
+      { id: "srv6-ti-lfa", label: "SRv6 Protection / TI-LFA", lessonId: "srv6-ti-lfa", status: "available" },
     ],
   },
   {
