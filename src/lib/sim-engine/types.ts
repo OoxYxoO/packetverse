@@ -122,7 +122,16 @@ export type PVEventType =
   | "SRV6_LOCATOR_WITHDRAWN"
   | "SRV6_LOCATOR_RESTORED"
   | "SRV6_SERVICE_SID_RESOLVED"
-  | "SRV6_SERVICE_SID_UNRESOLVABLE";
+  | "SRV6_SERVICE_SID_UNRESOLVABLE"
+  // SRv6 Compressed SID / CSID (RFC 9800 — compression changes how the
+  // next SID is determined, a genuinely new kind of processing distinct
+  // from ordinary RFC 8754 SRH advancement)
+  | "SRV6_CSID_COMPRESSED"
+  | "SRV6_CSID_CONTAINER_ADVANCED"
+  | "SRV6_CSID_CONTAINER_CROSSED"
+  | "SRV6_CSID_STRUCTURE_INVALID"
+  | "SRV6_CSID_STRUCTURE_REPAIRED"
+  | "SRV6_CSID_REPLACE_ADVANCED";
 
 export interface PVEvent<TPayload = Record<string, unknown>> {
   type: PVEventType;

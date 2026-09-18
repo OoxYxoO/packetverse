@@ -303,6 +303,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "srv6-csid",
+    title: "SRv6 Compressed SID (CSID / uSID)",
+    tagline: "RFC 9800 NEXT-CSID and REPLACE-CSID — folding a long SRv6 segment list into one or two 128-bit containers without changing the program's meaning.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["srv6-ti-lfa"],
+    estimatedMinutes: 75,
+    simulationPath: "/demo/srv6-csid",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "A real SRv6 program can need many segments, and each one is a full 128-bit SID — even though most of every SID repeats the same Locator-Block and carries unused padding. Carrying that weight once per segment doesn't scale to long programs." },
+      { id: "solution", heading: "How compressed SRv6 solves it", body: "RFC 9800 defines NEXT-CSID and REPLACE-CSID: a shared Locator-Block is encoded once per container instead of once per segment, with multiple compressed CSIDs (Locator-Node + Function) packed into the remaining bits. Compression only changes how the next SID is determined — Segments Left, forwarding intent, and the underlying End/End.X/End.DT4 semantics never change, and a SID with an invalid or unknown structure simply travels uncompressed alongside the rest." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",
