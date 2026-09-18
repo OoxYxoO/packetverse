@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useProgressStore } from "@/lib/state/useProgressStore";
 import { NetworkScene3D } from "@/components/network3d/NetworkScene3D";
+import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { NodeInspectorPanel } from "@/components/network3d/NodeInspectorPanel";
 import { PacketFocusPanel } from "@/components/network3d/PacketFocusPanel";
 import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
@@ -259,6 +260,7 @@ export default function OspfArea0Demo() {
   }));
 
   const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
   // Which router (if any) is actively processing the current packet right now — drives auto-enter in Packet Follow mode.
@@ -549,6 +551,7 @@ export default function OspfArea0Demo() {
         <div className="space-y-6">
           {viewMode === "3d" ? (
             <>
+              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={dataPacket3D ? (showDataPlane ? dataPacket3D : undefined) : showControlPlane ? activePacket3D : undefined}>
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
@@ -598,6 +601,7 @@ export default function OspfArea0Demo() {
                     : undefined
                 }
               />
+              </TopologyQuickExpand>
 
               {cameraMode === "spf" && (
                 <GlassPanel strong className="p-5">

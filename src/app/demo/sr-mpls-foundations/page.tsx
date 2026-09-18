@@ -99,7 +99,6 @@ export default function SrMplsFoundationsDemo() {
   const [xrayMode, setXrayMode] = useState(true);
   const [labSegments, setLabSegments] = useState<SegmentSpec[]>([{ type: "NODE", target: "R6" }]);
   const [focusMode, setFocusMode] = useState(false);
-  const [followPacketFocus, setFollowPacketFocus] = useState(true);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -227,6 +226,34 @@ export default function SrMplsFoundationsDemo() {
   const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state) : undefined;
   const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state) : undefined;
   const journeyHopEntries = state.journey.map((h, i) => ({ id: `${h.router}-${i}`, label: h.router }));
+
+  // --- Shared camera-mode transition (brief §12) — used by BOTH the normal
+  // toolbar's switcher and Focus Mode's, and by "Follow Packet" (which is
+  // now just this same switch to/from "packetFollow", not a separate
+  // boolean) — one place owns the enter/exit side-effects.
+  function handleCameraModeChange(v: CameraMode) {
+    setCameraMode(v);
+    if (v === "device" && !enteredDeviceId) setEnteredDeviceId(selectedNodeId ?? activeDeviceId ?? "R1");
+    if (v === "overview") {
+      setEnteredDeviceId(undefined);
+      setSelectedNodeId(undefined);
+    }
+    if (v === "freeOrbit") setEnteredDeviceId(undefined);
+  }
+
+  // --- In-scene "current device" callout (brief §14) — reuses the exact
+  // same `traceFor()` data the Hop Inspector already renders, so it can
+  // never show anything not already safely revealed by real journey data
+  // (no separate/duplicate computation, no way to leak a future hop).
+  const calloutTrace = activeDeviceId ? traceFor(activeDeviceId, state) : undefined;
+  const calloutNode3D = activeDeviceId ? nodes3D.find((n) => n.id === activeDeviceId) : undefined;
+  const calloutLines = calloutTrace
+    ? ([calloutTrace.lookupType, calloutTrace.lookupResult ?? calloutTrace.forwardingAction, calloutTrace.nextHopLabel ? `out → ${calloutTrace.nextHopLabel}` : undefined].filter(Boolean) as string[])
+    : [];
+  const sceneCallout =
+    !inDeviceMode && calloutNode3D && calloutLines.length > 0
+      ? { position: [calloutNode3D.position[0], calloutNode3D.position[1] + 0.95, calloutNode3D.position[2]] as [number, number, number], title: activeDeviceId as string, lines: calloutLines }
+      : undefined;
 
   function explorerTabsFor(router: RouterId): DeviceExplorerTab[] {
     if (!nodeExplanation) return [];
@@ -356,7 +383,6 @@ export default function SrMplsFoundationsDemo() {
     setTopoView("physical");
     setLabSegments([{ type: "NODE", target: "R6" }]);
     setFocusMode(false);
-    setFollowPacketFocus(true);
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Apply the correct fix to continue" : "Next Step →";
@@ -428,15 +454,7 @@ export default function SrMplsFoundationsDemo() {
                 { value: "freeOrbit", label: "Free Orbit" },
               ]}
               value={cameraMode}
-              onChange={(v) => {
-                setCameraMode(v);
-                if (v === "device" && !enteredDeviceId) setEnteredDeviceId(selectedNodeId ?? activeDeviceId ?? "R1");
-                if (v === "overview") {
-                  setEnteredDeviceId(undefined);
-                  setSelectedNodeId(undefined);
-                }
-                if (v === "freeOrbit") setEnteredDeviceId(undefined);
-              }}
+              onChange={handleCameraModeChange}
             />
             {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
             {cameraMode === "packetFollow" && (
@@ -491,6 +509,7 @@ export default function SrMplsFoundationsDemo() {
                     focusPosition={focusPosition3D}
                     eyeOffset={eyeOffset3D}
                     mode={inDeviceMode ? "device" : "overview"}
+                    callout={sceneCallout}
                     deviceView={
                       inDeviceMode
                         ? {
@@ -757,19 +776,32 @@ export default function SrMplsFoundationsDemo() {
                     { value: "freeOrbit", label: "Free Orbit" },
                   ]}
                   value={cameraMode}
-                  onChange={(v) => {
-                    setCameraMode(v);
-                    if (v === "device" && !enteredDeviceId) setEnteredDeviceId(selectedNodeId ?? activeDeviceId ?? "R1");
-                    if (v === "overview") {
-                      setEnteredDeviceId(undefined);
-                      setSelectedNodeId(undefined);
-                    }
-                    if (v === "freeOrbit") setEnteredDeviceId(undefined);
-                  }}
+                  onChange={handleCameraModeChange}
                 />
               )}
               {viewMode3D && inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
             </>
+          }
+          header={
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <Badge tone="muted">
+                  Step {index + 1} / {totalSteps}
+                </Badge>
+                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label}</span>
+              </div>
+              {questionActive ? (
+                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
+                  Prediction pending — answer in the panel to continue
+                </span>
+              ) : (
+                currentStep?.narrative && (
+                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
+                    {currentStep.narrative}
+                  </p>
+                )
+              )}
+            </div>
           }
           canvas={
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
@@ -787,9 +819,10 @@ export default function SrMplsFoundationsDemo() {
                   selectedLinkId={selectedLinkId}
                   onSelectPacket={() => setPacketSelected(true)}
                   packetSelected={packetSelected}
-                  focusPosition={followPacketFocus ? focusPosition3D : undefined}
+                  focusPosition={focusPosition3D}
                   eyeOffset={eyeOffset3D}
                   mode={inDeviceMode ? "device" : "overview"}
+                  callout={sceneCallout}
                   deviceView={
                     inDeviceMode
                       ? {
@@ -815,7 +848,17 @@ export default function SrMplsFoundationsDemo() {
           }
           inspector={
             <div className="space-y-3">
-              {focusTrace ? (
+              {currentStep?.question ? (
+                // Self-contained Focus Mode (brief §1-3): the SAME <PredictionQuestion>
+                // + `handleAnswer` (→ engine.answer()) the normal lesson page uses —
+                // not a second quiz surface. Prioritized over the Hop Inspector while
+                // a question is the current step so OBSERVE→PREDICT→ANSWER→REVEAL
+                // never requires leaving Focus Mode.
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
+                  <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
+                </>
+              ) : focusTrace ? (
                 <>
                   <HopInspectorPanel
                     trace={focusTrace}
@@ -857,8 +900,8 @@ export default function SrMplsFoundationsDemo() {
                 canNextHop={canAdvance}
                 speed={speed as PlaySpeed}
                 onSpeedChange={setSpeed}
-                followPacket={followPacketFocus}
-                onToggleFollowPacket={() => setFollowPacketFocus((v) => !v)}
+                followPacket={cameraMode === "packetFollow"}
+                onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
                 view3D={viewMode3D}
                 onToggleView3D={() => setViewMode3D((v) => !v)}
               />

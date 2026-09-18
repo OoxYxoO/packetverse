@@ -37,6 +37,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useProgressStore } from "@/lib/state/useProgressStore";
 import { NetworkScene3D, type FloodCopy3D } from "@/components/network3d/NetworkScene3D";
+import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { NodeInspectorPanel } from "@/components/network3d/NodeInspectorPanel";
 import { PacketFocusPanel } from "@/components/network3d/PacketFocusPanel";
 import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
@@ -155,6 +156,7 @@ export default function EvpnVxlanDemo() {
     activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
   const floodCopies3D: FloodCopy3D[] | undefined = showFloodDemo ? [{ id: "flood-leaf1-leaf2", fromId: "LEAF1", toId: "LEAF2" }] : undefined;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
 
   const activeDeviceId = FABRIC_DEVICES.find((d) => traceFor(d as "LEAF1" | "SPINE1" | "LEAF2", state, currentStep?.id ?? "")?.activeStageId !== undefined);
   const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : cameraMode === "packetFollow" && autoEnterDevices ? activeDeviceId : undefined;
@@ -381,6 +383,7 @@ export default function EvpnVxlanDemo() {
         <div className="space-y-6">
           {viewMode === "3d" ? (
             <>
+              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D} regions={regions3D}>
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
@@ -436,6 +439,7 @@ export default function EvpnVxlanDemo() {
                     : undefined
                 }
               />
+              </TopologyQuickExpand>
 
               {cameraMode === "packetFollow" && (
                 <PacketFocusPanel

@@ -42,6 +42,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useProgressStore } from "@/lib/state/useProgressStore";
 import { NetworkScene3D, type FloodCopy3D } from "@/components/network3d/NetworkScene3D";
+import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { NodeInspectorPanel } from "@/components/network3d/NodeInspectorPanel";
 import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
 import { PlaneViewSwitcher } from "@/components/network3d/PlaneViewSwitcher";
@@ -125,6 +126,7 @@ export default function EvpnMultihomingDemo() {
     onPath: visitedDevices.has(e.a as EvpnMultihomingDeviceId) && visitedDevices.has(e.b as EvpnMultihomingDeviceId),
   }));
   const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   const floodCopies3D: FloodCopy3D[] | undefined =
     state.replicaStage === "leaf3-to-spine" ? [{ id: "rep-leaf1", fromId: "LEAF3", toId: "SPINE1" }, { id: "rep-leaf2", fromId: "LEAF3", toId: "SPINE1" }]
       : state.replicaStage === "spine-to-es-leafs" ? [{ id: "rep-leaf1", fromId: "SPINE1", toId: "LEAF1" }, { id: "rep-leaf2", fromId: "SPINE1", toId: "LEAF2" }].filter((r) => !(state.leaf1Failed && r.toId === "LEAF1"))
@@ -293,6 +295,7 @@ export default function EvpnMultihomingDemo() {
         <div className="space-y-6">
           {viewMode === "3d" ? (
             <>
+              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D} regions={regions3D}>
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
@@ -326,6 +329,7 @@ export default function EvpnMultihomingDemo() {
                     : undefined
                 }
               />
+              </TopologyQuickExpand>
 
               {packetSelected && activePacket && (
                 <PacketDetailPanel

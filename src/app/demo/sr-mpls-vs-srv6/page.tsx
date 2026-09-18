@@ -50,6 +50,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useProgressStore } from "@/lib/state/useProgressStore";
 import { NetworkScene3D } from "@/components/network3d/NetworkScene3D";
+import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
 import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@/components/network3d/DeviceExplorerPanel";
 import { layoutTo3D } from "@/components/network3d/layout";
@@ -122,6 +123,7 @@ export default function SrMplsVsSrv6Capstone() {
   });
   const links3D: Link3DData[] = GRAPH_EDGES.map((e) => ({ ...e, active: activePacket ? (e.a === activePacket.from && e.b === activePacket.to) || (e.b === activePacket.from && e.a === activePacket.to) : false }));
   const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
 
   // --- Derived per-phase data ---
   const teSegments = useMemo(() => buildMplsTeSegments(), []);
@@ -287,7 +289,9 @@ export default function SrMplsVsSrv6Capstone() {
             </GlassPanel>
           ) : (
             <GlassPanel className="relative aspect-[16/10] w-full overflow-hidden p-0">
-              <NetworkScene3D nodes={nodes3D} links={links3D} activePacket={activePacket3D} onSelectNode={(id) => setSelectedNodeId(id as RouterId)} onSelectLink={setSelectedLinkId} selectedLinkId={selectedLinkId} mode="overview" />
+              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D}>
+                <NetworkScene3D nodes={nodes3D} links={links3D} activePacket={activePacket3D} onSelectNode={(id) => setSelectedNodeId(id as RouterId)} onSelectLink={setSelectedLinkId} selectedLinkId={selectedLinkId} mode="overview" />
+              </TopologyQuickExpand>
             </GlassPanel>
           )}
 

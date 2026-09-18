@@ -43,6 +43,8 @@ import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@
 import { PacketDetailPanel } from "@/components/network3d/PacketDetailPanel";
 import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
 import { PlaneViewSwitcher, type PlaneView } from "@/components/network3d/PlaneViewSwitcher";
+import { TopologyFrame } from "@/components/network3d/TopologyFrame";
+import { TopologyFocusMode } from "@/components/network3d/TopologyFocusMode";
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, Link3DData, Node3DStatus } from "@/components/network3d/types";
 import {
@@ -113,6 +115,7 @@ export default function BgpEnterpriseDemo() {
   const [sendingUserPacket, setSendingUserPacket] = useState(false);
   const [userPacketHop, setUserPacketHop] = useState(0);
   const [sentPackets, setSentPackets] = useState<{ when: "before" | "after"; path: string[]; viaIsp?: string }[]>([]);
+  const [focusMode, setFocusMode] = useState(false);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -263,6 +266,21 @@ export default function BgpEnterpriseDemo() {
   const explainTargetId = effectiveDeviceId ?? selectedNodeId ?? followNode3D?.id;
   const nodeExplanation = explainTargetId && DEVICE_ROUTERS.includes(explainTargetId as RouterId) ? explainRouter(state, explainTargetId as RouterId, currentStep?.id ?? "", activePacket) : undefined;
   const xrayPacket = activePacket && (selectedNodeId === activePacket.from || selectedNodeId === activePacket.to) ? activePacket : undefined;
+  // Generic-Focus-Mode smoke test (brief §2/§20/§24) — same sticky/Expand
+  // treatment as SR-MPLS, reusing the existing snapshot fields. BGP
+  // Enterprise has no enriched per-hop trace, so Focus Mode here stays
+  // basic: large topology + device inspect, no Hop Inspector/timeline.
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
+
+  function handleCameraModeChange(v: CameraMode | "bestPath") {
+    setCameraMode(v);
+    if (v === "device" && !enteredDeviceId) setEnteredDeviceId((selectedNodeId && DEVICE_ROUTERS.includes(selectedNodeId as RouterId) ? (selectedNodeId as RouterId) : undefined) ?? activeDeviceId ?? "R1");
+    if (v === "overview") {
+      setEnteredDeviceId(undefined);
+      setSelectedNodeId(undefined);
+    }
+    if (v === "freeOrbit" || v === "bestPath") setEnteredDeviceId(undefined);
+  }
 
   const selectedLinkDetail = selectedLinkId ? linkDetailFor(selectedLinkId, state, activePacket) : undefined;
   const selectedRegionInfo = selectedRegionId ? regionInfoFor(selectedRegionId, state) : undefined;
@@ -517,15 +535,7 @@ export default function BgpEnterpriseDemo() {
                 { value: "freeOrbit", label: "Free Orbit" },
               ]}
               value={cameraMode}
-              onChange={(v) => {
-                setCameraMode(v);
-                if (v === "device" && !enteredDeviceId) setEnteredDeviceId((selectedNodeId && DEVICE_ROUTERS.includes(selectedNodeId as RouterId) ? (selectedNodeId as RouterId) : undefined) ?? activeDeviceId ?? "R1");
-                if (v === "overview") {
-                  setEnteredDeviceId(undefined);
-                  setSelectedNodeId(undefined);
-                }
-                if (v === "freeOrbit" || v === "bestPath") setEnteredDeviceId(undefined);
-              }}
+              onChange={handleCameraModeChange}
             />
             {inDeviceMode && (
               <TopologyModeSwitcher
@@ -572,6 +582,13 @@ export default function BgpEnterpriseDemo() {
         <div className="space-y-6">
           {viewMode === "3d" ? (
             <>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+              {focusMode ? (
+                // Focus Mode renders its own full-size <NetworkScene3D> below —
+                // avoid a second, fully hidden WebGL canvas running behind the
+                // modal (see sr-mpls-foundations for the same fix).
+                <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" />
+              ) : (
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
@@ -625,6 +642,8 @@ export default function BgpEnterpriseDemo() {
                     : undefined
                 }
               />
+              )}
+              </TopologyFrame>
 
               {cameraMode === "bestPath" && (
                 <GlassPanel strong className="space-y-4 p-5">
@@ -1046,6 +1065,117 @@ export default function BgpEnterpriseDemo() {
           <CLIOutputPanel commands={cliCommands} />
         </div>
       </div>
+
+      {focusMode && (
+        <TopologyFocusMode
+          onClose={() => setFocusMode(false)}
+          toolbar={
+            <>
+              <TopologyModeSwitcher
+                options={[
+                  { value: "overview", label: "Overview" },
+                  { value: "device", label: "Device" },
+                  { value: "packetFollow", label: "Packet Follow" },
+                  { value: "freeOrbit", label: "Free Orbit" },
+                ]}
+                value={cameraMode === "bestPath" ? "overview" : cameraMode}
+                onChange={handleCameraModeChange}
+              />
+              {inDeviceMode && (
+                <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "Control-Plane X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />
+              )}
+            </>
+          }
+          header={
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <Badge tone="muted">
+                  Step {index + 1} / {totalSteps}
+                </Badge>
+                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label}</span>
+              </div>
+              {questionActive ? (
+                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
+                  Prediction pending — answer on the lesson page to continue
+                </span>
+              ) : (
+                currentStep?.narrative && (
+                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
+                    {currentStep.narrative}
+                  </p>
+                )
+              )}
+            </div>
+          }
+          canvas={
+            <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
+              <NetworkScene3D
+                nodes={nodes3D}
+                links={links3D}
+                activePacket={inDeviceMode ? undefined : dataPacket3D ? (showDataPlane ? dataPacket3D : undefined) : showControlPlane ? activePacket3D : undefined}
+                regions={cameraMode === "overview" ? regions3D : []}
+                onSelectRegion={(id) => {
+                  setSelectedRegionId(id);
+                  setSelectedNodeId(undefined);
+                  setPacketSelected(false);
+                  setSelectedLinkId(undefined);
+                }}
+                selectedRegionId={selectedRegionId}
+                onSelectNode={(id) => {
+                  setSelectedNodeId(id);
+                  setSelectedRegionId(undefined);
+                  setPacketSelected(false);
+                  setSelectedLinkId(undefined);
+                }}
+                onSelectLink={(id) => setSelectedLinkId(id)}
+                selectedLinkId={selectedLinkId}
+                onSelectPacket={() => setPacketSelected(true)}
+                packetSelected={packetSelected}
+                focusPosition={focusPosition3D}
+                eyeOffset={eyeOffset3D}
+                mode={inDeviceMode ? "device" : "overview"}
+                deviceView={
+                  inDeviceMode
+                    ? {
+                        deviceLabel: effectiveDeviceId!,
+                        interfaces: deviceInterfaces,
+                        xray: deviceXray,
+                        trace: deviceTrace,
+                        packetFrames: devicePacketFrames,
+                        onSelectInterface: setSelectedInterfaceId,
+                        selectedInterfaceId,
+                        onSelectPacket: () => setPacketSelected(true),
+                        packetSelected,
+                        pipelineTitle: "Conceptual BGP Control-Plane Pipeline",
+                      }
+                    : undefined
+                }
+              />
+            </div>
+          }
+          inspector={
+            inDeviceMode ? (
+              <DeviceExplorerPanel
+                explanation={nodeExplanation!}
+                tabs={explorerTabs}
+                xrayEnabled={deviceXray}
+                onToggleXray={() => setDeviceXray((v) => !v)}
+                xrayOnLabel="Control-Plane X-Ray"
+                onExit={() => {
+                  setCameraMode("overview");
+                  setEnteredDeviceId(undefined);
+                }}
+              />
+            ) : nodeExplanation ? (
+              <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} xrayEnabled={false} />
+            ) : (
+              <GlassPanel className="p-4">
+                <p className="text-xs text-pv-text-faint">Select a device to inspect it. This lesson doesn&apos;t model a per-hop packet trace, so Focus Mode here stays to topology + device inspection.</p>
+              </GlassPanel>
+            )
+          }
+        />
+      )}
     </div>
   );
 }

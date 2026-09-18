@@ -18,7 +18,7 @@ export function Server3D({ accentColor, glow }: DeviceMeshProps) {
     <group>
       <mesh castShadow>
         <boxGeometry args={[0.66, 0.92, 0.66]} />
-        <meshStandardMaterial color="#10141c" roughness={0.5} metalness={0.55} />
+        <meshStandardMaterial color={THEME.chassis} roughness={0.5} metalness={0.35} />
       </mesh>
       <mesh position={[0, 0.3, 0.335]}>
         <boxGeometry args={[0.7, 0.02, 0.006]} />
@@ -27,7 +27,7 @@ export function Server3D({ accentColor, glow }: DeviceMeshProps) {
       {bays.map((x, i) => (
         <mesh key={i} position={[x, 0.05, 0.335]}>
           <boxGeometry args={[0.08, 0.55, 0.008]} />
-          <meshStandardMaterial color="#060810" roughness={0.85} />
+          <meshStandardMaterial color={THEME.chassisRecess} roughness={0.85} />
         </mesh>
       ))}
       {bays.map((x, i) => (

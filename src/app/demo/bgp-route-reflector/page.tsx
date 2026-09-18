@@ -67,7 +67,7 @@ import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@
 import { PacketDetailPanel } from "@/components/network3d/PacketDetailPanel";
 import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
 import { PlaneViewSwitcher, type PlaneView } from "@/components/network3d/PlaneViewSwitcher";
-import { TopologyFrame } from "@/components/network3d/TopologyFrame";
+import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, Link3DData, Node3DStatus } from "@/components/network3d/types";
 import { diagnosticLayersFor, explainRouter, floodTargetsForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor, PRIMARY_TRANSITION_ROUTER } from "./deviceTrace";
@@ -529,7 +529,7 @@ export default function BgpRouteReflectorDemo() {
         <div className="space-y-6">
           {viewMode === "3d" ? (
             <>
-              <TopologyFrame questionActive={questionActive}>
+              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D} regions={regions3D}>
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
@@ -584,7 +584,7 @@ export default function BgpRouteReflectorDemo() {
                     : undefined
                 }
               />
-              </TopologyFrame>
+              </TopologyQuickExpand>
 
               {cameraMode === "overview" && topoView === "fullmesh" && showCalculator && !isChallengePhase && (
                 <GlassPanel strong className="space-y-3 p-5">
@@ -769,7 +769,7 @@ export default function BgpRouteReflectorDemo() {
               )}
             </>
           ) : (
-            <TopologyFrame questionActive={questionActive}>
+            <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D} regions={regions3D}>
               <GraphTopologyViewer nodes={activeGraph.nodes} edges={activeGraph.edges.map((e) => ({ ...e, state: "full" as const }))} activeNodeIds={activePacket ? [activePacket.from, activePacket.to] : []} regions={activeGraph.regions}>
                 {activePacket && (() => {
                   const from = activeGraph.nodes.find((n) => n.id === activePacket.from);
@@ -777,7 +777,7 @@ export default function BgpRouteReflectorDemo() {
                   return from && to ? <GraphPacket packet={activePacket} from={from} to={to} /> : null;
                 })()}
               </GraphTopologyViewer>
-            </TopologyFrame>
+            </TopologyQuickExpand>
           )}
 
           {!isComplete && currentStep && (

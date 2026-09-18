@@ -20,11 +20,11 @@ export function Firewall3D({ accentColor, glow }: DeviceMeshProps) {
     <group>
       <mesh castShadow>
         <boxGeometry args={[0.82, 0.62, 0.6]} />
-        <meshStandardMaterial color="#1a1116" roughness={0.5} metalness={0.5} />
+        <meshStandardMaterial color={THEME.chassis} roughness={0.5} metalness={0.35} />
       </mesh>
       <mesh position={[0, 0, 0.34]} rotation={[0.28, 0, 0]}>
         <boxGeometry args={[0.86, 0.3, 0.05]} />
-        <meshStandardMaterial color="#0e0a0c" roughness={0.6} metalness={0.4} />
+        <meshStandardMaterial color={THEME.chassisPanel} roughness={0.6} metalness={0.3} />
       </mesh>
       <mesh position={[0, 0.2, 0.36]}>
         <boxGeometry args={[0.86, 0.02, 0.006]} />

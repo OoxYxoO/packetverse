@@ -18,6 +18,28 @@ export const THEME = {
   danger: "#fb7185",
   border: "#3a4460",
   text: "#e2e8f0",
+
+  // --- 3D contrast hierarchy (page bg → scene → chassis → panel → detail) ---
+  // The page background (`bg`, #05070d) and the 3D canvas background used to
+  // be the SAME color, so a chassis rendered anywhere near that darkness
+  // visually disappeared. Each tier below is a deliberate, visible step up
+  // from the one before it.
+  /** 3D canvas/environment background — one visible step above the page background, a deep navy rather than near-black. */
+  bgScene: "#0b1120",
+  /** Floor/grid plane — one more step up from `bgScene`, giving the ground plane its own depth read. */
+  bgFloor: "#111a2e",
+  /** Device chassis body — a clearly lit graphite, not near-black, so the shape reads against `bgScene` without extra lighting. */
+  chassis: "#2b3242",
+  /** Recessed panel/faceplate — a visible step darker than `chassis` (real recessed panels read darker), but still well above `bgScene`. */
+  chassisPanel: "#1c2436",
+  /** Rack ears / side panels — between `chassis` and `chassisPanel`. */
+  chassisSide: "#232a3c",
+  /** True cutouts (port holes, vent slots) — allowed to go dark since they represent an absence, not a surface. */
+  chassisRecess: "#05070c",
+  /** Off/unlit LED color — dim but still visibly present as a shape, not invisible. */
+  ledOff: "#2a3244",
+  /** Neutral chassis edge/rim highlight, used for the existing selection wireframe at low opacity as a permanent edge-definition cue. */
+  chassisRim: "#7686a8",
 };
 
 /** Per-device-kind base color, matching the 2D DeviceIcon palette closely enough to feel like the same app. */
@@ -51,13 +73,29 @@ export const DEVICE_BOUNDS: Record<DeviceVisualKind, [number, number, number]> =
   GENERIC_NETWORK: [1, 0.68, 0.68],
 };
 
-/** Link visual-state → stroke color/dash/width, generic across every lesson (brief §7). */
+/**
+ * Dedicated "this cable is readable without selection" color for a plain
+ * physical link — distinct from `THEME.border` (which stays reserved for
+ * 2D UI chrome/the 3D grid) precisely because a link sitting *on* the
+ * scene background needs more contrast than a UI hairline does.
+ */
+const linkNormal = "#5b6a8c";
+
+/** Link visual-state → stroke color/dash/width, generic across every lesson (brief §7). Every state stays visually distinct from the others at a glance. */
 export const LINK_STATE_STYLE: Record<string, { color: string; dash?: [number, number]; opacity: number; width: number }> = {
-  normal: { color: THEME.border, opacity: 0.35, width: 1.1 },
-  selected: { color: THEME.text, opacity: 0.85, width: 2.2 },
+  normal: { color: linkNormal, opacity: 0.75, width: 1.6 },
+  selected: { color: THEME.text, opacity: 0.95, width: 2.4 },
   activePath: { color: THEME.cyan, opacity: 0.95, width: 3.5 },
-  controlPlane: { color: THEME.violet, dash: [0.12, 0.1], opacity: 0.55, width: 1.4 },
-  backup: { color: THEME.warning, dash: [0.08, 0.14], opacity: 0.4, width: 1.1 },
-  failed: { color: THEME.danger, opacity: 0.5, width: 1.1 },
-  disabled: { color: THEME.border, opacity: 0.15, width: 0.8 },
+  controlPlane: { color: THEME.violet, dash: [0.12, 0.1], opacity: 0.7, width: 1.6 },
+  backup: { color: THEME.warning, dash: [0.08, 0.14], opacity: 0.55, width: 1.3 },
+  failed: { color: THEME.danger, opacity: 0.6, width: 1.3 },
+  disabled: { color: linkNormal, opacity: 0.22, width: 0.9 },
+};
+
+/** Interface/port anchor — the small marker where a link meets a device (brief §7), generic across every lesson. */
+export const LINK_ANCHOR_STYLE = {
+  idle: { color: linkNormal, opacity: 0.55 },
+  hovered: { color: THEME.text, opacity: 0.85 },
+  active: { color: THEME.cyan, opacity: 1 },
+  selected: { color: THEME.text, opacity: 0.95 },
 };

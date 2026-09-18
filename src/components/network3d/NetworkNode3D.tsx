@@ -57,9 +57,13 @@ export function NetworkNode3D({ node, onSelect, phase = 0 }: NetworkNode3DProps)
       }}
     >
       <DeviceVisual3D visualKind={visualKind} accentColor={color} glow={emissiveIntensity} />
+      {/* Permanent, low-key edge/rim highlight (brief §4 "edge definition")
+          — neutral when idle so it reads as chassis definition rather than
+          a colored halo, switching to the accent color once the node means
+          something (hovered/selected). */}
       <mesh>
         <boxGeometry args={[boundW + 0.05, boundH + 0.05, boundD + 0.05]} />
-        <meshBasicMaterial color={node.status === "selected" ? THEME.text : color} wireframe transparent opacity={node.status === "selected" ? 0.55 : hovered ? 0.4 : 0.2} />
+        <meshBasicMaterial color={node.status === "selected" ? THEME.text : hovered ? color : THEME.chassisRim} wireframe transparent opacity={node.status === "selected" ? 0.6 : hovered ? 0.5 : 0.32} />
       </mesh>
       {(node.status === "selected" || node.status === "active") && (
         <pointLight color={color} intensity={node.status === "selected" ? 6 : 3} distance={3.5} />

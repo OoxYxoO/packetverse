@@ -44,6 +44,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useProgressStore } from "@/lib/state/useProgressStore";
 import { NetworkScene3D } from "@/components/network3d/NetworkScene3D";
+import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { NodeInspectorPanel } from "@/components/network3d/NodeInspectorPanel";
 import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
 import { PlaneViewSwitcher } from "@/components/network3d/PlaneViewSwitcher";
@@ -146,6 +147,7 @@ export default function EvpnAliasingMassWithdrawalDemo() {
     onPath: visitedDevices.has(e.a as EvpnAliasingDeviceId) && visitedDevices.has(e.b as EvpnAliasingDeviceId),
   }));
   const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
   const isFabricDevice = (id: EvpnAliasingDeviceId | undefined): id is "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3" => id === "LEAF1" || id === "SPINE1" || id === "LEAF2" || id === "LEAF3";
@@ -320,6 +322,7 @@ export default function EvpnAliasingMassWithdrawalDemo() {
         <div className="space-y-6">
           {viewMode === "3d" ? (
             <>
+              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D} regions={regions3D}>
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
@@ -352,6 +355,7 @@ export default function EvpnAliasingMassWithdrawalDemo() {
                     : undefined
                 }
               />
+              </TopologyQuickExpand>
 
               {packetSelected && activePacket && (
                 <PacketDetailPanel

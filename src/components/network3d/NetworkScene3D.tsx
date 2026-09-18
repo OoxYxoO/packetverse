@@ -9,6 +9,7 @@ import { Packet3D } from "./Packet3D";
 import { Region3D } from "./Region3D";
 import { CameraController3D } from "./CameraController3D";
 import { DeviceInteriorScene3D } from "./DeviceInteriorScene3D";
+import { HopCallout3D } from "./HopCallout3D";
 import { THEME } from "./theme";
 import type { ActivePacket3D, DeviceInterfaceData, DeviceProcessingTrace, Link3DData, Node3DData, PacketStackFrame, Region3DData } from "./types";
 
@@ -56,6 +57,8 @@ interface NetworkScene3DProps {
   /** "device" renders <DeviceInteriorScene3D> instead of the topology overview. */
   mode?: "overview" | "device";
   deviceView?: DeviceViewProps;
+  /** Compact in-scene callout (brief §14) near whichever device is currently processing — overview mode only. Purely presentational; the page decides what text belongs in it. */
+  callout?: { position: [number, number, number]; title: string; lines: string[] };
 }
 
 /**
@@ -68,15 +71,28 @@ interface NetworkScene3DProps {
  * One persistent <Canvas> across overview <-> device mode so entering/
  * leaving a device is a camera move, not a WebGL context teardown.
  */
-export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSelectFloodCopy, selectedFloodCopyId, regions, onSelectRegion, selectedRegionId, onSelectNode, onSelectLink, selectedLinkId, onSelectPacket, packetSelected, focusPosition, eyeOffset, mode = "overview", deviceView }: NetworkScene3DProps) {
+export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSelectFloodCopy, selectedFloodCopyId, regions, onSelectRegion, selectedRegionId, onSelectNode, onSelectLink, selectedLinkId, onSelectPacket, packetSelected, focusPosition, eyeOffset, mode = "overview", deviceView, callout }: NetworkScene3DProps) {
   const positionById = useMemo(() => new Map(nodes.map((n) => [n.id, n.position])), [nodes]);
 
   return (
-    <div className="h-96 w-full overflow-hidden rounded-2xl border border-pv-border sm:h-[28rem]" style={{ background: THEME.bg }}>
+    <div className="h-96 w-full overflow-hidden rounded-2xl border border-pv-border sm:h-[28rem]" style={{ background: THEME.bgScene }}>
       <Canvas dpr={[1, 1.5]} gl={{ antialias: true }} camera={{ position: [0, 6, 11], fov: 45 }}>
-        <ambientLight intensity={0.55} />
-        <pointLight position={[0, 5, 6]} intensity={35} color={THEME.cyan} />
-        <pointLight position={[-5, -2, 4]} intensity={18} color={THEME.violet} />
+        {/* Neutral ambient + a real directional key light so chassis shape
+            reads consistently regardless of where a device sits in the
+            topology (the old point lights fell off with distance and were
+            tinted, which crushed most devices toward black). A second, dim
+            directional rim light adds edge separation without floodlighting
+            the whole scene. */}
+        <ambientLight intensity={0.85} color="#9aa5c0" />
+        <directionalLight position={[6, 10, 7]} intensity={1.15} color="#f3f6ff" />
+        <directionalLight position={[-7, 3, -6]} intensity={0.4} color={THEME.cyan} />
+        <pointLight position={[0, 4.5, 5]} intensity={10} color={THEME.cyan} distance={16} />
+        {/* Solid floor beneath the grid lines gives the "environment" its own
+            depth tier between the canvas background and the device chassis. */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.32, 0]}>
+          <planeGeometry args={[60, 60]} />
+          <meshBasicMaterial color={THEME.bgFloor} />
+        </mesh>
         <Grid
           args={[40, 40]}
           cellColor={THEME.border}
@@ -98,11 +114,12 @@ export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSele
                 const from = positionById.get(l.a);
                 const to = positionById.get(l.b);
                 if (!from || !to) return null;
-                return <NetworkLink3D key={l.id} id={l.id} from={from} to={to} label={l.label} active={l.active} onPath={l.onPath} onSelect={onSelectLink} selected={selectedLinkId === l.id} />;
+                return <NetworkLink3D key={l.id} id={l.id} from={from} to={to} label={l.label} active={l.active} onPath={l.onPath} visualState={l.visualState} onSelect={onSelectLink} selected={selectedLinkId === l.id} />;
               })}
               {nodes.map((n, i) => (
                 <NetworkNode3D key={n.id} node={n} onSelect={onSelectNode} phase={i * 1.35} />
               ))}
+              {callout && <HopCallout3D position={callout.position} title={callout.title} lines={callout.lines} />}
               {activePacket &&
                 (() => {
                   const from = positionById.get(activePacket.fromId);

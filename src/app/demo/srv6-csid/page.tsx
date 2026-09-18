@@ -47,6 +47,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useProgressStore } from "@/lib/state/useProgressStore";
 import { NetworkScene3D } from "@/components/network3d/NetworkScene3D";
+import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { NodeInspectorPanel } from "@/components/network3d/NodeInspectorPanel";
 import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
 import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@/components/network3d/DeviceExplorerPanel";
@@ -167,6 +168,7 @@ export default function Srv6CsidDemo() {
   }));
   const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
 
   const activeDeviceId = DEVICE_ROUTERS.find((r) => traceFor(r, state, stepId)?.activeStageId !== undefined);
   const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : undefined;
@@ -346,6 +348,7 @@ export default function Srv6CsidDemo() {
         <div className="space-y-6">
           {viewMode3D ? (
             <>
+              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D}>
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
@@ -375,6 +378,7 @@ export default function Srv6CsidDemo() {
                     : undefined
                 }
               />
+              </TopologyQuickExpand>
               {packetSelected && activePacket && (
                 <PacketDetailPanel packet={activePacket} currentDevice={packetCurrentDeviceLabel} direction="R1 → ... → R8" paused={packetSelected} onResume={() => setPacketSelected(false)} onStepForward={() => engine.advance()} onStepBack={() => engine.goTo(Math.max(0, index - 1))} canStepForward={canAdvance} canStepBack={index > 0} onClose={() => setPacketSelected(false)} />
               )}

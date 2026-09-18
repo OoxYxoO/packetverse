@@ -1,5 +1,7 @@
 "use client";
 
+import { THEME } from "../theme";
+
 interface DeviceMeshProps {
   accentColor: string;
   glow: number;
@@ -16,7 +18,7 @@ export function GenericNetwork3D({ accentColor, glow }: DeviceMeshProps) {
     <group>
       <mesh castShadow>
         <boxGeometry args={[1, 0.5, 0.6]} />
-        <meshStandardMaterial color="#12161f" roughness={0.5} metalness={0.45} />
+        <meshStandardMaterial color={THEME.chassis} roughness={0.5} metalness={0.35} />
       </mesh>
       <mesh position={[0, 0.15, 0.305]}>
         <boxGeometry args={[1.04, 0.02, 0.006]} />

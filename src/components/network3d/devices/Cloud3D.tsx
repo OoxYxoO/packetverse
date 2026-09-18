@@ -1,5 +1,7 @@
 "use client";
 
+import { THEME } from "../theme";
+
 interface DeviceMeshProps {
   accentColor: string;
   glow: number;
@@ -22,7 +24,7 @@ export function Cloud3D({ accentColor, glow }: DeviceMeshProps) {
       {puffs.map(([x, y, z, r], i) => (
         <mesh key={i} position={[x, y, z]}>
           <sphereGeometry args={[r, 14, 12]} />
-          <meshStandardMaterial color="#161a28" emissive={accentColor} emissiveIntensity={0.18 + glow * 0.4} roughness={0.6} metalness={0.15} transparent opacity={0.88} />
+          <meshStandardMaterial color={THEME.chassisSide} emissive={accentColor} emissiveIntensity={0.22 + glow * 0.4} roughness={0.55} metalness={0.1} transparent opacity={0.9} />
         </mesh>
       ))}
     </group>
