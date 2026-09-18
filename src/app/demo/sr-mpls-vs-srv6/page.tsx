@@ -19,13 +19,14 @@ import {
   comparisonPhaseForIndex,
   type ComparisonPhase,
   buildRequirementMatrix,
-  buildTeSegments,
+  buildMplsTeSegments,
   buildMplsSidDatabase,
   buildSrv6SidDatabase,
   buildMplsRepairList,
   buildSegmentEncodingComparison,
   buildCapstoneCliCommands,
   nodeSidLabel,
+  adjSidLabel,
   archLabel,
   type Architecture,
   type CapstoneState,
@@ -123,7 +124,7 @@ export default function SrMplsVsSrv6Capstone() {
   const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
 
   // --- Derived per-phase data ---
-  const teSegments = useMemo(() => buildTeSegments(), []);
+  const teSegments = useMemo(() => buildMplsTeSegments(), []);
   const mplsSidDb = useMemo(() => buildMplsSidDatabase(), []);
   const srv6SidDb = useMemo(() => buildSrv6SidDatabase(), []);
   const archComparison = useMemo(() => compareArchitectures(), []);
@@ -131,7 +132,7 @@ export default function SrMplsVsSrv6Capstone() {
   const headerLabRows = useMemo(() => buildSegmentEncodingComparison(), []);
 
   const mplsSidRows: SidTableRow[] = mplsSidDb.map((r) => ({ prefix: r.sidType === "NODE" ? undefined : undefined, router: r.router, sidType: r.sidType, localLabel: r.label, scope: r.sidType === "NODE" ? "GLOBAL" : "LOCAL", owner: r.owner, nextHop: r.neighbor, meaning: r.meaning, installed: true }));
-  const teMplsRows: SegmentListRow[] = teSegments.map((s, i) => ({ order: i, sid: nodeSidLabel(s.owner), type: "NODE", target: s.owner, scope: "GLOBAL", active: i === 0, completed: false, explanation: s.explanation }));
+  const teMplsRows: SegmentListRow[] = teSegments.map((s, i) => ({ order: i, sid: s.type === "NODE" ? nodeSidLabel(s.owner) : adjSidLabel(s.owner, s.target!), type: s.type, owner: s.owner, target: s.type === "NODE" ? s.owner : s.target!, scope: s.type === "NODE" ? "GLOBAL" : "LOCAL", active: i === 0, completed: false, explanation: s.explanation }));
   const repairMpls = state.sharedRepair ? buildMplsRepairList(state.sharedRepair) : [];
   const repairMplsRows: SegmentListRow[] = repairMpls.map((s, i) => ({ order: i, sid: s.label, type: s.type, owner: s.owner, target: s.target ?? s.owner, scope: s.type === "NODE" ? "GLOBAL" : "LOCAL", active: i === 0, completed: false, explanation: s.type === "NODE" ? `Reach ${s.owner} via ordinary IGP` : `At ${s.owner}, force the ${s.owner}→${s.target} adjacency` }));
   const srv6RepairRows: Srv6RepairSidRow[] = state.sharedRepair?.repairList.sids.map((s) => ({ sid: s.sidText, owner: s.owner, behavior: "End.X", adjacency: s.adjacency, flavors: s.flavors, purpose: `Force ${s.owner}→${s.adjacency}` })) ?? [];

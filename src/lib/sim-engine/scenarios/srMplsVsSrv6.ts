@@ -283,6 +283,9 @@ export function endXSidHextets(owner: CoreRouterId): Hextets {
   const { locator4 } = decomposeSrv6Sid(INFRA_ADDRESS[owner]);
   return buildSrv6Sid(locator4, FUNCTION.END_X);
 }
+export function endXSidText(owner: CoreRouterId): string {
+  return fmtIpv6(endXSidHextets(owner));
+}
 
 export interface Srv6SidRow {
   router: CoreRouterId;
@@ -358,21 +361,51 @@ export function advanceSrh(pkt: Srv6Packet): Srv6Packet {
 function pathsEqual(a: RouterId[], b: RouterId[]): boolean {
   return a.length === b.length && a.every((r, i) => r === b[i]);
 }
-/** Greedy compression: extend each segment as far as ordinary shortest-path forwarding already agrees with the explicit path, so the result is the MINIMAL segment list — never one segment per physical hop unless the topology actually requires it. */
-export function deriveMinimalWaypoints(path: CoreRouterId[]): CoreRouterId[] {
-  const waypoints: CoreRouterId[] = [];
+
+/**
+ * Greedy compression, ADJACENCY-AWARE. Extends each segment as far as
+ * ordinary shortest-path forwarding actually agrees with the intended
+ * explicit path. Critically: when even the IMMEDIATE next hop is not
+ * what the current anchor's own ordinary SPF would choose, a plain
+ * Node-SID/End segment there would silently deliver the packet via
+ * whatever route SPF actually prefers — not the required physical
+ * link — so that hop is emitted as a forced-adjacency instruction
+ * (Adj-SID / End.X) instead, exactly like this file's own TI-LFA
+ * repair encoding already does for the identical reason (see
+ * `buildMplsRepairList`). Returns the RAW, untrimmed list — trimming
+ * a redundant trailing segment is an ENCODING-SPECIFIC decision (see
+ * `buildMplsTeSegments`/`buildSrv6TeSegments` below), never a shared
+ * one: it is valid for SR-MPLS but NOT for SRv6 (see those functions'
+ * own comments for exactly why the two architectures genuinely differ
+ * here).
+ */
+export interface MinimalTeSegment {
+  type: "NODE" | "ADJ";
+  owner: CoreRouterId;
+  target?: CoreRouterId;
+}
+export function deriveMinimalTeSegments(path: CoreRouterId[]): MinimalTeSegment[] {
+  const segments: MinimalTeSegment[] = [];
   let i = 0;
   while (i < path.length - 1) {
     let bestJ = i + 1;
+    let verified = false;
     for (let j = i + 1; j < path.length; j++) {
       const ordinary = shortestPath(CORE_LINKS, path[i], path[j]);
-      if (ordinary && pathsEqual(ordinary.path, path.slice(i, j + 1))) bestJ = j;
-      else break;
+      if (ordinary && pathsEqual(ordinary.path, path.slice(i, j + 1))) {
+        bestJ = j;
+        verified = true;
+      } else break;
     }
-    waypoints.push(path[bestJ]);
-    i = bestJ;
+    if (verified) {
+      segments.push({ type: "NODE", owner: path[bestJ] });
+      i = bestJ;
+    } else {
+      segments.push({ type: "ADJ", owner: path[i], target: path[i + 1] });
+      i += 1;
+    }
   }
-  return waypoints;
+  return segments;
 }
 
 /** The one explicit-TE requirement (brief Phase 2): steer PE1→PE2 over the P1-P3-P4-P2 alternate even though ordinary SPF prefers P1-P2 directly. Computed from real topology/SPF (the same post-convergence-path function TI-LFA itself uses), never hand-typed. */
@@ -380,15 +413,68 @@ export const TE_EXPLICIT_PATH: CoreRouterId[] = (() => {
   const post = computePostConvergencePath(CORE_LINKS, CORE_HEADEND, CORE_DESTINATION, "LINK", PROTECTED_LINK);
   return post ? post.path : PRIMARY_PATH;
 })();
-export const TE_WAYPOINTS: CoreRouterId[] = deriveMinimalWaypoints(TE_EXPLICIT_PATH);
 
 export interface TeSegment {
   order: number;
+  type: "NODE" | "ADJ";
   owner: CoreRouterId;
+  target?: CoreRouterId;
   explanation: string;
 }
-export function buildTeSegments(): TeSegment[] {
-  return TE_WAYPOINTS.map((w, i) => ({ order: i, owner: w, explanation: i === 0 ? `Reach ${w} — ordinary shortest path from ${CORE_HEADEND} already threads through the whole PE1-P1-P3-P4 chain.` : `Reach ${w} (final segment) — ordinary shortest path from the previous segment already avoids ${PROTECTED_LINK}.` }));
+function nodeSegmentExplanation(owner: CoreRouterId, isFirst: boolean): string {
+  return isFirst
+    ? `Node-SID/End(${owner}) — ordinary shortest path from ${CORE_HEADEND} already threads through the whole PE1-P1-P3-P4 chain.`
+    : `Node-SID/End(${owner}) — ordinary shortest path from the previous segment already reaches it.`;
+}
+function adjSegmentExplanation(owner: CoreRouterId, target: CoreRouterId): string {
+  return `${owner}'s own ordinary shortest path to ${target} does NOT use the direct ${owner}-${target} link — a Node-SID/End segment here would misroute. A forced-adjacency segment at ${owner} → ${target} is required instead.`;
+}
+/**
+ * SR-MPLS encoding: Node-SID(P4) + Adj-SID(P4→P2) — 2 segments. The
+ * trailing Node-SID that `deriveMinimalTeSegments` would otherwise add
+ * for the path's own final destination is dropped here deliberately:
+ * an MPLS label stack rides OVER an untouched IP header — `dstIp` was
+ * set once, at packet construction, and is never touched by any
+ * PUSH/SWAP/POP. Once the Adj-SID (bottom of stack) is consumed at its
+ * owner, the packet becomes plain, already-addressed IP again, and
+ * ordinary destination-based forwarding (which already matches the
+ * remaining intended path — that is what made the dropped segment
+ * "verified" in the first place) completes the journey for free. No
+ * second architecture-neutral function computes this trim: it is only
+ * safe for SR-MPLS.
+ */
+export function buildMplsTeSegments(): TeSegment[] {
+  const raw = deriveMinimalTeSegments(TE_EXPLICIT_PATH);
+  const last = raw[raw.length - 1];
+  const trimmed = raw.length > 1 && last.type === "NODE" && last.owner === TE_EXPLICIT_PATH[TE_EXPLICIT_PATH.length - 1] ? raw.slice(0, -1) : raw;
+  return trimmed.map((s, i) => ({ order: i, type: s.type, owner: s.owner, target: s.target, explanation: s.type === "NODE" ? nodeSegmentExplanation(s.owner, i === 0) : adjSegmentExplanation(s.owner, s.target!) }));
+}
+/**
+ * SRv6 encoding: End(P4) + End.X(P4→P2) + End(PE2) — 3 segments, one
+ * MORE than SR-MPLS, for a genuine data-plane reason (RFC 8986 §4.1/
+ * §4.2), not a weaker minimizer or an unfair segment vocabulary: both
+ * architectures get to use a forced-adjacency segment (Adj-SID here,
+ * exactly as much as End.X there). The difference is what happens
+ * AFTER the forced-adjacency segment is consumed. End.X still performs
+ * the ordinary SRH advance (decrement Segments Left, set DA to the
+ * NEXT Segment List entry) — it only replaces the FORWARDING decision
+ * (bound adjacency instead of a FIB lookup on that new DA); unlike
+ * SR-MPLS's label stack, there is no separate, untouched "real
+ * destination" field underneath an SRv6 outer header for the packet to
+ * fall back on once the SRH is exhausted — whatever DA the last
+ * Segments-Left decrement leaves behind IS what the next router acts
+ * on. So the trailing End(PE2) segment is NOT redundant here the way
+ * the equivalent Node-SID is for SR-MPLS: dropping it would leave DA
+ * pointing at P4's own address after the forced hop, which P2 cannot
+ * use to reach PE2. (USD/H.Encaps-style decapsulation could eliminate
+ * this segment too, but that is a genuinely different mechanism —
+ * introducing it here merely to shave one segment off the count would
+ * misrepresent what plain End.X actually does, so it is deliberately
+ * not used in this phase.)
+ */
+export function buildSrv6TeSegments(): TeSegment[] {
+  const raw = deriveMinimalTeSegments(TE_EXPLICIT_PATH);
+  return raw.map((s, i) => ({ order: i, type: s.type, owner: s.owner, target: s.target, explanation: s.type === "NODE" ? nodeSegmentExplanation(s.owner, i === 0) : adjSegmentExplanation(s.owner, s.target!) }));
 }
 
 // ===========================================================================
@@ -584,12 +670,16 @@ export function compareTransportEncoding(): TransportComparisonRow[] {
   ];
 }
 export function compareTeEncoding(): TransportComparisonRow[] {
-  const segs = buildTeSegments();
+  const mplsSegs = buildMplsTeSegments();
+  const srv6Segs = buildSrv6TeSegments();
+  const mplsContent = mplsSegs.map((s) => (s.type === "NODE" ? `Node-SID(${s.owner})=${nodeSidLabel(s.owner)}` : `Adj-SID(${s.owner}→${s.target})=${adjSidLabel(s.owner, s.target!)}`)).join(" → ");
+  const srv6Content = srv6Segs.map((s) => (s.type === "NODE" ? `${s.owner} End=${endSidText(s.owner)}` : `${s.owner} End.X→${s.target}=${endXSidText(s.owner)}`)).join(" ; ");
   return [
-    { requirement: "Segment list length", srMpls: `${segs.length} label(s)`, srv6: `${segs.length} SID(s)` },
-    { requirement: "Segment list content", srMpls: segs.map((s) => `Node-SID(${s.owner})=${nodeSidLabel(s.owner)}`).join(" → "), srv6: segs.map((s) => `${s.owner} End=${endSidText(s.owner)}`).join(" ; ") },
-    { requirement: "Imposition mechanism", srMpls: "PUSH the label stack at the headend", srv6: segs.length > 1 ? "H.Encaps with a full SRH" : "H.Encaps, single SID (no SRH needed)" },
+    { requirement: "Segment list length", srMpls: `${mplsSegs.length} label(s)`, srv6: `${srv6Segs.length} SID(s)` },
+    { requirement: "Segment list content", srMpls: mplsContent, srv6: srv6Content },
+    { requirement: "Imposition mechanism", srMpls: "PUSH the label stack at the headend", srv6: srv6Segs.length > 1 ? "H.Encaps with a full SRH" : "H.Encaps, single SID (no SRH needed)" },
     { requirement: "Wire representation", srMpls: "Label stack under the transport label", srv6: "Outer IPv6 DA + SRH segment list" },
+    { requirement: "Why the counts differ", srMpls: "Adj-SID (bottom of stack) exposes the untouched, always-present IP destination once popped — no trailing segment needed.", srv6: "End.X still advances DA to the next SRH entry (RFC 8986 §4.2) — a real trailing End(PE2) segment is required so P2 has something valid to forward on." },
   ];
 }
 export function compareVpnEncoding(): TransportComparisonRow[] {
@@ -646,7 +736,7 @@ export function buildRequirementMatrix(): RequirementMatrixRow[] {
   const csid = computeCsidLab();
   return [
     { requirement: "Shortest-path transport", srMpls: "Node-SID label imposed at headend", srv6: "IPv6 DA set to destination's End SID" },
-    { requirement: "Explicit TE", srMpls: `${buildTeSegments().length}-label stack (PUSH)`, srv6: `${buildTeSegments().length}-SID program (H.Encaps${buildTeSegments().length > 1 ? " + SRH" : ""})` },
+    { requirement: "Explicit TE", srMpls: `${buildMplsTeSegments().length}-label stack (PUSH)`, srv6: `${buildSrv6TeSegments().length}-SID program (H.Encaps${buildSrv6TeSegments().length > 1 ? " + SRH" : ""})` },
     { requirement: "L3VPN", srMpls: "VRF + RD + RT + MP-BGP + VPN label", srv6: "VRF + RD + RT + MP-BGP + Service SID (End.DT4)" },
     { requirement: "Local FRR (TI-LFA)", srMpls: "OIF + MPLS label repair list", srv6: "OIF + IPv6 SID repair list (End.X+USD)" },
     { requirement: "Service identification", srMpls: "VPN label (locally significant per PE)", srv6: "Service SID (globally routable IPv6 address)" },
@@ -786,7 +876,8 @@ const CE1_SRC = "192.0.2.10"; // illustrative CE1-side source used for transport
 // strings below (ScenarioStep.narrative is a plain string, not a function —
 // every value referenced here comes from the fixed topology/constants
 // above, never from anything a learner's choice can change).
-const TE_SEGS = buildTeSegments();
+const MPLS_TE_SEGS = buildMplsTeSegments();
+const SRV6_TE_SEGS = buildSrv6TeSegments();
 const SHARED_REPAIR: TiLfaRepairPath = computeSharedTiLfaRepair();
 const SHARED_REPAIR_NODE_LABEL = SHARED_REPAIR.repairNode ? nodeSidLabel(SHARED_REPAIR.repairNode) : 0;
 const SHARED_REPAIR_ADJ_LABEL = SHARED_REPAIR.repairNode && SHARED_REPAIR.mergeTarget ? adjSidLabel(SHARED_REPAIR.repairNode, SHARED_REPAIR.mergeTarget) : 0;
@@ -941,25 +1032,28 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   {
     id: "predict-minimal-segments",
     label: "How Many Segments?",
-    narrative: `The alternate path has 4 physical hops after PE1 (P1, P3, P4, P2, PE2). A naive design imposes one segment per hop.`,
+    narrative: `The alternate path is ${TE_EXPLICIT_PATH.length - 1} physical hops after ${CORE_HEADEND} (${TE_EXPLICIT_PATH.slice(1).join(", ")}). A naive design imposes one segment per hop.`,
     question: {
       prompt: "Does steering over this exact path require one segment per physical hop?",
       options: [
-        { id: "yes", label: "Yes — 4 segments, one per hop" },
+        { id: "yes", label: `Yes — ${TE_EXPLICIT_PATH.length - 1} segments, one per hop` },
         { id: "no", label: "No — fewer segments suffice wherever ordinary shortest-path forwarding already agrees with the desired path" },
       ],
       correctOptionId: "no",
-      explanation: `A Node-SID (or End SID) already carries a packet along whatever the IGP's OWN shortest path to that node is. If that ordinary path happens to already match a stretch of the desired route, one segment covers the whole stretch. Here the minimal list is only ${buildTeSegments().length} segments.`,
+      explanation: `A Node-SID (or End SID) already carries a packet along whatever the IGP's OWN shortest path to that node is — one segment covers a whole stretch wherever that agrees with the desired route. Where it does NOT agree (even for a single hop), a Node-SID/End segment would misroute, so that hop needs a forced-adjacency segment (Adj-SID/End.X) instead — never assumed away. Here the minimal list is ${MPLS_TE_SEGS.length} segments for SR-MPLS and ${SRV6_TE_SEGS.length} for SRv6 (the "SIDE-BY-SIDE" view explains exactly why those counts differ).`,
     },
   },
   {
     id: "mpls-te-build",
     label: "SR-MPLS: Build the Policy",
-    narrative: `SR-MPLS SR Policy segment list, derived (not hand-typed) from the real topology: ${TE_SEGS.map((s) => `Node-SID(${s.owner})=${nodeSidLabel(s.owner)}`).join(" then ")}.`,
+    narrative: `SR-MPLS SR Policy segment list, derived (not hand-typed) from the real topology: ${MPLS_TE_SEGS.map((s) => (s.type === "NODE" ? `Node-SID(${s.owner})=${nodeSidLabel(s.owner)}` : `Adj-SID(${s.owner}→${s.target})=${adjSidLabel(s.owner, s.target!)}`)).join(" then ")}.`,
     run: (state) => {
-      const segments = buildTeSegments();
+      const segments = buildMplsTeSegments();
       let pkt: MplsPacket = { srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4, labels: [] };
-      for (let i = segments.length - 1; i >= 0; i--) pkt = pushMplsLabel(pkt, nodeSidLabel(segments[i].owner));
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const s = segments[i];
+        pkt = pushMplsLabel(pkt, s.type === "NODE" ? nodeSidLabel(s.owner) : adjSidLabel(s.owner, s.target!));
+      }
       return { state: { ...state, activeArchitecture: "SR_MPLS", mplsSegments: segments, mplsTePacket: pkt }, events: [{ type: "MPLS_LABEL_PUSHED", stepId: "mpls-te-build", timestamp: Date.now(), message: `PE1 pushes ${segments.length}-label TE stack` }] };
     },
     packet: (state) => (state.mplsTePacket ? mplsPacketVisual("mpls-te", "PE1", "P1", `PUSH ${state.mplsSegments.length}-label TE stack`, state.mplsTePacket) : undefined),
@@ -967,10 +1061,10 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   {
     id: "srv6-te-build",
     label: "SRv6: Build the Policy",
-    narrative: `SRv6 SR Policy, same intent, same derivation: ${TE_SEGS.map((s) => `${s.owner} End=${endSidText(s.owner)}`).join(" then ")}. ${TE_SEGS.length > 1 ? "More than one SID → a full SRH is required (never a fake single-SID shortcut)." : "Exactly one SID → no SRH needed."}`,
+    narrative: `SRv6 SR Policy, same intent, same derivation: ${SRV6_TE_SEGS.map((s) => (s.type === "NODE" ? `${s.owner} End=${endSidText(s.owner)}` : `${s.owner} End.X→${s.target}=${endXSidText(s.owner)}`)).join(" then ")}. This needs one more segment than SR-MPLS: End.X still advances the SRH to the next real entry (RFC 8986 §4.2) rather than falling back to an untouched IP header the way MPLS's label stack does, so the trailing End(${SRV6_TE_SEGS[SRV6_TE_SEGS.length - 1]?.owner}) segment is genuinely required, not padding. ${SRV6_TE_SEGS.length > 1 ? "More than one SID → a full SRH is required (never a fake single-SID shortcut)." : "Exactly one SID → no SRH needed."}`,
     run: (state) => {
-      const segments = buildTeSegments();
-      const orderedSids = segments.map((s) => ({ sidHextets: endSidHextets(s.owner), sidText: endSidText(s.owner), owner: s.owner }));
+      const segments = buildSrv6TeSegments();
+      const orderedSids = segments.map((s) => (s.type === "NODE" ? { sidHextets: endSidHextets(s.owner), sidText: endSidText(s.owner), owner: s.owner } : { sidHextets: endXSidHextets(s.owner), sidText: endXSidText(s.owner), owner: s.owner }));
       const srh = segments.length > 1 ? buildSrh(orderedSids) : undefined;
       const pkt: Srv6Packet = { srcText: "2001:db8:100:1::c1", daHextets: orderedSids[0].sidHextets, srh, innerSrcIp: CE1_SRC, innerDstIp: CE2_HOST_IPV4 };
       return { state: { ...state, activeArchitecture: "SRV6", srv6Segments: segments, srv6TePacket: pkt }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-te-build", timestamp: Date.now(), message: `PE1 H.Encaps ${segments.length}-SID TE program` }] };
@@ -980,7 +1074,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   {
     id: "compare-te-encoding",
     label: "SIDE-BY-SIDE: Same Intent, Different Encoding",
-    narrative: "LOGICAL INTENT is identical: PE1 → P3 → P4 → PE2 (via P1). SR-MPLS expresses it as a label stack; SRv6 expresses it as an IPv6 DA plus an SRH segment list. Same path intent, different forwarding-plane encoding.",
+    narrative: `LOGICAL INTENT is identical: ${TE_EXPLICIT_PATH.join(" → ")}. SR-MPLS expresses it as a label stack (Node-SID + a forced-adjacency Adj-SID where ordinary SPF disagrees); SRv6 expresses it as an IPv6 DA plus an SRH segment list (End + a forced-adjacency End.X for the same reason). Same path intent, different forwarding-plane encoding.`,
     whatChanged: () => compareTeEncoding().map((r) => `${r.requirement}: SR-MPLS=${r.srMpls} | SRv6=${r.srv6}`),
   },
 
