@@ -1,7 +1,7 @@
 import type { PacketLayer, PacketVisual, ScenarioStep } from "../types";
 import { fmtLabel, deriveNodeSidLabel, computeAdjSidLabel, type LabelValue } from "./srMplsFoundations";
 import { buildSrv6Sid, fmtIpv6, decomposeSrv6Sid, type Hextets } from "./srv6Foundations";
-import { FUNCTION, BEHAVIOR_LABEL, BEHAVIOR_FAMILY, type Srv6EndpointBehavior } from "./srv6EndpointBehaviors";
+import { FUNCTION, BEHAVIOR_LABEL, BEHAVIOR_FAMILY, type Srv6EndpointBehavior, type InnerPayload } from "./srv6EndpointBehaviors";
 import {
   ALL_ROUTERS as CORE_ROUTERS,
   HEADEND as CORE_HEADEND,
@@ -15,6 +15,7 @@ import {
   computePostConvergencePath,
   precomputeTiLfaRepair,
   executeEndXUsd,
+  buildRepairSid,
   simulateNaiveForwarding,
   validateRepairPath,
   encapsulateRepairSingleSid,
@@ -23,6 +24,8 @@ import {
   type RouterId as CoreRouterId,
   type TiLfaRepairPath,
   type TiLfaPacketState,
+  type RepairSid,
+  type EndXUsdOutcome,
 } from "./srv6TiLfa";
 import {
   CUST_A_RD,
@@ -450,14 +453,15 @@ export function buildMplsTeSegments(): TeSegment[] {
   return trimmed.map((s, i) => ({ order: i, type: s.type, owner: s.owner, target: s.target, explanation: s.type === "NODE" ? nodeSegmentExplanation(s.owner, i === 0) : adjSegmentExplanation(s.owner, s.target!) }));
 }
 /**
- * SRv6 encoding: End(P4) + End.X(P4→P2) + End(PE2) — 3 segments, one
- * MORE than SR-MPLS, for a genuine data-plane reason (RFC 8986 §4.1/
- * §4.2), not a weaker minimizer or an unfair segment vocabulary: both
- * architectures get to use a forced-adjacency segment (Adj-SID here,
- * exactly as much as End.X there). The difference is what happens
- * AFTER the forced-adjacency segment is consumed. End.X still performs
- * the ordinary SRH advance (decrement Segments Left, set DA to the
- * NEXT Segment List entry) — it only replaces the FORWARDING decision
+ * SRv6 BASE encoding (plain End / End.X, no USD): End(P4) + End.X(P4→
+ * P2) + End(PE2) — 3 segments, one more than SR-MPLS's base encoding,
+ * for a genuine data-plane reason (RFC 8986 §4.1/§4.2), not a weaker
+ * minimizer or an unfair segment vocabulary: both architectures get to
+ * use a forced-adjacency segment (Adj-SID here, exactly as much as
+ * End.X there). The difference is what happens AFTER the forced-
+ * adjacency segment is consumed. Plain End.X still performs the
+ * ordinary SRH advance (decrement Segments Left, set DA to the NEXT
+ * Segment List entry) — it only replaces the FORWARDING decision
  * (bound adjacency instead of a FIB lookup on that new DA); unlike
  * SR-MPLS's label stack, there is no separate, untouched "real
  * destination" field underneath an SRv6 outer header for the packet to
@@ -466,15 +470,58 @@ export function buildMplsTeSegments(): TeSegment[] {
  * on. So the trailing End(PE2) segment is NOT redundant here the way
  * the equivalent Node-SID is for SR-MPLS: dropping it would leave DA
  * pointing at P4's own address after the forced hop, which P2 cannot
- * use to reach PE2. (USD/H.Encaps-style decapsulation could eliminate
- * this segment too, but that is a genuinely different mechanism —
- * introducing it here merely to shave one segment off the count would
- * misrepresent what plain End.X actually does, so it is deliberately
- * not used in this phase.)
+ * use to reach PE2.
+ *
+ * This 2-vs-3 result is therefore SCOPED to this specific pair of base
+ * behaviors (Node-SID/Adj-SID vs. plain End/End.X) — it is not a
+ * universal "SR-MPLS always needs fewer segments" rule. A different
+ * SRv6 endpoint-behavior choice for the SAME forced hop (End.X's USD
+ * flavor) changes the count again — see `testSrv6TeEndXUsdAlternative`
+ * below, which executes that alternative through the real domain
+ * behavior rather than assuming the result.
  */
 export function buildSrv6TeSegments(): TeSegment[] {
   const raw = deriveMinimalTeSegments(TE_EXPLICIT_PATH);
   return raw.map((s, i) => ({ order: i, type: s.type, owner: s.owner, target: s.target, explanation: s.type === "NODE" ? nodeSegmentExplanation(s.owner, i === 0) : adjSegmentExplanation(s.owner, s.target!) }));
+}
+
+/**
+ * Advanced/optional comparison (NOT part of the base 2-vs-3 walkthrough
+ * above): does choosing a DIFFERENT SRv6 endpoint behavior for the SAME
+ * forced hop (P4→P2) change the required segment count? Reuses
+ * srv6TiLfa.ts's OWN End.X+USD repair-SID and execution engine exactly
+ * as this capstone's TI-LFA repair phase already does for the P1-P2
+ * repair (`buildRepairSid`, `encapsulateRepairSingleSid`,
+ * `executeEndXUsd`) — no second USD implementation is written here.
+ * TI-LFA is one important use case for End.X+USD, already demonstrated
+ * elsewhere in PacketVerse (this capstone's own repair phase, and the
+ * dedicated SRv6 TI-LFA lesson) — it is not the only one; explicit
+ * traffic engineering can use the identical mechanism.
+ *
+ * The result is EXECUTED through the real domain function, never
+ * assumed: `executeEndXUsd` itself decides whether USD can decapsulate
+ * here, exactly as it would for any other caller (the TI-LFA phase
+ * included). `assertSrv6TeUsdAlternative` (module scope, below) fails
+ * the build if that real execution ever stops confirming the
+ * USD_DECAP_FORWARD outcome this comparison depends on.
+ */
+export interface Srv6TeUsdAlternative {
+  repairSid: RepairSid;
+  outcome: EndXUsdOutcome;
+  segmentCount: number;
+  physicalPath: CoreRouterId[];
+}
+export function testSrv6TeEndXUsdAlternative(): Srv6TeUsdAlternative {
+  const raw = deriveMinimalTeSegments(TE_EXPLICIT_PATH);
+  const adjSeg = raw.find((s) => s.type === "ADJ");
+  if (!adjSeg || !adjSeg.target) {
+    throw new Error("Explicit TE path no longer contains a forced-adjacency hop; the End.X+USD alternative does not apply.");
+  }
+  const repairSid = buildRepairSid(adjSeg.owner, adjSeg.target);
+  const inner: InnerPayload = { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 };
+  const encapsulated = encapsulateRepairSingleSid(repairSid, { inner });
+  const outcome = executeEndXUsd(repairSid, encapsulated);
+  return { repairSid, outcome, segmentCount: 1, physicalPath: TE_EXPLICIT_PATH };
 }
 
 // ===========================================================================
@@ -675,11 +722,12 @@ export function compareTeEncoding(): TransportComparisonRow[] {
   const mplsContent = mplsSegs.map((s) => (s.type === "NODE" ? `Node-SID(${s.owner})=${nodeSidLabel(s.owner)}` : `Adj-SID(${s.owner}→${s.target})=${adjSidLabel(s.owner, s.target!)}`)).join(" → ");
   const srv6Content = srv6Segs.map((s) => (s.type === "NODE" ? `${s.owner} End=${endSidText(s.owner)}` : `${s.owner} End.X→${s.target}=${endXSidText(s.owner)}`)).join(" ; ");
   return [
-    { requirement: "Segment list length", srMpls: `${mplsSegs.length} label(s)`, srv6: `${srv6Segs.length} SID(s)` },
-    { requirement: "Segment list content", srMpls: mplsContent, srv6: srv6Content },
+    { requirement: "Segment list length (base encoding)", srMpls: `${mplsSegs.length} label(s)`, srv6: `${srv6Segs.length} SID(s) — End/End.X` },
+    { requirement: "Segment list content (base encoding)", srMpls: mplsContent, srv6: srv6Content },
     { requirement: "Imposition mechanism", srMpls: "PUSH the label stack at the headend", srv6: srv6Segs.length > 1 ? "H.Encaps with a full SRH" : "H.Encaps, single SID (no SRH needed)" },
     { requirement: "Wire representation", srMpls: "Label stack under the transport label", srv6: "Outer IPv6 DA + SRH segment list" },
-    { requirement: "Why the counts differ", srMpls: "Adj-SID (bottom of stack) exposes the untouched, always-present IP destination once popped — no trailing segment needed.", srv6: "End.X still advances DA to the next SRH entry (RFC 8986 §4.2) — a real trailing End(PE2) segment is required so P2 has something valid to forward on." },
+    { requirement: "Why the base counts differ", srMpls: "Adj-SID (bottom of stack) exposes the untouched, always-present IP destination once popped — no trailing segment needed.", srv6: "Plain End.X still advances DA to the next SRH entry (RFC 8986 §4.2) — a real trailing End(PE2) segment is required so P2 has something valid to forward on." },
+    { requirement: "Does this generalize?", srMpls: "No — this is scoped to Node-SID/Adj-SID vs. plain End/End.X.", srv6: "No — a different endpoint-behavior choice (End.X+USD) changes the count again; see the advanced comparison next." },
   ];
 }
 export function compareVpnEncoding(): TransportComparisonRow[] {
@@ -736,7 +784,7 @@ export function buildRequirementMatrix(): RequirementMatrixRow[] {
   const csid = computeCsidLab();
   return [
     { requirement: "Shortest-path transport", srMpls: "Node-SID label imposed at headend", srv6: "IPv6 DA set to destination's End SID" },
-    { requirement: "Explicit TE", srMpls: `${buildMplsTeSegments().length}-label stack (PUSH)`, srv6: `${buildSrv6TeSegments().length}-SID program (H.Encaps${buildSrv6TeSegments().length > 1 ? " + SRH" : ""})` },
+    { requirement: "Explicit TE (base End/End.X encoding)", srMpls: `${buildMplsTeSegments().length}-label stack (PUSH)`, srv6: `${buildSrv6TeSegments().length}-SID program (H.Encaps${buildSrv6TeSegments().length > 1 ? " + SRH" : ""}); 1 SID with End.X+USD` },
     { requirement: "L3VPN", srMpls: "VRF + RD + RT + MP-BGP + VPN label", srv6: "VRF + RD + RT + MP-BGP + Service SID (End.DT4)" },
     { requirement: "Local FRR (TI-LFA)", srMpls: "OIF + MPLS label repair list", srv6: "OIF + IPv6 SID repair list (End.X+USD)" },
     { requirement: "Service identification", srMpls: "VPN label (locally significant per PE)", srv6: "Service SID (globally routable IPv6 address)" },
@@ -878,6 +926,14 @@ const CE1_SRC = "192.0.2.10"; // illustrative CE1-side source used for transport
 // above, never from anything a learner's choice can change).
 const MPLS_TE_SEGS = buildMplsTeSegments();
 const SRV6_TE_SEGS = buildSrv6TeSegments();
+const SRV6_TE_USD = testSrv6TeEndXUsdAlternative();
+/** Build-time proof (mirrors `assertHeaderLabInvariants` below) that the advanced End.X+USD comparison narrative is describing what the real domain function actually does, not an assumed result. */
+function assertSrv6TeUsdAlternative(): void {
+  if (SRV6_TE_USD.outcome.action !== "USD_DECAP_FORWARD") throw new Error(`Expected End.X+USD to decapsulate and forward for the TE alternative, got action=${SRV6_TE_USD.outcome.action} (${SRV6_TE_USD.outcome.reason})`);
+  if (SRV6_TE_USD.outcome.forwardedTo !== SRV6_TE_USD.repairSid.adjacency) throw new Error("End.X+USD alternative forwarded to an unexpected adjacency.");
+  if (SRV6_TE_USD.segmentCount !== 1) throw new Error("End.X+USD alternative should require exactly one SID.");
+}
+assertSrv6TeUsdAlternative();
 const SHARED_REPAIR: TiLfaRepairPath = computeSharedTiLfaRepair();
 const SHARED_REPAIR_NODE_LABEL = SHARED_REPAIR.repairNode ? nodeSidLabel(SHARED_REPAIR.repairNode) : 0;
 const SHARED_REPAIR_ADJ_LABEL = SHARED_REPAIR.repairNode && SHARED_REPAIR.mergeTarget ? adjSidLabel(SHARED_REPAIR.repairNode, SHARED_REPAIR.mergeTarget) : 0;
@@ -1061,7 +1117,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   {
     id: "srv6-te-build",
     label: "SRv6: Build the Policy",
-    narrative: `SRv6 SR Policy, same intent, same derivation: ${SRV6_TE_SEGS.map((s) => (s.type === "NODE" ? `${s.owner} End=${endSidText(s.owner)}` : `${s.owner} End.X→${s.target}=${endXSidText(s.owner)}`)).join(" then ")}. This needs one more segment than SR-MPLS: End.X still advances the SRH to the next real entry (RFC 8986 §4.2) rather than falling back to an untouched IP header the way MPLS's label stack does, so the trailing End(${SRV6_TE_SEGS[SRV6_TE_SEGS.length - 1]?.owner}) segment is genuinely required, not padding. ${SRV6_TE_SEGS.length > 1 ? "More than one SID → a full SRH is required (never a fake single-SID shortcut)." : "Exactly one SID → no SRH needed."}`,
+    narrative: `SRv6 SR Policy, same intent, same derivation, using the BASE End/End.X encoding: ${SRV6_TE_SEGS.map((s) => (s.type === "NODE" ? `${s.owner} End=${endSidText(s.owner)}` : `${s.owner} End.X→${s.target}=${endXSidText(s.owner)}`)).join(" then ")}. Under this encoding, it needs one more segment than SR-MPLS's base encoding: plain End.X still advances the SRH to the next real entry (RFC 8986 §4.2) rather than falling back to an untouched IP header the way MPLS's label stack does, so the trailing End(${SRV6_TE_SEGS[SRV6_TE_SEGS.length - 1]?.owner}) segment is genuinely required here, not padding. ${SRV6_TE_SEGS.length > 1 ? "More than one SID → a full SRH is required (never a fake single-SID shortcut)." : "Exactly one SID → no SRH needed."} (A different endpoint-behavior choice changes this count again — see the advanced comparison after the next step.)`,
     run: (state) => {
       const segments = buildSrv6TeSegments();
       const orderedSids = segments.map((s) => (s.type === "NODE" ? { sidHextets: endSidHextets(s.owner), sidText: endSidText(s.owner), owner: s.owner } : { sidHextets: endXSidHextets(s.owner), sidText: endXSidText(s.owner), owner: s.owner }));
@@ -1074,8 +1130,23 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   {
     id: "compare-te-encoding",
     label: "SIDE-BY-SIDE: Same Intent, Different Encoding",
-    narrative: `LOGICAL INTENT is identical: ${TE_EXPLICIT_PATH.join(" → ")}. SR-MPLS expresses it as a label stack (Node-SID + a forced-adjacency Adj-SID where ordinary SPF disagrees); SRv6 expresses it as an IPv6 DA plus an SRH segment list (End + a forced-adjacency End.X for the same reason). Same path intent, different forwarding-plane encoding.`,
+    narrative: `LOGICAL INTENT is identical: ${TE_EXPLICIT_PATH.join(" → ")}. SR-MPLS expresses it as a label stack (Node-SID + a forced-adjacency Adj-SID where ordinary SPF disagrees); SRv6's BASE encoding expresses it as an IPv6 DA plus an SRH segment list (End + a forced-adjacency End.X for the same reason). Same path intent, different forwarding-plane encoding — scoped to these specific base behaviors, not a universal segment-count rule (see the advanced comparison next).`,
     whatChanged: () => compareTeEncoding().map((r) => `${r.requirement}: SR-MPLS=${r.srMpls} | SRv6=${r.srv6}`),
+  },
+  {
+    id: "srv6-te-usd-alternative",
+    label: "Advanced: End.X+USD Alternative",
+    narrative: `Advanced/optional: does a DIFFERENT SRv6 endpoint-behavior choice for the SAME forced hop (${SRV6_TE_USD.repairSid.owner}→${SRV6_TE_USD.repairSid.adjacency}) change the segment count above? RFC 8986's End.X USD flavor removes the ENTIRE outer IPv6 header at the owning router, exposing the original packet underneath, then forces it onward — the SAME mechanism this capstone's own TI-LFA repair phase already used for the P1-P2 repair (TI-LFA is one important use case for End.X+USD, already demonstrated elsewhere in PacketVerse — not the only one). Tested here through the real domain function, not assumed: H.Encaps at PE1 straight to a globally-routed End.X+USD SID at ${SRV6_TE_USD.repairSid.owner} (${SRV6_TE_USD.repairSid.sidText}), forcing ${SRV6_TE_USD.repairSid.owner}→${SRV6_TE_USD.repairSid.adjacency} — no separate reachability segment first, because (unlike an MPLS Adjacency-SID's locally-significant label value) an SRv6 SID's IPv6 address is globally routable via its locator regardless of which behavior is bound to it. Real executed result: ${SRV6_TE_USD.outcome.reason}`,
+    // A no-op run() is required so the engine actually evaluates whatChanged()
+    // below (ScenarioEngine.applyStepEffects only calls whatChanged for steps
+    // that also define run — see src/lib/sim-engine/ScenarioEngine.ts).
+    run: (state) => ({ state, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-te-usd-alternative", timestamp: Date.now(), message: `End.X+USD alternative: ${SRV6_TE_USD.outcome.action}` }] }),
+    whatChanged: () => [
+      `Base comparison: SR-MPLS = ${MPLS_TE_SEGS.length} instructions | SRv6 End/End.X (base encoding) = ${SRV6_TE_SEGS.length} SIDs`,
+      `Advanced SRv6 alternative: H.Encaps + a globally routed End.X+USD SID at ${SRV6_TE_USD.repairSid.owner} exposes the original IP packet and forces ${SRV6_TE_USD.repairSid.owner}→${SRV6_TE_USD.repairSid.adjacency} directly — ${SRV6_TE_USD.segmentCount} SID reaches ${CORE_DESTINATION} once ordinary IP forwarding takes over at ${SRV6_TE_USD.repairSid.adjacency}.`,
+      `Why SR-MPLS can't match this with the same trick: an MPLS Adjacency-SID's label value is only significant at the router that owns it, so a preceding globally-significant hop (Node-SID) is still required to actually reach that router — a genuine encoding-model difference, not evidence either data plane is better.`,
+      `Segment count depends on the segment behaviors made available to the policy. 2-vs-3 is not a universal architectural rule.`,
+    ],
   },
 
   // ------------------------------------------------------------------
