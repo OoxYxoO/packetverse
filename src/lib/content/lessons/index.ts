@@ -318,6 +318,21 @@ export const lessons: Lesson[] = [
     ],
   },
   {
+    id: "sr-mpls-vs-srv6",
+    title: "SR-MPLS vs SRv6 Engineering Capstone",
+    tagline: "The same engineering brief — shortest-path transport, explicit TE, an L3VPN, and local FRR — solved once in SR-MPLS and once in SRv6, so every difference is attributable to data-plane encoding, never to a different example.",
+    category: "service-provider",
+    difficulty: "expert",
+    prerequisites: ["sr-ti-lfa", "mpls-l3vpn", "srv6-csid"],
+    estimatedMinutes: 90,
+    simulationPath: "/demo/sr-mpls-vs-srv6",
+    tier: "pro",
+    sections: [
+      { id: "problem", heading: "The problem", body: "SR-MPLS and SRv6 are usually taught as separate lessons on separate topologies, which makes it easy to mistake a difference in the WORKED EXAMPLE for a difference in the ARCHITECTURE. An engineer choosing between them needs to see the identical requirement solved both ways." },
+      { id: "solution", heading: "How this capstone solves it", body: "One shared topology, traffic requirement, VPN service, TE requirement, and failure — implemented once in SR-MPLS (Node-SID/Adj-SID labels, LFIB, an MPLS VPN label, a label-stack repair) and once in SRv6 (End/End.X SIDs, IPv6 FIB, a Service SID via End.DT4, an End.X+USD repair) — reusing the SAME shared P-Space/Q-Space/post-convergence-path computation for both. The result is a factual, side-by-side comparison with no declared winner: two data-plane encodings of RFC 8402's one Segment Routing architecture." },
+    ],
+  },
+  {
     id: "bgp-route-reflector",
     title: "BGP Route Reflector",
     tagline: "Full-mesh iBGP explodes past a handful of routers — a Route Reflector replaces it with hub-and-spoke.",
