@@ -1,9 +1,11 @@
-import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
+import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketMutation, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
 import {
   GRAPH_EDGES,
   LINKS,
   fmtLabel,
   resolveActiveSegment,
+  type FwdAction,
+  type JourneyHop,
   type LinkId,
   type RouterId,
   type SrMplsState,
@@ -54,6 +56,105 @@ function neighborLinks(router: RouterId): { neighbor: RouterId; link: (typeof LI
   return LINKS.filter((l) => l.a === router || l.b === router).map((l) => ({ neighbor: l.a === router ? l.b : l.a, link: l }));
 }
 
+// ---------------------------------------------------------------------------
+// Hop Inspector enrichment (brief §17/§19) — additive DeviceProcessingTrace
+// fields, derived entirely from the JourneyHop the scenario file already
+// recorded (`hop.input`/`lookup`/`action`/`output`). This file computes NO
+// new forwarding fact; it only reshapes facts the scenario already decided
+// into the generic ingress/egress/lookup/nextHop/reason/mutation shape the
+// shared <HopInspectorPanel>/<PacketDiffViewer> expect (brief §38).
+// ---------------------------------------------------------------------------
+
+const LOOKUP_TYPE_BY_ACTION: Record<FwdAction, string> = {
+  PUSH: "Segment List",
+  CONTINUE: "LFIB (SPT Next-Hop)",
+  POP: "LFIB (PHP / Node SID)",
+  POP_AND_FORWARD_ADJ: "LFIB (Adjacency SID)",
+  IP_FORWARD: "IP Routing",
+  INVALID_SID: "LFIB (Ownership / Scope Check)",
+};
+
+// A hop's `input`/`output` string is only ever a real MPLS label when it is
+// exactly a numeric label value or "implicit-null" (see `fmtLabel`) — every
+// other value (plain "IP", "Delivered", "DROPPED", or a directional hint
+// like "toward R2" from the pre-SR IGP-forwarding recap steps) is prose,
+// never a label, and must not be presented as one.
+function isLabelToken(text: string): boolean {
+  return /^\d+$/.test(text) || text === "implicit-null";
+}
+
+function frameGroupFor(prefix: string, text: string, markChanged: boolean): PacketStackFrame[] {
+  return text.split(" / ").map((part, i) => {
+    const trimmed = part.trim();
+    const label = isLabelToken(trimmed);
+    return { id: `${prefix}-${i}`, text: label ? `MPLS ${trimmed}` : trimmed, tone: label ? "transport" : "ip", justChanged: markChanged && i === 0 };
+  });
+}
+
+function mutationsForAction(hop: JourneyHop): PacketMutation[] {
+  switch (hop.action) {
+    case "PUSH":
+      return [{ type: "PUSH", detail: hop.output }];
+    case "POP":
+    case "POP_AND_FORWARD_ADJ":
+      return [{ type: "POP", detail: hop.input }];
+    default:
+      return [];
+  }
+}
+
+function nextHopFor(hop: JourneyHop, state: SrMplsState): { id?: RouterId; label?: string } {
+  if (hop.output === "Delivered" || hop.action === "INVALID_SID") return {};
+  const idx = state.journey.indexOf(hop);
+  const isLast = idx === state.journey.length - 1;
+  // When this is the most-recently-recorded hop, `state.packetAt` already
+  // reflects where the packet now IS (see ARCHITECTURE.md §1) — i.e. the
+  // next hop this very decision produced. For an earlier, already-passed
+  // hop, the next journey entry is the authoritative next hop instead.
+  const nextRouter = !isLast ? state.journey[idx + 1]?.router : state.packetAt;
+  if (!nextRouter || nextRouter === hop.router) return {};
+  return { id: nextRouter, label: nextRouter };
+}
+
+function prevRouterFor(hop: JourneyHop, state: SrMplsState): RouterId | undefined {
+  const idx = state.journey.indexOf(hop);
+  return idx > 0 ? state.journey[idx - 1].router : undefined;
+}
+
+/**
+ * Picks the ACTUAL ingress/egress interface for a hop, directionally —
+ * from the real previous/next router in `state.journey` (falling back to
+ * the static "first two neighbors found" ids only when no hop has
+ * happened yet, i.e. nothing directional to derive). Fixes a case where
+ * a router with more than two neighbors (e.g. R1: R2 and R3) could show
+ * "Egress: to-R3" next to "Action: IP_FORWARD → toward R2" — the generic
+ * ids are a display default, never a forwarding decision (brief §38).
+ */
+function directionalInterfaces(router: RouterId, hop: JourneyHop | undefined, state: SrMplsState, fallbackIngress: string | undefined, fallbackEgress: string | undefined): { ingressInterfaceId?: string; egressInterfaceId?: string } {
+  if (!hop) return { ingressInterfaceId: fallbackIngress, egressInterfaceId: fallbackEgress };
+  const prevRouter = prevRouterFor(hop, state);
+  const next = nextHopFor(hop, state);
+  return {
+    ingressInterfaceId: prevRouter ? `${router}-${prevRouter}` : fallbackIngress,
+    egressInterfaceId: next.id ? `${router}-${next.id}` : fallbackEgress,
+  };
+}
+
+function hopInspectionFields(hop: JourneyHop, state: SrMplsState): Partial<DeviceProcessingTrace> {
+  const nextHop = nextHopFor(hop, state);
+  return {
+    lookupType: LOOKUP_TYPE_BY_ACTION[hop.action],
+    lookupKey: hop.input,
+    lookupResult: `${hop.action} → ${hop.output}`,
+    reason: hop.lookup,
+    nextHopId: nextHop.id,
+    nextHopLabel: nextHop.label,
+    mutations: mutationsForAction(hop),
+    packetBeforeFrames: frameGroupFor("before", hop.input, false),
+    packetAfterFrames: frameGroupFor("after", hop.output, true),
+  };
+}
+
 export function traceFor(router: RouterId, state: SrMplsState): DeviceProcessingTrace | undefined {
   const nbrs = neighborLinks(router);
   const ingressIfaceId = nbrs[0] ? `${router}-${nbrs[0].neighbor}` : undefined;
@@ -65,23 +166,29 @@ export function traceFor(router: RouterId, state: SrMplsState): DeviceProcessing
   if (router === "R1") {
     const invalid = state.fault && hop?.action === "INVALID_SID";
     const stages = invalid ? INVALID_PIPELINE : HEADEND_PIPELINE;
-    const base: DeviceProcessingTrace = { deviceId: router, egressInterfaceId: egressIfaceId, stages, completedStageIds: [] };
+    const dir = directionalInterfaces(router, hop, state, undefined, egressIfaceId);
+    const base: DeviceProcessingTrace = { deviceId: router, egressInterfaceId: dir.egressInterfaceId, stages, completedStageIds: [] };
     if (!hop) return base;
-    if (invalid) return { ...base, activeStageId: isCurrent ? "drop" : undefined, completedStageIds: allIds(INVALID_PIPELINE), packetBefore: hop.input, packetAfter: hop.output };
-    if (isCurrent) return { ...base, activeStageId: "push", completedStageIds: ["classify"], packetBefore: hop.input, packetAfter: hop.output };
-    return { ...base, completedStageIds: allIds(HEADEND_PIPELINE), packetBefore: hop.input, packetAfter: hop.output };
+    const hopFields = hopInspectionFields(hop, state);
+    if (invalid) return { ...base, activeStageId: isCurrent ? "drop" : undefined, completedStageIds: allIds(INVALID_PIPELINE), packetBefore: hop.input, packetAfter: hop.output, ...hopFields };
+    if (isCurrent) return { ...base, activeStageId: "push", completedStageIds: ["classify"], packetBefore: hop.input, packetAfter: hop.output, ...hopFields };
+    return { ...base, completedStageIds: allIds(HEADEND_PIPELINE), packetBefore: hop.input, packetAfter: hop.output, ...hopFields };
   }
   if (router === "R6") {
-    const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, stages: TAILEND_PIPELINE, completedStageIds: [] };
+    const dir = directionalInterfaces(router, hop, state, ingressIfaceId, undefined);
+    const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: dir.ingressInterfaceId, stages: TAILEND_PIPELINE, completedStageIds: [] };
     if (!hop) return base;
-    if (isCurrent) return { ...base, activeStageId: hop.action === "IP_FORWARD" ? "deliver" : "target-check", completedStageIds: ["label-lookup"], packetBefore: hop.input, packetAfter: hop.output };
-    return { ...base, completedStageIds: allIds(TAILEND_PIPELINE), packetBefore: hop.input, packetAfter: hop.output };
+    const hopFields = hopInspectionFields(hop, state);
+    if (isCurrent) return { ...base, activeStageId: hop.action === "IP_FORWARD" ? "deliver" : "target-check", completedStageIds: ["label-lookup"], packetBefore: hop.input, packetAfter: hop.output, ...hopFields };
+    return { ...base, completedStageIds: allIds(TAILEND_PIPELINE), packetBefore: hop.input, packetAfter: hop.output, ...hopFields };
   }
 
   const isAdjExec = hop?.action === "POP_AND_FORWARD_ADJ";
   const stages = isAdjExec ? ADJ_SID_PIPELINE : NODE_SID_PIPELINE;
-  const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, egressInterfaceId: egressIfaceId, stages, completedStageIds: [] };
+  const dir = directionalInterfaces(router, hop, state, ingressIfaceId, egressIfaceId);
+  const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: dir.ingressInterfaceId, egressInterfaceId: dir.egressInterfaceId, stages, completedStageIds: [] };
   if (!hop) return base;
+  const hopFields = hopInspectionFields(hop, state);
   if (isCurrent) {
     return {
       ...base,
@@ -89,9 +196,10 @@ export function traceFor(router: RouterId, state: SrMplsState): DeviceProcessing
       completedStageIds: isAdjExec ? ["active-lookup", "owner-check", "type-check", "resolve-adjacency"] : ["ingress", "label-lookup", "identify-instruction", "spt-nexthop"],
       packetBefore: hop.input,
       packetAfter: hop.output,
+      ...hopFields,
     };
   }
-  return { ...base, completedStageIds: allIds(stages), packetBefore: hop.input, packetAfter: hop.output };
+  return { ...base, completedStageIds: allIds(stages), packetBefore: hop.input, packetAfter: hop.output, ...hopFields };
 }
 
 export function packetFramesFor(state: SrMplsState): PacketStackFrame[] | undefined {

@@ -48,6 +48,12 @@ import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@
 import { PacketDetailPanel } from "@/components/network3d/PacketDetailPanel";
 import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
 import { layoutTo3D } from "@/components/network3d/layout";
+import { TopologyFrame } from "@/components/network3d/TopologyFrame";
+import { TopologyFocusMode } from "@/components/network3d/TopologyFocusMode";
+import { HopInspectorPanel } from "@/components/network3d/HopInspectorPanel";
+import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
+import { HopTimeline } from "@/components/network3d/HopTimeline";
+import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
 import type { ActivePacket3D, CameraMode, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
@@ -92,6 +98,8 @@ export default function SrMplsFoundationsDemo() {
   const [packetSelected, setPacketSelected] = useState(false);
   const [xrayMode, setXrayMode] = useState(true);
   const [labSegments, setLabSegments] = useState<SegmentSpec[]>([{ type: "NODE", target: "R6" }]);
+  const [focusMode, setFocusMode] = useState(false);
+  const [followPacketFocus, setFollowPacketFocus] = useState(true);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -204,6 +212,22 @@ export default function SrMplsFoundationsDemo() {
   const packetDirection = previewPath.length ? previewPath.join(" → ") : "—";
   const devicePacketForTab = xrayPacket ?? (effectiveDeviceId && state.packetAt === effectiveDeviceId ? activePacket : undefined);
 
+  // --- Question Context Mode (brief §9/§10) — true while a prediction
+  // question is the current step and unanswered, so the topology
+  // viewport goes sticky/compact instead of scrolling out of view.
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
+
+  // --- Hop Inspector target — reuses the SAME selectedNodeId/effectiveDeviceId/
+  // activeDeviceId state the rest of the page already computes (brief §10:
+  // "Do not duplicate ScenarioEngine state"). Clicking an earlier HopTimeline
+  // entry just moves `selectedNodeId` to that hop's router — no engine.goTo()
+  // needed, since `traceFor` already reads directly off the current,
+  // never-shrinking `state.journey` log for any router in it.
+  const focusInspectDeviceId = (selectedNodeId ?? effectiveDeviceId ?? activeDeviceId) as RouterId | undefined;
+  const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state) : undefined;
+  const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state) : undefined;
+  const journeyHopEntries = state.journey.map((h, i) => ({ id: `${h.router}-${i}`, label: h.router }));
+
   function explorerTabsFor(router: RouterId): DeviceExplorerTab[] {
     if (!nodeExplanation) return [];
     const overviewTab: DeviceExplorerTab = {
@@ -285,10 +309,23 @@ export default function SrMplsFoundationsDemo() {
       ),
     };
     const cliTab: DeviceExplorerTab = { id: "cli", label: "CLI", content: <CLIOutputPanel commands={buildSrCliCommands(state, router)} /> };
+    const routerTrace = traceFor(router, state);
+    const hopInspectorTab: DeviceExplorerTab = {
+      id: "hop-inspector",
+      label: "Hop Inspector",
+      content: routerTrace ? (
+        <div className="space-y-3">
+          <HopInspectorPanel trace={routerTrace} deviceName={router} interfaces={deviceInterfaces} />
+          <PacketDiffViewer before={routerTrace.packetBeforeFrames} after={routerTrace.packetAfterFrames} beforeText={routerTrace.packetBefore} afterText={routerTrace.packetAfter} mutations={routerTrace.mutations} />
+        </div>
+      ) : (
+        <p className="text-xs text-pv-text-faint">No hop recorded at this device yet.</p>
+      ),
+    };
 
-    if (router === "R1") return [overviewTab, hardwareTab, interfacesTab, igpTab, srgbTab, sidDbTab, segListTab, forwardingTab, packetTab, cliTab];
-    if (router === "R3") return [overviewTab, hardwareTab, interfacesTab, forwardingTab, sidDbTab, packetTab, cliTab];
-    return [overviewTab, hardwareTab, interfacesTab, forwardingTab, packetTab, cliTab];
+    if (router === "R1") return [overviewTab, hardwareTab, interfacesTab, hopInspectorTab, igpTab, srgbTab, sidDbTab, segListTab, forwardingTab, packetTab, cliTab];
+    if (router === "R3") return [overviewTab, hardwareTab, interfacesTab, hopInspectorTab, forwardingTab, sidDbTab, packetTab, cliTab];
+    return [overviewTab, hardwareTab, interfacesTab, hopInspectorTab, forwardingTab, packetTab, cliTab];
   }
 
   useEffect(() => {
@@ -318,6 +355,8 @@ export default function SrMplsFoundationsDemo() {
     setPacketSelected(false);
     setTopoView("physical");
     setLabSegments([{ type: "NODE", target: "R6" }]);
+    setFocusMode(false);
+    setFollowPacketFocus(true);
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Apply the correct fix to continue" : "Next Step →";
@@ -420,48 +459,59 @@ export default function SrMplsFoundationsDemo() {
         <div className="space-y-6">
           {viewMode3D ? (
             <>
-              <NetworkScene3D
-                nodes={nodes3D}
-                links={links3D}
-                activePacket={inDeviceMode ? undefined : activePacket3D}
-                onSelectNode={(id) => {
-                  setSelectedNodeId(id as RouterId);
-                  setPacketSelected(false);
-                  setSelectedLinkId(undefined);
-                }}
-                onSelectLink={(id) => {
-                  setSelectedLinkId(id);
-                  setSelectedNodeId(undefined);
-                  setPacketSelected(false);
-                }}
-                selectedLinkId={selectedLinkId}
-                onSelectPacket={() => {
-                  setPacketSelected(true);
-                  setAutoPlay(false);
-                }}
-                packetSelected={packetSelected}
-                focusPosition={focusPosition3D}
-                eyeOffset={eyeOffset3D}
-                mode={inDeviceMode ? "device" : "overview"}
-                deviceView={
-                  inDeviceMode
-                    ? {
-                        deviceLabel: effectiveDeviceId!,
-                        interfaces: deviceInterfaces,
-                        xray: deviceXray,
-                        trace: deviceTrace,
-                        packetFrames: devicePacketFrames,
-                        onSelectInterface: setSelectedInterfaceId,
-                        selectedInterfaceId,
-                        onSelectPacket: () => {
-                          setPacketSelected(true);
-                          setAutoPlay(false);
-                        },
-                        packetSelected,
-                      }
-                    : undefined
-                }
-              />
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                {focusMode ? (
+                  // Focus Mode already renders its own full-size <NetworkScene3D> in the
+                  // overlay above; keeping this one mounted too would run a second, fully
+                  // hidden WebGL canvas (its useFrame loops keep ticking behind the modal)
+                  // for no visible benefit — swap in a static placeholder of the exact
+                  // same footprint instead, so there's no layout shift on close.
+                  <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" />
+                ) : (
+                  <NetworkScene3D
+                    nodes={nodes3D}
+                    links={links3D}
+                    activePacket={inDeviceMode ? undefined : activePacket3D}
+                    onSelectNode={(id) => {
+                      setSelectedNodeId(id as RouterId);
+                      setPacketSelected(false);
+                      setSelectedLinkId(undefined);
+                    }}
+                    onSelectLink={(id) => {
+                      setSelectedLinkId(id);
+                      setSelectedNodeId(undefined);
+                      setPacketSelected(false);
+                    }}
+                    selectedLinkId={selectedLinkId}
+                    onSelectPacket={() => {
+                      setPacketSelected(true);
+                      setAutoPlay(false);
+                    }}
+                    packetSelected={packetSelected}
+                    focusPosition={focusPosition3D}
+                    eyeOffset={eyeOffset3D}
+                    mode={inDeviceMode ? "device" : "overview"}
+                    deviceView={
+                      inDeviceMode
+                        ? {
+                            deviceLabel: effectiveDeviceId!,
+                            interfaces: deviceInterfaces,
+                            xray: deviceXray,
+                            trace: deviceTrace,
+                            packetFrames: devicePacketFrames,
+                            onSelectInterface: setSelectedInterfaceId,
+                            selectedInterfaceId,
+                            onSelectPacket: () => {
+                              setPacketSelected(true);
+                              setAutoPlay(false);
+                            },
+                            packetSelected,
+                          }
+                        : undefined
+                    }
+                  />
+                )}
+              </TopologyFrame>
 
               {packetSelected && activePacket && (
                 <PacketDetailPanel
@@ -518,9 +568,11 @@ export default function SrMplsFoundationsDemo() {
             </>
           ) : (
             <>
-              <GraphTopologyViewer nodes={displayNodes} edges={edges} activeNodeIds={activeNodeIds} bestPathEdgeIds={bestPathEdgeIds} onEdgeClick={(id) => setSelectedLinkId(id)}>
-                {activePacket && packetFrom && packetTo && <GraphPacket packet={activePacket} from={packetFrom} to={packetTo} />}
-              </GraphTopologyViewer>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                <GraphTopologyViewer nodes={displayNodes} edges={edges} activeNodeIds={activeNodeIds} bestPathEdgeIds={bestPathEdgeIds} onEdgeClick={(id) => setSelectedLinkId(id)}>
+                  {activePacket && packetFrom && packetTo && <GraphPacket packet={activePacket} from={packetFrom} to={packetTo} />}
+                </GraphTopologyViewer>
+              </TopologyFrame>
 
               {selectedLinkId && !lastHop && linkDetailFor(selectedLinkId, state) && <LinkDetailPanel detail={linkDetailFor(selectedLinkId, state)!} onClose={() => setSelectedLinkId(undefined)} />}
 
@@ -689,6 +741,131 @@ export default function SrMplsFoundationsDemo() {
           <CLIOutputPanel commands={cliCommands} />
         </div>
       </div>
+
+      {focusMode && (
+        <TopologyFocusMode
+          onClose={() => setFocusMode(false)}
+          toolbar={
+            <>
+              <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => setViewMode3D(v === "on")} tone="violet" />
+              {viewMode3D && (
+                <TopologyModeSwitcher
+                  options={[
+                    { value: "overview", label: "Overview" },
+                    { value: "device", label: "Device" },
+                    { value: "packetFollow", label: "Packet Follow" },
+                    { value: "freeOrbit", label: "Free Orbit" },
+                  ]}
+                  value={cameraMode}
+                  onChange={(v) => {
+                    setCameraMode(v);
+                    if (v === "device" && !enteredDeviceId) setEnteredDeviceId(selectedNodeId ?? activeDeviceId ?? "R1");
+                    if (v === "overview") {
+                      setEnteredDeviceId(undefined);
+                      setSelectedNodeId(undefined);
+                    }
+                    if (v === "freeOrbit") setEnteredDeviceId(undefined);
+                  }}
+                />
+              )}
+              {viewMode3D && inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+            </>
+          }
+          canvas={
+            <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
+              {viewMode3D ? (
+                <NetworkScene3D
+                  nodes={nodes3D}
+                  links={links3D}
+                  activePacket={inDeviceMode ? undefined : activePacket3D}
+                  onSelectNode={(id) => {
+                    setSelectedNodeId(id as RouterId);
+                    setPacketSelected(false);
+                    setSelectedLinkId(undefined);
+                  }}
+                  onSelectLink={(id) => setSelectedLinkId(id)}
+                  selectedLinkId={selectedLinkId}
+                  onSelectPacket={() => setPacketSelected(true)}
+                  packetSelected={packetSelected}
+                  focusPosition={followPacketFocus ? focusPosition3D : undefined}
+                  eyeOffset={eyeOffset3D}
+                  mode={inDeviceMode ? "device" : "overview"}
+                  deviceView={
+                    inDeviceMode
+                      ? {
+                          deviceLabel: effectiveDeviceId!,
+                          interfaces: deviceInterfaces,
+                          xray: deviceXray,
+                          trace: deviceTrace,
+                          packetFrames: devicePacketFrames,
+                          onSelectInterface: setSelectedInterfaceId,
+                          selectedInterfaceId,
+                          onSelectPacket: () => setPacketSelected(true),
+                          packetSelected,
+                        }
+                      : undefined
+                  }
+                />
+              ) : (
+                <GraphTopologyViewer nodes={displayNodes} edges={edges} activeNodeIds={activeNodeIds} bestPathEdgeIds={bestPathEdgeIds} onNodeClick={(id) => setSelectedNodeId(id as RouterId)} onEdgeClick={(id) => setSelectedLinkId(id)}>
+                  {activePacket && packetFrom && packetTo && <GraphPacket packet={activePacket} from={packetFrom} to={packetTo} />}
+                </GraphTopologyViewer>
+              )}
+            </div>
+          }
+          inspector={
+            <div className="space-y-3">
+              {focusTrace ? (
+                <>
+                  <HopInspectorPanel
+                    trace={focusTrace}
+                    deviceName={focusInspectDeviceId ?? "—"}
+                    interfaces={focusInterfaces}
+                    onFocusNextHop={(id) => {
+                      setSelectedNodeId(id as RouterId);
+                      if (cameraMode === "device") setEnteredDeviceId(id as RouterId);
+                    }}
+                  />
+                  <PacketDiffViewer before={focusTrace.packetBeforeFrames} after={focusTrace.packetAfterFrames} beforeText={focusTrace.packetBefore} afterText={focusTrace.packetAfter} mutations={focusTrace.mutations} />
+                </>
+              ) : (
+                <GlassPanel className="p-4">
+                  <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+                </GlassPanel>
+              )}
+            </div>
+          }
+          timeline={
+            <div className="space-y-2">
+              <HopTimeline
+                hops={journeyHopEntries}
+                currentIndex={journeyHopEntries.length - 1}
+                onSelectHop={(i) => {
+                  const h = state.journey[i];
+                  if (!h) return;
+                  setSelectedNodeId(h.router);
+                  if (cameraMode === "device") setEnteredDeviceId(h.router);
+                }}
+              />
+              <PacketFlowControls
+                playing={autoPlay}
+                onTogglePlay={() => setAutoPlay((v) => !v)}
+                onPrevHop={() => engine.goTo(Math.max(0, index - 1))}
+                onNextHop={() => engine.advance()}
+                onReset={handleRestart}
+                canPrevHop={index > 0}
+                canNextHop={canAdvance}
+                speed={speed as PlaySpeed}
+                onSpeedChange={setSpeed}
+                followPacket={followPacketFocus}
+                onToggleFollowPacket={() => setFollowPacketFocus((v) => !v)}
+                view3D={viewMode3D}
+                onToggleView3D={() => setViewMode3D((v) => !v)}
+              />
+            </div>
+          }
+        />
+      )}
     </div>
   );
 }

@@ -67,6 +67,7 @@ import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@
 import { PacketDetailPanel } from "@/components/network3d/PacketDetailPanel";
 import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
 import { PlaneViewSwitcher, type PlaneView } from "@/components/network3d/PlaneViewSwitcher";
+import { TopologyFrame } from "@/components/network3d/TopologyFrame";
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, Link3DData, Node3DStatus } from "@/components/network3d/types";
 import { diagnosticLayersFor, explainRouter, floodTargetsForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor, PRIMARY_TRANSITION_ROUTER } from "./deviceTrace";
@@ -141,6 +142,11 @@ export default function BgpRouteReflectorDemo() {
 
   const { state, currentStep, index, totalSteps, isComplete, lastAnswer, whatChanged, activePacket } = snapshot;
   const canAdvance = engine.canAdvance();
+  // Question Context Mode smoke test (brief §27/§56) — same sticky/compact
+  // treatment as SR-MPLS Foundations, so a BGP RR prediction question never
+  // scrolls the topology out of view. No new engine/page state — reuses the
+  // existing snapshot fields exactly like SR-MPLS's TopologyFrame usage.
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   const isChallengePhase = index >= challengeIndex;
 
   useEffect(() => {
@@ -523,6 +529,7 @@ export default function BgpRouteReflectorDemo() {
         <div className="space-y-6">
           {viewMode === "3d" ? (
             <>
+              <TopologyFrame questionActive={questionActive}>
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
@@ -577,6 +584,7 @@ export default function BgpRouteReflectorDemo() {
                     : undefined
                 }
               />
+              </TopologyFrame>
 
               {cameraMode === "overview" && topoView === "fullmesh" && showCalculator && !isChallengePhase && (
                 <GlassPanel strong className="space-y-3 p-5">
@@ -761,13 +769,15 @@ export default function BgpRouteReflectorDemo() {
               )}
             </>
           ) : (
-            <GraphTopologyViewer nodes={activeGraph.nodes} edges={activeGraph.edges.map((e) => ({ ...e, state: "full" as const }))} activeNodeIds={activePacket ? [activePacket.from, activePacket.to] : []} regions={activeGraph.regions}>
-              {activePacket && (() => {
-                const from = activeGraph.nodes.find((n) => n.id === activePacket.from);
-                const to = activeGraph.nodes.find((n) => n.id === activePacket.to);
-                return from && to ? <GraphPacket packet={activePacket} from={from} to={to} /> : null;
-              })()}
-            </GraphTopologyViewer>
+            <TopologyFrame questionActive={questionActive}>
+              <GraphTopologyViewer nodes={activeGraph.nodes} edges={activeGraph.edges.map((e) => ({ ...e, state: "full" as const }))} activeNodeIds={activePacket ? [activePacket.from, activePacket.to] : []} regions={activeGraph.regions}>
+                {activePacket && (() => {
+                  const from = activeGraph.nodes.find((n) => n.id === activePacket.from);
+                  const to = activeGraph.nodes.find((n) => n.id === activePacket.to);
+                  return from && to ? <GraphPacket packet={activePacket} from={from} to={to} /> : null;
+                })()}
+              </GraphTopologyViewer>
+            </TopologyFrame>
           )}
 
           {!isComplete && currentStep && (

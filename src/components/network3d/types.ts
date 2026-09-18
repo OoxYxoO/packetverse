@@ -10,6 +10,39 @@ import type { DeviceKind, PacketVisual } from "@/lib/sim-engine/types";
 
 export type Node3DStatus = "idle" | "active" | "onPath" | "selected";
 
+/**
+ * Physical-hardware-SHAPE taxonomy (brief §3) — deliberately separate
+ * from `DeviceKind`/logical `role`. A PE, P, RR, spine or leaf are all
+ * still just routers physically; this only decides which generic 3D
+ * chassis mesh renders, never a protocol decision. `deviceVisualKindFor`
+ * below is the default mapper from the existing `DeviceKind` union so
+ * every lesson gets a sensible shape with zero changes required —
+ * a lesson may still override per-node via `Node3DData.visualKind`.
+ */
+export type DeviceVisualKind = "ROUTER" | "SWITCH" | "FIREWALL" | "SERVER" | "HOST" | "CLOUD" | "GENERIC_NETWORK";
+
+export function deviceVisualKindFor(kind: DeviceKind): DeviceVisualKind {
+  switch (kind) {
+    case "router":
+    case "pe-router":
+    case "p-router":
+      return "ROUTER";
+    case "switch":
+    case "accessPoint":
+      return "SWITCH";
+    case "firewall":
+      return "FIREWALL";
+    case "server":
+      return "SERVER";
+    case "laptop":
+      return "HOST";
+    case "cloud":
+      return "CLOUD";
+    default:
+      return "GENERIC_NETWORK";
+  }
+}
+
 export interface Node3DData {
   id: string;
   label: string;
@@ -18,9 +51,13 @@ export interface Node3DData {
   /** World-space position — already laid out by the caller (see layout.ts). */
   position: [number, number, number];
   status?: Node3DStatus;
-  /** Small contextual tags rendered near the node, e.g. "VRF CUST-A", "RR", "LSP". */
+  /** Small contextual tags rendered near the node, e.g. "VRF CUST-A", "RR", "LSP" — this is the ROLE badge (brief §5), distinct from the physical chassis shape. */
   badges?: string[];
+  /** Overrides the shape derived from `kind` via `deviceVisualKindFor` — optional, falls back automatically so no existing lesson needs to change. */
+  visualKind?: DeviceVisualKind;
 }
+
+export type LinkVisualState = "normal" | "selected" | "activePath" | "controlPlane" | "backup" | "failed" | "disabled";
 
 export interface Link3DData {
   id: string;
@@ -31,6 +68,13 @@ export interface Link3DData {
   active?: boolean;
   /** True once the packet's journey has already passed through this link this run. */
   onPath?: boolean;
+  /**
+   * Optional richer link-state classification (brief §7). When omitted,
+   * rendering falls back entirely to `active`/`onPath` exactly as before —
+   * additive, not a replacement, so every existing lesson keeps working
+   * unmodified.
+   */
+  visualState?: LinkVisualState;
 }
 
 /** The animated in-flight packet, positioned between two existing node ids. */
@@ -95,12 +139,49 @@ export interface ProcessingStage {
 }
 
 /**
+ * Generic packet mutation vocabulary (brief §18) — reports WHAT
+ * already happened to the packet at a hop; it never decides whether
+ * it should happen. Kept generic enough for MPLS/SRv6/VXLAN/EVPN/VLAN/
+ * IP routing/multicast without a protocol-specific union ever leaking
+ * into this file.
+ */
+export type PacketMutationType =
+  | "PUSH"
+  | "POP"
+  | "SWAP"
+  | "ENCAPSULATE"
+  | "DECAPSULATE"
+  | "DA_CHANGE"
+  | "SA_CHANGE"
+  | "TTL_CHANGE"
+  | "HOP_LIMIT_CHANGE"
+  | "SEGMENTS_LEFT_CHANGE"
+  | "VNI_ADD"
+  | "VNI_REMOVE"
+  | "VLAN_ADD"
+  | "VLAN_REMOVE"
+  | "MAC_CHANGE";
+
+export interface PacketMutation {
+  type: PacketMutationType;
+  detail?: string;
+}
+
+/**
  * Generic per-device forwarding trace (brief §16: reusable by MPLS,
  * OSPF/IP, BGP, EVPN/VXLAN, firewall, NAT, IPsec — not MPLS-specific
  * in shape). A lesson's own adapter computes one of these per device
  * per render; the 3D layer only walks `stages` and highlights
  * `activeStageId`/`completedStageIds` — it never decides what a stage
  * means or when it's "done".
+ *
+ * The fields below `forwardingAction` are an ADDITIVE extension (brief
+ * §17, "Hop Inspection Contract") feeding the new <HopInspectorPanel> —
+ * every field is optional so a lesson that only ever populated the
+ * original fields keeps rendering exactly as before with no hop
+ * inspector shown. This is deliberately layered onto the existing
+ * `DeviceProcessingTrace` rather than a second, competing tracing
+ * type — see ARCHITECTURE.md.
  */
 export interface DeviceProcessingTrace {
   deviceId: string;
@@ -112,6 +193,21 @@ export interface DeviceProcessingTrace {
   activeStageId?: string;
   completedStageIds: string[];
   forwardingAction?: string;
+  /** e.g. "LFIB", "VRF lookup", "MAC table", "route table" — what kind of table/decision this hop consulted. */
+  lookupType?: string;
+  /** The key looked up, e.g. "label 16004", "10.2.2.0/24". */
+  lookupKey?: string;
+  /** The result of that lookup in plain text, e.g. "swap 16004 → 16005 via P2". */
+  lookupResult?: string;
+  /** Next-hop device id, so the panel/UI can link to it. */
+  nextHopId?: string;
+  nextHopLabel?: string;
+  /** One-line "why" — the reason this forwarding action happened, e.g. "LFIB entry for active transport label". */
+  reason?: string;
+  /** Structured before/after packet stack, for <PacketDiffViewer> — falls back to the plain `packetBefore`/`packetAfter` strings above when omitted. */
+  packetBeforeFrames?: PacketStackFrame[];
+  packetAfterFrames?: PacketStackFrame[];
+  mutations?: PacketMutation[];
 }
 
 /** One label (or plain IP payload) in the packet's visual stack, top to bottom. */
