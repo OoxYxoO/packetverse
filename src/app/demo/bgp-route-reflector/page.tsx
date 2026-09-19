@@ -76,7 +76,7 @@ import { HopTimeline } from "@/components/network3d/HopTimeline";
 import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
 import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
-import type { ActivePacket3D, CameraMode, FocusTarget3D, Link3DData, Node3DStatus } from "@/components/network3d/types";
+import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus } from "@/components/network3d/types";
 import { diagnosticLayersFor, explainRouter, floodTargetsForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor, PRIMARY_TRANSITION_ROUTER } from "./deviceTrace";
 
 const DEVICE_ROUTERS: RouterId[] = ["PE1", "PE2", "PE3", "PE4", "PE5", "PE6", "RR1", "RR2"];
@@ -145,6 +145,8 @@ export default function BgpRouteReflectorDemo() {
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
+  /** Explicit Hop-vs-Device intent inside Focus Mode ("Shared Focus Mode Inspector Fix") — set by the actual gesture (node click → device; timeline/next-hop/Play → hop), never inferred from whether a trace object happens to exist. */
+  const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -359,6 +361,7 @@ export default function BgpRouteReflectorDemo() {
     if (!autoPlay) {
       setFocusedObject(undefined);
       setHistoricalIndex(undefined);
+      setInspectorSurface("hop");
     }
     setAutoPlay((v) => !v);
   }
@@ -524,6 +527,7 @@ export default function BgpRouteReflectorDemo() {
     setPacketSelected(false);
     setFocusedObject(undefined);
     setHistoricalIndex(undefined);
+    setInspectorSurface("hop");
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Apply the correct fix to continue" : "Next Step →";
@@ -679,6 +683,8 @@ export default function BgpRouteReflectorDemo() {
                   setSelectedRegionId(undefined);
                   setPacketSelected(false);
                   setSelectedLinkId(undefined);
+                  setInspectorSurface("device");
+                  setHistoricalIndex(undefined);
                 }}
                 onSelectLink={(id) => {
                   setSelectedLinkId(id);
@@ -1147,6 +1153,8 @@ export default function BgpRouteReflectorDemo() {
                   setSelectedRegionId(undefined);
                   setPacketSelected(false);
                   setSelectedLinkId(undefined);
+                  setInspectorSurface("device");
+                  setHistoricalIndex(undefined);
                 }}
                 onSelectLink={(id) => setSelectedLinkId(id)}
                 selectedLinkId={selectedLinkId}
@@ -1202,8 +1210,45 @@ export default function BgpRouteReflectorDemo() {
                   handleCameraModeChange("overview");
                 }}
               />
+            ) : inspectorSurface === "device" ? (
+              inDeviceMode ? (
+                <div className="space-y-3">
+                  <TopologyModeSwitcher
+                    options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                    value={inspectorSurface}
+                    onChange={setInspectorSurface}
+                    tone="violet"
+                  />
+                  <DeviceExplorerPanel
+                    explanation={nodeExplanation!}
+                    tabs={explorerTabs}
+                    xrayEnabled={deviceXray}
+                    onToggleXray={() => setDeviceXray((v) => !v)}
+                    xrayOnLabel="Reflection X-Ray"
+                    onExit={() => {
+                      setCameraMode("overview");
+                      setEnteredDeviceId(undefined);
+                    }}
+                  />
+                </div>
+              ) : nodeExplanation ? (
+                <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} xrayEnabled={false} />
+              ) : (
+                <GlassPanel className="p-4">
+                  <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+                </GlassPanel>
+              )
             ) : historicalIndex !== undefined && historicalTrace ? (
               <div className="space-y-3">
+                {inDeviceMode && (
+                  <TopologyModeSwitcher
+                    options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                    value={inspectorSurface}
+                    onChange={setInspectorSurface}
+                    tone="violet"
+                    disabledValues={["device"]}
+                  />
+                )}
                 <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
@@ -1218,31 +1263,26 @@ export default function BgpRouteReflectorDemo() {
               </div>
             ) : focusTrace ? (
               <div className="space-y-3">
+                {inDeviceMode && (
+                  <TopologyModeSwitcher
+                    options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                    value={inspectorSurface}
+                    onChange={setInspectorSurface}
+                    tone="violet"
+                  />
+                )}
                 <HopInspectorPanel
                   trace={focusTrace}
                   deviceName={focusInspectDeviceId ?? "—"}
                   interfaces={focusInterfaces}
                   onFocusNextHop={(id) => {
                     setSelectedNodeId(id);
+                    setInspectorSurface("hop");
                     if (cameraMode === "device") setEnteredDeviceId(id as RouterId);
                   }}
                 />
                 <PacketDiffViewer before={focusTrace.packetBeforeFrames} after={focusTrace.packetAfterFrames} beforeText={focusTrace.packetBefore} afterText={focusTrace.packetAfter} mutations={focusTrace.mutations} />
               </div>
-            ) : inDeviceMode ? (
-              <DeviceExplorerPanel
-                explanation={nodeExplanation!}
-                tabs={explorerTabs}
-                xrayEnabled={deviceXray}
-                onToggleXray={() => setDeviceXray((v) => !v)}
-                xrayOnLabel="Reflection X-Ray"
-                onExit={() => {
-                  setCameraMode("overview");
-                  setEnteredDeviceId(undefined);
-                }}
-              />
-            ) : nodeExplanation ? (
-              <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} xrayEnabled={false} />
             ) : (
               <GlassPanel className="p-4">
                 <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
@@ -1257,6 +1297,7 @@ export default function BgpRouteReflectorDemo() {
                 onSelectHop={(i) => {
                   const entry = journeyHopEntries[i];
                   if (!entry) return;
+                  setInspectorSurface("hop");
                   if (entry.index === index) {
                     // The rightmost/current entry — return to live inspection.
                     setHistoricalIndex(undefined);
@@ -1279,10 +1320,12 @@ export default function BgpRouteReflectorDemo() {
                 onTogglePlay={handleToggleAutoPlay}
                 onPrevHop={() => {
                   setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
                   engine.goTo(Math.max(0, index - 1));
                 }}
                 onNextHop={() => {
                   setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
                   engine.advance();
                 }}
                 onReset={handleRestart}

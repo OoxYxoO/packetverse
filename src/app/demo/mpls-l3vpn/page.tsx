@@ -51,7 +51,7 @@ import { HopTimeline } from "@/components/network3d/HopTimeline";
 import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
 import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutTo3D } from "@/components/network3d/layout";
-import type { ActivePacket3D, CameraMode, FocusTarget3D, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
+import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import { explainNode } from "./explain";
 import { interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
@@ -158,6 +158,8 @@ export default function MplsL3vpnDemo() {
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
+  /** Explicit Hop-vs-Device intent inside Focus Mode ("Shared Focus Mode Inspector Fix") — set by the actual gesture (node click → device; timeline/next-hop/Play → hop), never inferred from whether a trace object happens to exist. */
+  const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -396,6 +398,7 @@ export default function MplsL3vpnDemo() {
     if (!autoPlay) {
       setFocusedObject(undefined);
       setHistoricalIndex(undefined);
+      setInspectorSurface("hop");
     }
     setAutoPlay((v) => !v);
   }
@@ -582,6 +585,7 @@ export default function MplsL3vpnDemo() {
     setRrDisabled(false);
     setFocusedObject(undefined);
     setHistoricalIndex(undefined);
+    setInspectorSurface("hop");
     setRrQuestionAnswer(undefined);
   };
 
@@ -740,6 +744,8 @@ export default function MplsL3vpnDemo() {
                   setSelectedNodeId(id as ExtRouterId);
                   setPacketSelected(false);
                   setSelectedLinkId(undefined);
+                  setInspectorSurface("device");
+                  setHistoricalIndex(undefined);
                 }}
                 onSelectLink={(id) => {
                   setSelectedLinkId(id);
@@ -1157,6 +1163,8 @@ export default function MplsL3vpnDemo() {
                   setSelectedNodeId(id as ExtRouterId);
                   setPacketSelected(false);
                   setSelectedLinkId(undefined);
+                  setInspectorSurface("device");
+                  setHistoricalIndex(undefined);
                 }}
                 onSelectLink={(id) => setSelectedLinkId(id)}
                 selectedLinkId={selectedLinkId}
@@ -1213,8 +1221,58 @@ export default function MplsL3vpnDemo() {
                   handleCameraModeChange("overview");
                 }}
               />
+            ) : inDeviceMode && isRr1Device ? (
+              // RR1 is a synthetic, presentation-only device with no ScenarioEngine
+              // state of its own (§ rrIntegration.ts) — it never has a Hop trace, so
+              // it has only one surface, not a Hop/Device switch.
+              <DeviceExplorerPanel
+                explanation={nodeExplanation!}
+                tabs={rr1ExplorerTabs}
+                xrayEnabled={deviceXray}
+                onToggleXray={() => setDeviceXray((v) => !v)}
+                onExit={() => {
+                  setCameraMode("overview");
+                  setEnteredDeviceId(undefined);
+                }}
+              />
+            ) : inspectorSurface === "device" ? (
+              inDeviceMode ? (
+                <div className="space-y-3">
+                  <TopologyModeSwitcher
+                    options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                    value={inspectorSurface}
+                    onChange={setInspectorSurface}
+                    tone="violet"
+                  />
+                  <DeviceExplorerPanel
+                    explanation={nodeExplanation!}
+                    tabs={mplsExplorerTabs}
+                    xrayEnabled={deviceXray}
+                    onToggleXray={() => setDeviceXray((v) => !v)}
+                    onExit={() => {
+                      setCameraMode("overview");
+                      setEnteredDeviceId(undefined);
+                    }}
+                  />
+                </div>
+              ) : nodeExplanation ? (
+                <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} focusLayerIndices={xrayMode ? focusIndices : undefined} xrayEnabled={xrayMode} />
+              ) : (
+                <GlassPanel className="p-4">
+                  <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+                </GlassPanel>
+              )
             ) : historicalIndex !== undefined && historicalTrace ? (
               <div className="space-y-3">
+                {inDeviceMode && (
+                  <TopologyModeSwitcher
+                    options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                    value={inspectorSurface}
+                    onChange={setInspectorSurface}
+                    tone="violet"
+                    disabledValues={["device"]}
+                  />
+                )}
                 <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
@@ -1229,30 +1287,26 @@ export default function MplsL3vpnDemo() {
               </div>
             ) : focusTrace ? (
               <div className="space-y-3">
+                {inDeviceMode && (
+                  <TopologyModeSwitcher
+                    options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                    value={inspectorSurface}
+                    onChange={setInspectorSurface}
+                    tone="violet"
+                  />
+                )}
                 <HopInspectorPanel
                   trace={focusTrace}
                   deviceName={focusInspectDeviceId ?? "—"}
                   interfaces={focusInterfaces}
                   onFocusNextHop={(id) => {
                     setSelectedNodeId(id as RouterId);
+                    setInspectorSurface("hop");
                     if (cameraMode === "device") setEnteredDeviceId(id as RouterId);
                   }}
                 />
                 <PacketDiffViewer before={focusTrace.packetBeforeFrames} after={focusTrace.packetAfterFrames} beforeText={focusTrace.packetBefore} afterText={focusTrace.packetAfter} mutations={focusTrace.mutations} />
               </div>
-            ) : inDeviceMode ? (
-              <DeviceExplorerPanel
-                explanation={nodeExplanation!}
-                tabs={isRr1Device ? rr1ExplorerTabs : mplsExplorerTabs}
-                xrayEnabled={deviceXray}
-                onToggleXray={() => setDeviceXray((v) => !v)}
-                onExit={() => {
-                  setCameraMode("overview");
-                  setEnteredDeviceId(undefined);
-                }}
-              />
-            ) : nodeExplanation ? (
-              <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} focusLayerIndices={xrayMode ? focusIndices : undefined} xrayEnabled={xrayMode} />
             ) : (
               <GlassPanel className="p-4">
                 <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
@@ -1267,6 +1321,7 @@ export default function MplsL3vpnDemo() {
                 onSelectHop={(i) => {
                   const entry = journeyHopEntries[i];
                   if (!entry) return;
+                  setInspectorSurface("hop");
                   if (entry.index === index) {
                     // The rightmost/current entry — return to live inspection.
                     setHistoricalIndex(undefined);
@@ -1289,10 +1344,12 @@ export default function MplsL3vpnDemo() {
                 onTogglePlay={handleToggleAutoPlay}
                 onPrevHop={() => {
                   setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
                   engine.goTo(Math.max(0, index - 1));
                 }}
                 onNextHop={() => {
                   setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
                   engine.advance();
                 }}
                 onReset={handleRestart}

@@ -98,9 +98,10 @@ Capability is expressed in three tiers. A lesson gets the richest tier its **rea
 Run through this before calling any lesson (new or migrated) done:
 
 - [ ] Focus Mode works (Expand, Overview, Device, Free Orbit, Close)
-- [ ] questions work in Focus Mode (visible, answerable, same state as normal mode)
-- [ ] direct node selection is correct (click X → Hop Inspector says X, not a neighbor)
-- [ ] packet/message journey is modeled if the domain has one (HopTimeline shows real, protocol-appropriate labels — not generic "hop 1/2/3")
+- [ ] questions work in Focus Mode (visible, answerable, same state as normal mode) and always win the inspector slot over Hop/Device
+- [ ] direct node selection is correct (click X while entered → Device Explorer for X, not a neighbor; the `InspectorSurface` set to `"device"` — see ARCHITECTURE.md §18)
+- [ ] Device Explorer is actually reachable inside Focus Mode (not just the main column) once a device is entered, and a Hop/Device switch appears whenever both surfaces exist for that device
+- [ ] packet/message journey is modeled if the domain has one (HopTimeline shows real, protocol-appropriate labels — not generic "hop 1/2/3"); selecting a timeline entry sets `InspectorSurface` to `"hop"`
 - [ ] Hop Inspector is domain-derived (ingress/egress/lookup/action/reason come from `traceFor()`, not invented in the component)
 - [ ] before/after is accurate (`packetBefore`/`packetAfter` or `packetBeforeFrames`/`packetAfterFrames` reflect real state, never guessed)
 - [ ] relevant packet/header layers can be focused, where the domain models discrete layers

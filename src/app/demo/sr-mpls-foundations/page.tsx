@@ -55,7 +55,7 @@ import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
 import { HopTimeline } from "@/components/network3d/HopTimeline";
 import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
 import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
-import type { ActivePacket3D, CameraMode, FocusTarget3D, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
+import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
 
@@ -101,6 +101,8 @@ export default function SrMplsFoundationsDemo() {
   const [labSegments, setLabSegments] = useState<SegmentSpec[]>([{ type: "NODE", target: "R6" }]);
   const [focusMode, setFocusMode] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
+  /** Explicit Hop-vs-Device intent inside Focus Mode ("Shared Focus Mode Inspector Fix") — set by the actual gesture (node click → device; timeline/next-hop/Play → hop), never inferred from whether a trace object happens to exist. */
+  const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -358,7 +360,10 @@ export default function SrMplsFoundationsDemo() {
   // camera silently parked on a device the packet has already left.
   // Pausing again does NOT re-focus anything — the learner has to click.
   function handleToggleAutoPlay() {
-    if (!autoPlay) setFocusedObject(undefined);
+    if (!autoPlay) {
+      setFocusedObject(undefined);
+      setInspectorSurface("hop");
+    }
     setAutoPlay((v) => !v);
   }
 
@@ -505,6 +510,7 @@ export default function SrMplsFoundationsDemo() {
     setLabSegments([{ type: "NODE", target: "R6" }]);
     setFocusMode(false);
     setFocusedObject(undefined);
+    setInspectorSurface("hop");
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Apply the correct fix to continue" : "Next Step →";
@@ -616,6 +622,7 @@ export default function SrMplsFoundationsDemo() {
                       setSelectedNodeId(id as RouterId);
                       setPacketSelected(false);
                       setSelectedLinkId(undefined);
+                      setInspectorSurface("device");
                     }}
                     onSelectLink={(id) => {
                       setSelectedLinkId(id);
@@ -958,6 +965,7 @@ export default function SrMplsFoundationsDemo() {
                     setSelectedNodeId(id as RouterId);
                     setPacketSelected(false);
                     setSelectedLinkId(undefined);
+                    setInspectorSurface("device");
                   }}
                   onSelectLink={(id) => setSelectedLinkId(id)}
                   selectedLinkId={selectedLinkId}
@@ -1027,14 +1035,50 @@ export default function SrMplsFoundationsDemo() {
                     handleCameraModeChange("overview");
                   }}
                 />
+              ) : inspectorSurface === "device" ? (
+                inDeviceMode ? (
+                  <div className="space-y-3">
+                    <TopologyModeSwitcher
+                      options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                      value={inspectorSurface}
+                      onChange={setInspectorSurface}
+                      tone="violet"
+                    />
+                    <DeviceExplorerPanel
+                      explanation={nodeExplanation!}
+                      tabs={explorerTabsFor(effectiveDeviceId!)}
+                      xrayEnabled={deviceXray}
+                      onToggleXray={() => setDeviceXray((v) => !v)}
+                      onExit={() => {
+                        setCameraMode("overview");
+                        setEnteredDeviceId(undefined);
+                      }}
+                    />
+                  </div>
+                ) : nodeExplanation ? (
+                  <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} xrayEnabled={xrayMode} />
+                ) : (
+                  <GlassPanel className="p-4">
+                    <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+                  </GlassPanel>
+                )
               ) : focusTrace ? (
                 <>
+                  {inDeviceMode && (
+                    <TopologyModeSwitcher
+                      options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                      value={inspectorSurface}
+                      onChange={setInspectorSurface}
+                      tone="violet"
+                    />
+                  )}
                   <HopInspectorPanel
                     trace={focusTrace}
                     deviceName={focusInspectDeviceId ?? "—"}
                     interfaces={focusInterfaces}
                     onFocusNextHop={(id) => {
                       setSelectedNodeId(id as RouterId);
+                      setInspectorSurface("hop");
                       if (cameraMode === "device") setEnteredDeviceId(id as RouterId);
                     }}
                   />
@@ -1055,6 +1099,7 @@ export default function SrMplsFoundationsDemo() {
                 onSelectHop={(i) => {
                   const h = state.journey[i];
                   if (!h) return;
+                  setInspectorSurface("hop");
                   setSelectedNodeId(h.router);
                   if (cameraMode === "device") setEnteredDeviceId(h.router);
                 }}
@@ -1062,8 +1107,14 @@ export default function SrMplsFoundationsDemo() {
               <PacketFlowControls
                 playing={autoPlay}
                 onTogglePlay={handleToggleAutoPlay}
-                onPrevHop={() => engine.goTo(Math.max(0, index - 1))}
-                onNextHop={() => engine.advance()}
+                onPrevHop={() => {
+                  setInspectorSurface("hop");
+                  engine.goTo(Math.max(0, index - 1));
+                }}
+                onNextHop={() => {
+                  setInspectorSurface("hop");
+                  engine.advance();
+                }}
                 onReset={handleRestart}
                 canPrevHop={index > 0}
                 canNextHop={canAdvance}

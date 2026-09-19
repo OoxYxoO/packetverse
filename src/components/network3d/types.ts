@@ -222,6 +222,25 @@ export interface PacketStackFrame {
 export type CameraMode = "overview" | "device" | "packetFollow" | "freeOrbit";
 
 /**
+ * Which of the two device-scoped Focus Mode panels the learner
+ * currently wants ("Shared Focus Mode Inspector Fix"): `"hop"` for
+ * `HopInspectorPanel`/`PacketDiffViewer` (what happened to this
+ * packet/message at this hop), `"device"` for `DeviceExplorerPanel`
+ * (broader device state — tables, interfaces, CLI). This is deliberately
+ * separate from whether a hop trace *exists* for the entered device —
+ * before this type existed, every lesson inferred the surface from
+ * `focusTrace` truthiness, but `focusTrace` always falls back to a
+ * non-undefined `idleTrace(...)`, so the Hop panel silently won every
+ * time regardless of what the learner actually clicked. A lesson page
+ * sets this explicitly: a topology node click sets `"device"`; a
+ * HopTimeline entry, "Go to next hop", or resuming Play sets `"hop"`.
+ * Object focus and link detail are unaffected — they keep their own
+ * dedicated `FocusTarget3D`/`selectedLinkId` state and are checked
+ * ahead of this split in the inspector chain, exactly as before.
+ */
+export type InspectorSurface = "hop" | "device";
+
+/**
  * A labeled 3D boundary region (brief: "AS regions should have
  * depth/boundaries") — the 3D equivalent of <GraphTopologyViewer>'s
  * `GraphRegion`, purely a visual/clickable grouping box. Carries no

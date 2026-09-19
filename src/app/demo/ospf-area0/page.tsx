@@ -49,7 +49,7 @@ import { PacketDetailPanel } from "@/components/network3d/PacketDetailPanel";
 import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
 import { PlaneViewSwitcher, type PlaneView } from "@/components/network3d/PlaneViewSwitcher";
 import { layoutTo3D } from "@/components/network3d/layout";
-import type { ActivePacket3D, CameraMode, FocusTarget3D, Link3DData, Node3DStatus } from "@/components/network3d/types";
+import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus } from "@/components/network3d/types";
 import type { FloodCopy3D } from "@/components/network3d/NetworkScene3D";
 import {
   FLOOD_ORIGIN_BY_STEP,
@@ -103,6 +103,8 @@ export default function OspfArea0Demo() {
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
+  /** Explicit Hop-vs-Device intent inside Focus Mode ("Shared Focus Mode Inspector Fix") — set by the actual gesture (node click → device; timeline/next-hop/Play → hop), never inferred from whether a trace object happens to exist. */
+  const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -430,6 +432,7 @@ export default function OspfArea0Demo() {
     if (!autoPlay) {
       setFocusedObject(undefined);
       setHistoricalIndex(undefined);
+      setInspectorSurface("hop");
     }
     setAutoPlay((v) => !v);
   }
@@ -551,6 +554,7 @@ export default function OspfArea0Demo() {
     setSentPackets([]);
     setFocusedObject(undefined);
     setHistoricalIndex(undefined);
+    setInspectorSurface("hop");
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Change cost to continue" : "Next Step →";
@@ -697,6 +701,8 @@ export default function OspfArea0Demo() {
                   setSelectedNodeId(id as RouterId);
                   setPacketSelected(false);
                   setSelectedLinkId(undefined);
+                  setInspectorSurface("device");
+                  setHistoricalIndex(undefined);
                 }}
                 onSelectLink={(id) => {
                   setSelectedLinkId(id);
@@ -1067,6 +1073,8 @@ export default function OspfArea0Demo() {
                   setSelectedNodeId(id as RouterId);
                   setPacketSelected(false);
                   setSelectedLinkId(undefined);
+                  setInspectorSurface("device");
+                  setHistoricalIndex(undefined);
                 }}
                 onSelectLink={(id) => setSelectedLinkId(id)}
                 selectedLinkId={selectedLinkId}
@@ -1122,8 +1130,44 @@ export default function OspfArea0Demo() {
                   handleCameraModeChange("overview");
                 }}
               />
+            ) : inspectorSurface === "device" ? (
+              inDeviceMode ? (
+                <div className="space-y-3">
+                  <TopologyModeSwitcher
+                    options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                    value={inspectorSurface}
+                    onChange={setInspectorSurface}
+                    tone="violet"
+                  />
+                  <DeviceExplorerPanel
+                    explanation={nodeExplanation!}
+                    tabs={explorerTabs}
+                    xrayEnabled={deviceXray}
+                    onToggleXray={() => setDeviceXray((v) => !v)}
+                    onExit={() => {
+                      setCameraMode("overview");
+                      setEnteredDeviceId(undefined);
+                    }}
+                  />
+                </div>
+              ) : nodeExplanation ? (
+                <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} xrayEnabled={false} />
+              ) : (
+                <GlassPanel className="p-4">
+                  <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+                </GlassPanel>
+              )
             ) : historicalIndex !== undefined && historicalTrace ? (
               <div className="space-y-3">
+                {inDeviceMode && (
+                  <TopologyModeSwitcher
+                    options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                    value={inspectorSurface}
+                    onChange={setInspectorSurface}
+                    tone="violet"
+                    disabledValues={["device"]}
+                  />
+                )}
                 <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
@@ -1138,30 +1182,26 @@ export default function OspfArea0Demo() {
               </div>
             ) : focusTrace ? (
               <div className="space-y-3">
+                {inDeviceMode && (
+                  <TopologyModeSwitcher
+                    options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]}
+                    value={inspectorSurface}
+                    onChange={setInspectorSurface}
+                    tone="violet"
+                  />
+                )}
                 <HopInspectorPanel
                   trace={focusTrace}
                   deviceName={focusInspectDeviceId ?? "—"}
                   interfaces={focusInterfaces}
                   onFocusNextHop={(id) => {
                     setSelectedNodeId(id as RouterId);
+                    setInspectorSurface("hop");
                     if (cameraMode === "device") setEnteredDeviceId(id as RouterId);
                   }}
                 />
                 <PacketDiffViewer before={focusTrace.packetBeforeFrames} after={focusTrace.packetAfterFrames} beforeText={focusTrace.packetBefore} afterText={focusTrace.packetAfter} mutations={focusTrace.mutations} />
               </div>
-            ) : inDeviceMode ? (
-              <DeviceExplorerPanel
-                explanation={nodeExplanation!}
-                tabs={explorerTabs}
-                xrayEnabled={deviceXray}
-                onToggleXray={() => setDeviceXray((v) => !v)}
-                onExit={() => {
-                  setCameraMode("overview");
-                  setEnteredDeviceId(undefined);
-                }}
-              />
-            ) : nodeExplanation ? (
-              <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} xrayEnabled={false} />
             ) : (
               <GlassPanel className="p-4">
                 <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
@@ -1176,6 +1216,7 @@ export default function OspfArea0Demo() {
                 onSelectHop={(i) => {
                   const entry = journeyHopEntries[i];
                   if (!entry) return;
+                  setInspectorSurface("hop");
                   if (entry.index === index) {
                     // The rightmost/current entry — return to live inspection.
                     setHistoricalIndex(undefined);
@@ -1198,10 +1239,12 @@ export default function OspfArea0Demo() {
                 onTogglePlay={handleToggleAutoPlay}
                 onPrevHop={() => {
                   setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
                   engine.goTo(Math.max(0, index - 1));
                 }}
                 onNextHop={() => {
                   setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
                   engine.advance();
                 }}
                 onReset={handleRestart}
