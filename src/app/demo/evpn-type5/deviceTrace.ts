@@ -1,13 +1,15 @@
-import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
+import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketMutation, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
 import type { EvpnRibRow } from "@/components/protocol/EvpnRouteTable";
 import {
   ANYCAST_GATEWAYS,
+  DESTINATION_IP,
   EXAMPLE_TYPE2_ROUTE,
   GATEWAY_MAC,
   GRAPH_EDGES,
   L3_VNI,
   ROUTER_MAC,
   TENANT_PREFIX,
+  TENANT_PREFIX_WIDE,
   VRF,
   VTEP_LOOPBACK,
   evpnType5Steps,
@@ -62,9 +64,32 @@ const LEAF2_IDLE_STAGES: ProcessingStage[] = [
   { id: "vlan10", label: "VLAN 10" },
   { id: "l2-vni", label: "L2 VNI 10010" },
 ];
+/** LEAF2's own Type 5 origination — a second, less-specific prefix route (brief §14: the LPM experiment), entirely separate from its idle bridging stages above. */
+const LEAF2_TYPE5_STAGES: ProcessingStage[] = [
+  { id: "originate", label: "Originate Type 5 Route" },
+  { id: "attach-rd-rt", label: "Attach RD / RT" },
+  { id: "advertise", label: "BGP EVPN Advertise" },
+];
 
 function allIds(stages: ProcessingStage[]) {
   return stages.map((s) => s.id);
+}
+
+function plainFrames(): PacketStackFrame[] {
+  return [
+    { id: "ethernet", text: "Ethernet", tone: "generic" },
+    { id: "ip", text: "IP", tone: "ip" },
+  ];
+}
+function routedFrames(justChangedId?: string): PacketStackFrame[] {
+  return [
+    { id: "outer-eth", text: "Outer Ethernet", tone: "transport" },
+    { id: "outer-ip", text: "Outer IP", tone: "transport" },
+    { id: "udp", text: "UDP 4789", tone: "transport" },
+    { id: "vxlan", text: `VXLAN L3 VNI ${L3_VNI}`, tone: "vpn", justChanged: justChangedId === "vxlan" },
+    { id: "inner-eth", text: "Inner Ethernet (RMAC)", tone: "generic" },
+    { id: "inner-ip", text: "Inner IP", tone: "ip" },
+  ];
 }
 
 export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: EvpnType5State, currentStepId: string): DeviceProcessingTrace {
@@ -75,11 +100,64 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
     const importIndex = stepIndex("enter-leaf1-type5-import");
     const forwardIndex = stepIndex("enter-leaf1-forwarding");
     const lpmIndex = stepIndex("packet-transformation");
-    if (i === importIndex) return { deviceId: "LEAF1", ingressInterfaceId: "LEAF1-spine1", stages: LEAF1_IMPORT_STAGES, activeStageId: "vrf-install", completedStageIds: ["bgp-update", "route-type-5", "rd-prefix", "rt-eval", "tenant-import", "nexthop-resolve"] };
+    if (i === importIndex) {
+      const t5 = state.type5Route;
+      return {
+        deviceId: "LEAF1",
+        ingressInterfaceId: "LEAF1-spine1",
+        stages: LEAF1_IMPORT_STAGES,
+        activeStageId: "vrf-install",
+        completedStageIds: ["bgp-update", "route-type-5", "rd-prefix", "rt-eval", "tenant-import", "nexthop-resolve"],
+        lookupType: "EVPN Type 5 Import",
+        lookupKey: t5 ? `${t5.prefix} (RT ${t5.rt})` : "—",
+        lookupResult: t5 ? `Installed into VRF ${VRF} — next-hop ${t5.nextHop}` : "—",
+        reason: "RT matches VRF TENANT-A's import policy — the prefix installs as an ordinary VRF route, exactly like a Type 2 or Type 3 import.",
+      };
+    }
+    if (i > importIndex && i < forwardIndex) {
+      return {
+        deviceId: "LEAF1",
+        stages: LEAF1_IMPORT_STAGES,
+        activeStageId: "vrf-install",
+        completedStageIds: allIds(LEAF1_IMPORT_STAGES),
+        lookupResult: state.type5Route ? `${state.type5Route.prefix} installed and usable` : "—",
+      };
+    }
     if (i === forwardIndex || i === lpmIndex || i === verifyIndex) {
       const base: DeviceProcessingTrace = { deviceId: "LEAF1", ingressInterfaceId: "LEAF1-hosta", egressInterfaceId: "LEAF1-spine1", stages: LEAF1_FORWARD_STAGES, completedStageIds: [] };
-      if (i === forwardIndex) return { ...base, activeStageId: "type5-candidate", completedStageIds: ["access-ingress", "anycast-gw", "vrf", "destination", "lpm"] };
-      return { ...base, activeStageId: "vxlan-encap", completedStageIds: allIds(LEAF1_FORWARD_STAGES).filter((id) => id !== "vxlan-encap") };
+      if (i === forwardIndex) {
+        return {
+          ...base,
+          activeStageId: "type5-candidate",
+          completedStageIds: ["access-ingress", "anycast-gw", "vrf", "destination", "lpm"],
+          packetBefore: `IP[HOST-A → ${DESTINATION_IP}]`,
+          packetBeforeFrames: plainFrames(),
+          lookupType: "Longest-Prefix Match",
+          lookupKey: DESTINATION_IP,
+          lookupResult: `${TENANT_PREFIX} (Type 5) selected`,
+          reason: "Ordinary LPM — the Type-5-learned prefix is simply one more candidate route in the VRF table, compared the same way as any other.",
+        };
+      }
+      const received = state.received.LEAF1?.[0];
+      const usable = !!received?.imported && received.vtepResolved;
+      return {
+        ...base,
+        activeStageId: "vxlan-encap",
+        completedStageIds: allIds(LEAF1_FORWARD_STAGES).filter((id) => id !== "vxlan-encap"),
+        packetBefore: `IP[HOST-A → ${DESTINATION_IP}]`,
+        packetAfter: usable ? `VXLAN(L3 VNI ${L3_VNI})` : "DROPPED — next-hop VTEP unresolvable",
+        packetBeforeFrames: plainFrames(),
+        packetAfterFrames: usable ? routedFrames("vxlan") : undefined,
+        lookupType: "Routed VXLAN Encapsulation",
+        lookupKey: `Next-hop VTEP ${VTEP_LOOPBACK.LEAF3}`,
+        lookupResult: usable ? "Resolved — encapsulating" : "Route installed and RT-imported, but the next-hop VTEP isn't resolvable through the underlay",
+        nextHopId: usable ? "SPINE1" : undefined,
+        nextHopLabel: usable ? "SPINE1" : undefined,
+        mutations: usable ? ([{ type: "MAC_CHANGE", detail: "Inner Ethernet rewritten to Router MACs" }, { type: "ENCAPSULATE", detail: `VXLAN L3 VNI ${L3_VNI}` }] as PacketMutation[]) : [],
+        reason: usable
+          ? "The Type-5 route resolved cleanly — the exact same routed-encapsulation mechanism symmetric IRB already taught."
+          : "Receiving a route and RT-importing it is not the same as being able to forward to it — a route can be fully installed and still unusable if its next-hop VTEP can't be resolved.",
+      };
     }
     return { deviceId: "LEAF1", stages: LEAF1_FORWARD_STAGES, completedStageIds: i > forwardIndex ? allIds(LEAF1_FORWARD_STAGES) : [] };
   }
@@ -88,16 +166,58 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
     const base: DeviceProcessingTrace = { deviceId: "SPINE1", ingressInterfaceId: "SPINE1-leaf1", egressInterfaceId: "SPINE1-leaf3", stages: SPINE1_STAGES, completedStageIds: [] };
     const spineIndex = stepIndex("spine-forward-type5");
     if (i !== spineIndex && i !== verifyIndex) return base;
-    return { ...base, activeStageId: "read-outer-ip", completedStageIds: ["vxlan-arrives"], packetBefore: `Outer dst IP ${VTEP_LOOPBACK.LEAF3}`, packetAfter: `Forwarded toward ${VTEP_LOOPBACK.LEAF3}` };
+    return {
+      ...base,
+      activeStageId: "read-outer-ip",
+      completedStageIds: ["vxlan-arrives"],
+      packetBefore: `Outer dst IP ${VTEP_LOOPBACK.LEAF3}`,
+      packetAfter: `Forwarded toward ${VTEP_LOOPBACK.LEAF3}`,
+      packetBeforeFrames: routedFrames(),
+      packetAfterFrames: routedFrames(),
+      lookupType: "Underlay Route Lookup",
+      lookupKey: VTEP_LOOPBACK.LEAF3,
+      lookupResult: `Forward toward ${VTEP_LOOPBACK.LEAF3}`,
+      nextHopId: "LEAF3",
+      nextHopLabel: "LEAF3",
+      reason: "SPINE1 has no idea a tenant prefix, a VRF, or a Type 5 route exist at all — it forwards strictly on the outer destination IP, regardless of which route type populated the forwarding decision upstream.",
+    };
   }
 
   if (device === "LEAF3") {
     const base: DeviceProcessingTrace = { deviceId: "LEAF3", ingressInterfaceId: "LEAF3-spine1", egressInterfaceId: "LEAF3-border", stages: LEAF3_STAGES, completedStageIds: [] };
     const egressIndex = stepIndex("leaf3-egress-type5");
     if (i !== egressIndex && i !== verifyIndex) return { ...base, completedStageIds: i > egressIndex ? allIds(LEAF3_STAGES) : [] };
-    return { ...base, activeStageId: "dst-prefix", completedStageIds: ["underlay-ingress", "vxlan-decap", "l3vni", "vrf"], packetBefore: `VXLAN(L3 VNI ${L3_VNI})`, packetAfter: `Delivered toward ${TENANT_PREFIX}` };
+    return {
+      ...base,
+      activeStageId: "dst-prefix",
+      completedStageIds: ["underlay-ingress", "vxlan-decap", "l3vni", "vrf"],
+      packetBefore: `VXLAN(L3 VNI ${L3_VNI})`,
+      packetAfter: `Delivered toward ${TENANT_PREFIX}`,
+      packetBeforeFrames: routedFrames(),
+      packetAfterFrames: plainFrames(),
+      lookupType: `VRF ${VRF} Destination Prefix`,
+      lookupKey: DESTINATION_IP,
+      lookupResult: `${TENANT_PREFIX} — local connected/static, delivered`,
+      nextHopId: "BORDER-SVR",
+      nextHopLabel: "BORDER-SVR",
+      mutations: [{ type: "DECAPSULATE", detail: `VXLAN L3 VNI ${L3_VNI} removed` }] as PacketMutation[],
+      reason: "This is the second routing stage of symmetric IRB, unchanged from the previous lesson — LEAF3 decapsulates and routes into its own local prefix segment.",
+    };
   }
 
+  // LEAF2 — idle bridging most of the lesson; briefly active while originating its own (wider, less-specific) Type 5 route for the LPM experiment.
+  if (currentStepId === "lpm-intro") {
+    return {
+      deviceId: "LEAF2",
+      stages: LEAF2_TYPE5_STAGES,
+      activeStageId: "advertise",
+      completedStageIds: ["originate", "attach-rd-rt"],
+      lookupType: "BGP EVPN Advertise (Type 5)",
+      lookupKey: TENANT_PREFIX_WIDE,
+      lookupResult: state.type5RouteWide ? `Advertised — next-hop ${state.type5RouteWide.nextHop}` : "—",
+      reason: "LEAF2 advertises its own, much wider prefix — a second, independent Type 5 route, unrelated to LEAF3's more specific one.",
+    };
+  }
   return { deviceId: "LEAF2", ingressInterfaceId: "LEAF2-hostc", stages: LEAF2_IDLE_STAGES, completedStageIds: [] };
 }
 

@@ -1,4 +1,4 @@
-import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
+import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketMutation, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
 import {
   ANYCAST_GATEWAYS,
   evpnIrbSteps,
@@ -74,25 +74,102 @@ function allIds(stages: ProcessingStage[]) {
   return stages.map((s) => s.id);
 }
 
+function plainFrames(): PacketStackFrame[] {
+  return [
+    { id: "ethernet", text: "Ethernet", tone: "generic" },
+    { id: "ip", text: "IP", tone: "ip" },
+  ];
+}
+function routedFrames(justChangedId?: string): PacketStackFrame[] {
+  return [
+    { id: "outer-eth", text: "Outer Ethernet", tone: "transport" },
+    { id: "outer-ip", text: "Outer IP", tone: "transport" },
+    { id: "udp", text: "UDP 4789", tone: "transport" },
+    { id: "vxlan", text: `VXLAN L3 VNI ${L3_VNI}`, tone: "vpn", justChanged: justChangedId === "vxlan" },
+    { id: "inner-eth", text: "Inner Ethernet (RMAC)", tone: "generic", justChanged: justChangedId === "inner-eth" },
+    { id: "inner-ip", text: "Inner IP", tone: "ip" },
+  ];
+}
+
 export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: EvpnIrbState, currentStepId: string): DeviceProcessingTrace {
   const i = stepIndex(currentStepId);
   const verifyIndex = stepIndex("verify-dataplane");
 
   if (device === "LEAF1") {
     const base: DeviceProcessingTrace = { deviceId: "LEAF1", ingressInterfaceId: "LEAF1-hosta", egressInterfaceId: "LEAF1-spine1", stages: LEAF1_IRB_STAGES, completedStageIds: [] };
+    const enterIndex = stepIndex("enter-leaf1-irb");
     const encapIndex = stepIndex("packet-transformation");
-    if (i < stepIndex("enter-leaf1-irb")) return base;
-    if (i === stepIndex("enter-leaf1-irb")) return { ...base, activeStageId: "dst-mac-gw", completedStageIds: ["access-port", "vlan10"], packetBefore: "Ethernet[HOST-A → Anycast GW]" };
-    if (i > stepIndex("enter-leaf1-irb") && i < encapIndex) return { ...base, activeStageId: "remote-reachability", completedStageIds: ["access-port", "vlan10", "dst-mac-gw", "l3-irb", "vrf", "dst-ip-lookup"], packetBefore: "IP[HOST-A → HOST-B]" };
-    if (i === encapIndex || i === verifyIndex) return { ...base, activeStageId: "vxlan-encap", completedStageIds: ["access-port", "vlan10", "dst-mac-gw", "l3-irb", "vrf", "dst-ip-lookup", "remote-reachability", "remote-vtep", "l3vni"], packetBefore: "IP[HOST-A → HOST-B]", packetAfter: `VXLAN(L3 VNI ${state.l3VniByLeaf.LEAF1})` };
-    return { ...base, completedStageIds: allIds(LEAF1_IRB_STAGES), packetAfter: `VXLAN(L3 VNI ${state.l3VniByLeaf.LEAF1})` };
+    if (i < enterIndex) return base;
+    if (i === enterIndex) {
+      return {
+        ...base,
+        activeStageId: "dst-mac-gw",
+        completedStageIds: ["access-port", "vlan10"],
+        packetBefore: "Ethernet[HOST-A → Anycast GW]",
+        packetBeforeFrames: plainFrames(),
+        lookupType: "Destination MAC Check",
+        lookupKey: `Dst MAC ${GATEWAY_MAC}`,
+        lookupResult: "Matches the local Anycast Gateway — route, don't bridge",
+        reason: "The destination MAC is LEAF1's own Anycast Gateway identity, not a locally-known host MAC — that alone is what turns this into an L3/IRB decision instead of a bridging one.",
+      };
+    }
+    if (i > enterIndex && i < encapIndex) {
+      const received = state.remoteHostRoutes.LEAF1?.[0];
+      return {
+        ...base,
+        activeStageId: "remote-reachability",
+        completedStageIds: ["access-port", "vlan10", "dst-mac-gw", "l3-irb", "vrf", "dst-ip-lookup"],
+        packetBefore: "IP[HOST-A → HOST-B]",
+        packetBeforeFrames: plainFrames(),
+        lookupType: `VRF ${VRF} Destination Lookup`,
+        lookupKey: received?.route.ip ?? "HOST-B",
+        lookupResult: received?.imported ? `${received.route.ip} → remote VTEP ${VTEP_LOOPBACK[received.route.originLeaf]} (via EVPN Type 2)` : "Not yet resolved",
+        nextHopId: received?.imported ? "LEAF3" : undefined,
+        nextHopLabel: received?.imported ? "LEAF3" : undefined,
+        reason: "This is an ordinary VRF IP lookup, resolved by the same EVPN Type 2 route the Foundations lesson taught — no Type 5 prefix route is involved for a single host like HOST-B.",
+      };
+    }
+    if (i === encapIndex || i === verifyIndex) {
+      const l3vni = state.l3VniByLeaf.LEAF1;
+      return {
+        ...base,
+        activeStageId: "vxlan-encap",
+        completedStageIds: ["access-port", "vlan10", "dst-mac-gw", "l3-irb", "vrf", "dst-ip-lookup", "remote-reachability", "remote-vtep", "l3vni"],
+        packetBefore: "IP[HOST-A → HOST-B]",
+        packetAfter: `VXLAN(L3 VNI ${l3vni})`,
+        packetBeforeFrames: plainFrames(),
+        packetAfterFrames: routedFrames("vxlan"),
+        lookupType: "Routed VXLAN Encapsulation",
+        lookupKey: `L3 VNI ${l3vni}`,
+        lookupResult: `Inner Ethernet rewritten to Router MACs; wrapped in VXLAN toward ${VTEP_LOOPBACK.LEAF3}`,
+        nextHopId: "SPINE1",
+        nextHopLabel: "SPINE1",
+        mutations: [{ type: "MAC_CHANGE", detail: "Inner Ethernet rewritten to Router MACs (LEAF1 → LEAF3), never the destination host's own MAC" }, { type: "ENCAPSULATE", detail: `VXLAN L3 VNI ${l3vni}` }] as PacketMutation[],
+        reason: "The IP endpoints never change here — only the Ethernet header (now Router MACs) and the new VXLAN/L3-VNI wrapper.",
+      };
+    }
+    return { ...base, completedStageIds: allIds(LEAF1_IRB_STAGES), packetAfter: `VXLAN(L3 VNI ${state.l3VniByLeaf.LEAF1})`, packetAfterFrames: routedFrames() };
   }
 
   if (device === "SPINE1") {
     const base: DeviceProcessingTrace = { deviceId: "SPINE1", ingressInterfaceId: "SPINE1-leaf1", egressInterfaceId: "SPINE1-leaf3", stages: SPINE1_STAGES, completedStageIds: [] };
     const spineIndex = stepIndex("spine-forward-irb");
     if (i !== spineIndex && i !== verifyIndex) return base;
-    return { ...base, activeStageId: "read-outer-ip", completedStageIds: ["vxlan-arrives"], packetBefore: `Outer dst IP ${VTEP_LOOPBACK.LEAF3}`, packetAfter: `Forwarded toward ${VTEP_LOOPBACK.LEAF3}` };
+    return {
+      ...base,
+      activeStageId: "read-outer-ip",
+      completedStageIds: ["vxlan-arrives"],
+      packetBefore: `Outer dst IP ${VTEP_LOOPBACK.LEAF3}`,
+      packetAfter: `Forwarded toward ${VTEP_LOOPBACK.LEAF3}`,
+      packetBeforeFrames: routedFrames(),
+      packetAfterFrames: routedFrames(),
+      lookupType: "Underlay Route Lookup",
+      lookupKey: VTEP_LOOPBACK.LEAF3,
+      lookupResult: `Forward toward ${VTEP_LOOPBACK.LEAF3}`,
+      nextHopId: "LEAF3",
+      nextHopLabel: "LEAF3",
+      reason: "SPINE1 has no VRF, no Anycast Gateway, and no idea this traffic was ever routed between subnets — it forwards strictly on the outer destination IP.",
+    };
   }
 
   if (device === "LEAF3") {
@@ -100,8 +177,36 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
     const egressIndex = stepIndex("leaf3-egress-irb");
     if (i !== egressIndex && i !== verifyIndex) return { ...base, completedStageIds: i > egressIndex ? allIds(LEAF3_IRB_STAGES) : [] };
     const mismatch = state.l3VniByLeaf.LEAF3 !== L3_VNI;
-    if (mismatch) return { ...base, activeStageId: "l3vni", completedStageIds: ["underlay-ingress", "vxlan-decap"], packetBefore: `VXLAN(L3 VNI ${L3_VNI})`, packetAfter: `DROPPED — VRF TENANT-A expects L3 VNI ${state.l3VniByLeaf.LEAF3}` };
-    return { ...base, activeStageId: "dst-route", completedStageIds: ["underlay-ingress", "vxlan-decap", "l3vni", "vrf"], packetBefore: `VXLAN(L3 VNI ${L3_VNI})`, packetAfter: "Ethernet[Anycast GW → HOST-B]" };
+    if (mismatch) {
+      return {
+        ...base,
+        activeStageId: "l3vni",
+        completedStageIds: ["underlay-ingress", "vxlan-decap"],
+        packetBefore: `VXLAN(L3 VNI ${L3_VNI})`,
+        packetAfter: `DROPPED — VRF TENANT-A expects L3 VNI ${state.l3VniByLeaf.LEAF3}`,
+        packetBeforeFrames: routedFrames(),
+        lookupType: `VRF ${VRF} → L3 VNI Mapping`,
+        lookupKey: `Received L3 VNI ${L3_VNI}`,
+        lookupResult: `No match — this leaf's VRF ${VRF} is mapped to L3 VNI ${state.l3VniByLeaf.LEAF3}`,
+        reason: "A routed VXLAN packet has to land in the VRF its L3 VNI actually maps to on THIS leaf — LEAF3's own mapping was changed, so it has nowhere to go.",
+      };
+    }
+    return {
+      ...base,
+      activeStageId: "dst-route",
+      completedStageIds: ["underlay-ingress", "vxlan-decap", "l3vni", "vrf"],
+      packetBefore: `VXLAN(L3 VNI ${L3_VNI})`,
+      packetAfter: "Ethernet[Anycast GW → HOST-B]",
+      packetBeforeFrames: routedFrames(),
+      packetAfterFrames: plainFrames(),
+      lookupType: `VRF ${VRF} Destination Route`,
+      lookupKey: "HOST-B",
+      lookupResult: `VLAN 20 / L2 VNI ${L2_VNI_20} — local access port`,
+      nextHopId: "HOST-B",
+      nextHopLabel: "HOST-B",
+      mutations: [{ type: "DECAPSULATE", detail: `VXLAN L3 VNI ${L3_VNI} removed` }, { type: "MAC_CHANGE", detail: "Ethernet rewritten: src = local Anycast Gateway (VLAN 20), dst = HOST-B's real MAC" }] as PacketMutation[],
+      reason: "This is the second routing stage of symmetric IRB — LEAF3 routes back OUT of the L3 VNI into VLAN 20, exactly as LEAF1 routed in.",
+    };
   }
 
   // LEAF2 — same-subnet bridging only, never active during the main routed journey.
