@@ -55,6 +55,7 @@ import { HopInspectorPanel } from "@/components/network3d/HopInspectorPanel";
 import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
 import { HopTimeline } from "@/components/network3d/HopTimeline";
 import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
+import { PacketFocusPanel } from "@/components/network3d/PacketFocusPanel";
 import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus } from "@/components/network3d/types";
@@ -111,6 +112,7 @@ export default function EvpnIrbDemo() {
   const [cameraMode, setCameraMode] = useState<CameraMode>("overview");
   const [enteredDeviceId, setEnteredDeviceId] = useState<EvpnIrbDeviceId | undefined>(undefined);
   const [deviceXray, setDeviceXray] = useState(true);
+  const [autoEnterDevices, setAutoEnterDevices] = useState(true);
   const [selectedInterfaceId, setSelectedInterfaceId] = useState<string | undefined>(undefined);
   const [selectedLinkId, setSelectedLinkId] = useState<string | undefined>(undefined);
   const [selectedRegionId, setSelectedRegionId] = useState<string | undefined>(undefined);
@@ -193,7 +195,7 @@ export default function EvpnIrbDemo() {
 
   const isFabricDevice = (id: EvpnIrbDeviceId | undefined): id is "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3" => id === "LEAF1" || id === "SPINE1" || id === "LEAF2" || id === "LEAF3";
   const activeDeviceId = FABRIC_DEVICES.find((d) => isFabricDevice(d) && traceFor(d, state, currentStep?.id ?? "").activeStageId !== undefined);
-  const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : undefined;
+  const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : cameraMode === "packetFollow" && autoEnterDevices ? activeDeviceId : undefined;
   const inDeviceMode = !!effectiveDeviceId;
 
   const deviceTrace = isFabricDevice(effectiveDeviceId) ? traceFor(effectiveDeviceId, state, currentStep?.id ?? "") : undefined;
@@ -211,16 +213,19 @@ export default function EvpnIrbDemo() {
           : true);
   const activeFocusedObject = focusedObjectStillValid ? focusedObject : undefined;
 
+  const followNode3D = cameraMode === "packetFollow" && activePacket ? nodes3D.find((n) => n.id === (state.packetAt ?? activePacket.to)) : undefined;
   const focusPosition3D: [number, number, number] | undefined = activeFocusedObject
     ? activeFocusedObject.position
     : cameraMode === "freeOrbit"
       ? undefined
       : inDeviceMode
         ? [0, 0, deviceXray ? -0.2 : 0]
-        : selectedNode3D?.position;
+        : cameraMode === "packetFollow"
+          ? followNode3D?.position
+          : selectedNode3D?.position;
   const eyeOffset3D: [number, number, number] | undefined = activeFocusedObject ? eyeOffsetForFocusTarget(activeFocusedObject) : inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
 
-  const explainTargetId = effectiveDeviceId ?? selectedNodeId;
+  const explainTargetId = effectiveDeviceId ?? selectedNodeId ?? (followNode3D?.id as EvpnIrbDeviceId | undefined);
   const nodeExplanation = explainTargetId ? explainNode(state, explainTargetId) : undefined;
   const xrayPacket = activePacket && (selectedNodeId === activePacket.from || selectedNodeId === activePacket.to) ? activePacket : undefined;
 
@@ -439,12 +444,25 @@ export default function EvpnIrbDemo() {
               options={[
                 { value: "overview", label: "Overview" },
                 { value: "device", label: "Device" },
+                { value: "packetFollow", label: "Packet Follow" },
                 { value: "freeOrbit", label: "Free Orbit" },
               ]}
               value={cameraMode}
               onChange={handleCameraModeChange}
             />
             {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+            {cameraMode === "packetFollow" && (
+              <button
+                type="button"
+                onClick={() => setAutoEnterDevices((v) => !v)}
+                className={clsx(
+                  "rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors",
+                  autoEnterDevices ? "border-pv-cyan/50 bg-pv-cyan/15 text-pv-cyan-soft" : "border-pv-border text-pv-text-faint hover:text-pv-text",
+                )}
+              >
+                Auto-Enter Devices
+              </button>
+            )}
             <TopologyModeSwitcher options={[{ value: "off", label: "Normal View" }, { value: "on", label: "X-Ray Packet View" }]} value={xrayMode ? "on" : "off"} onChange={(v) => setXrayMode(v === "on")} tone="violet" />
           </>
         )}
@@ -520,6 +538,20 @@ export default function EvpnIrbDemo() {
               />
               )}
               </TopologyFrame>
+
+              {cameraMode === "packetFollow" && (
+                <PacketFocusPanel
+                  currentHopLabel={lastHop ? `${lastHop.device}: ${lastHop.lookup} → ${lastHop.action}` : undefined}
+                  hopIndex={state.journey.length}
+                  totalHops={3}
+                  onPrevHop={() => engine.goTo(Math.max(0, index - 1))}
+                  onNextHop={() => engine.advance()}
+                  canPrev={index > 0}
+                  canNext={canAdvance}
+                  cameraFollow={true}
+                  onToggleCameraFollow={() => setAutoEnterDevices((v) => !v)}
+                />
+              )}
 
               {packetSelected && activePacket && (
                 <PacketDetailPanel
@@ -733,6 +765,7 @@ export default function EvpnIrbDemo() {
                 options={[
                   { value: "overview", label: "Overview" },
                   { value: "device", label: "Device" },
+                  { value: "packetFollow", label: "Packet Follow" },
                   { value: "freeOrbit", label: "Free Orbit" },
                 ]}
                 value={cameraMode}
@@ -935,7 +968,8 @@ export default function EvpnIrbDemo() {
                 canNextHop={canAdvance}
                 speed={speed as PlaySpeed}
                 onSpeedChange={setSpeed}
-                followPacket={false}
+                followPacket={cameraMode === "packetFollow"}
+                onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
                 view3D={viewMode === "3d"}
                 onToggleView3D={() => setViewMode((v) => (v === "3d" ? "physical" : "3d"))}
               />
