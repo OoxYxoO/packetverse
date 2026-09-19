@@ -72,6 +72,41 @@ Most lessons teach control plane → data plane, because the control plane is *w
 | MPLS L3VPN | `scenarios/mplsL3vpn.ts` + `app/demo/mpls-l3vpn/` | The fullest expression of the standard arc: VRF → RD → RT → MP-BGP VPNv4 (control) → two-label push/swap/pop (data) → RT-import-mismatch fault → repair. Also the reference for **integrating a second, already-completed lesson's real logic** without duplicating it (`rrIntegration.ts` reusing `bgpRouteReflector.ts`'s `evaluateReflection`) — copy this pattern instead of re-deriving reflection/RR logic if a future lesson needs an RR again. |
 | EVPN / VXLAN Foundations | `scenarios/evpnVxlan.ts` + `app/demo/evpn-vxlan/` | Data-plane-before-control-plane sequencing (see above); a *reused* fault shape (RT-mismatch, now on a MAC/IP route) applied to a new protocol family instead of inventing a new failure category; strict, explicit scope boundaries recorded directly in the scenario file's own doc comment (what's deferred and why) so a future contributor doesn't accidentally re-derive Route Type 1/3/4/5 logic inside what's supposed to be the foundations lesson. |
 
+## The interactive-topology standard (mandatory for every lesson)
+
+Every lesson — new or existing — is expected to deliver this learner arc, using the topology itself as part of the explanation, not decoration:
+
+```
+Explore → Observe → Predict → Answer → Reveal → Follow Packet → Inspect Hop → Inspect Object → Troubleshoot
+```
+
+Capability is expressed in three tiers. A lesson gets the richest tier its **real** domain data actually supports — never a lower tier out of neglect, and never a higher tier by inventing data. See `docs/ARCHITECTURE.md` §18 for the full technical contract each tier requires.
+
+- **Level 1 — Topology Focus** (mandatory for every lesson with a 3D topology): Expand/Focus Mode, 2D↔3D where supported, Overview/Device/Free Orbit, node/link/interface-anchor selection, focused 3D object inspection, Back to Device, Overview return.
+- **Level 2 — Packet Journey** (any lesson whose domain models a packet or control message moving): Play/Pause/Previous/Next/Reset, Follow Packet, HopTimeline, active path, ingress/egress, current device, next hop, reason. A control-plane message (BGP OPEN, OSPF Hello, LDP label mapping) is a journey exactly as much as a data-plane packet is — never fake a "packet" to get this tier, model the message the protocol actually sends.
+- **Level 3 — Processing Inspection** (lessons with enough domain data): Hop Inspector, PacketDiff/before-after, processing stages, packet/header stack, object focus on a stage/layer/interface/link — every field sourced from the domain/adapter, never invented to fill the panel.
+
+**Anti-fake-data rule (mandatory):** do not add fake packet stacks, guessed interfaces, invented next hops, synthetic protocol states, or placeholder lookup results presented as real, just to claim a higher tier. If the domain state doesn't yet expose a fact, either enrich the scene adapter accurately (see `deviceTrace.ts` in `ospf-area0`/`bgp-enterprise` for the pattern: add `ingressInterfaceId`/`egressInterfaceId`/`lookupType`/`lookupKey`/`lookupResult`/`nextHopId`/`nextHopLabel`/`reason` to `traceFor()`'s return, deriving every value from data the scenario file already computed) or leave that specific capability unavailable and say so in the report. Accuracy beats feature count.
+
+**Selection semantics (mandatory, must not vary per lesson):** click node → inspect that exact node; click timeline hop → inspect that historical hop; click "Go to next hop" → inspect next hop; click interface → inspect interface; click link → inspect link; click processing stage/packet layer → focus that object. No gesture may silently substitute for another. The Hop Inspector always uses explicit "● INSPECTING {device}" language and "Go to next hop: {X} →" — never "Inspect {X} →" while a different device is current.
+
+**Questions in Focus Mode are mandatory** wherever a lesson has prediction steps: visible and answerable inside Focus Mode, reusing the exact same `engine.answer()`/`lastAnswer` state the normal page uses (never a second quiz engine), no duplicated XP, no future-state spoiler before the learner answers.
+
+### Lesson capability checklist
+
+Run through this before calling any lesson (new or migrated) done:
+
+- [ ] Focus Mode works (Expand, Overview, Device, Free Orbit, Close)
+- [ ] questions work in Focus Mode (visible, answerable, same state as normal mode)
+- [ ] direct node selection is correct (click X → Hop Inspector says X, not a neighbor)
+- [ ] packet/message journey is modeled if the domain has one (HopTimeline shows real, protocol-appropriate labels — not generic "hop 1/2/3")
+- [ ] Hop Inspector is domain-derived (ingress/egress/lookup/action/reason come from `traceFor()`, not invented in the component)
+- [ ] before/after is accurate (`packetBefore`/`packetAfter` or `packetBeforeFrames`/`packetAfterFrames` reflect real state, never guessed)
+- [ ] relevant packet/header layers can be focused, where the domain models discrete layers
+- [ ] interfaces/links can be inspected (`DeviceInterfaceData`/`LinkDetail`, generic `extra` bag for protocol-specific fields)
+- [ ] one-canvas invariant holds (normal = 1, Focus Mode open = 1, close = 1)
+- [ ] anti-spoiler verified at every `predict-*` step (no future mutation/next-hop/reason visible before the learner answers)
+
 ## Practical checklist for the next lesson
 
 1. **Scope boundary first.** Write the doc-comment at the top of the new scenario file listing exactly what this lesson covers and what's explicitly deferred (with a one-line reason each), before writing a single step. Copy the style from `evpnVxlan.ts`'s header.
@@ -79,6 +114,7 @@ Most lessons teach control plane → data plane, because the control plane is *w
 3. **Scene Adapter split**: `deviceTrace.ts` (traces/interfaces/packet frames/link detail) + `explain.ts` (per-device NodeExplanation, tense derived from `state.journey`) + the scenario file itself (state + steps + packet builders). Nothing protocol-specific in `page.tsx` beyond wiring and toolbar/tab layout.
 4. **One fault, otherwise-healthy stack, policy-layer where it fits the protocol** (see §8 above).
 5. **Register the lesson**: `lessons/index.ts` (new `Lesson` entry, correct `prerequisites`, `simulationPath`), `learningPaths.ts` (point the relevant track node's `lessonId`/`status` at it), and `ACHIEVEMENTS` in `useProgressStore.ts` (new completion achievement, real title/description).
-6. **Quality gates, every time, no exceptions**: `npx tsc --noEmit`, `npx eslint <changed paths>`, `npx next build` — all clean before calling it done.
-7. **Browser-verify the full arc** before reporting complete: every prediction question renders with the right options; at least one full device-entry X-Ray pass per enterable device; the fault genuinely breaks only the intended layer (diagnostic ladder shows the right ✓/✕/? pattern); the wrong repair option(s) are rejected with real feedback and the correct one repairs and re-verifies; completion awards XP and an achievement that will actually render on the Dashboard; zero new console errors across the whole run; Previous/goTo/Restart don't leak stale state (ARCHITECTURE.md §15).
-8. **Report what was implemented and what was explicitly deferred** — every lesson prompt in this project ends with that ask; treat it as a hard requirement of "done," not a nice-to-have summary.
+6. **Interactive-topology capability checklist** — run the full checklist in "The interactive-topology standard" above; a new lesson must ship at least Level 1, and Level 2/3 wherever real domain data supports it.
+7. **Quality gates, every time, no exceptions**: `npx tsc --noEmit`, `npx eslint <changed paths>`, `npx next build` — all clean before calling it done.
+8. **Browser-verify the full arc** before reporting complete: every prediction question renders with the right options; at least one full device-entry X-Ray pass per enterable device; the fault genuinely breaks only the intended layer (diagnostic ladder shows the right ✓/✕/? pattern); the wrong repair option(s) are rejected with real feedback and the correct one repairs and re-verifies; completion awards XP and an achievement that will actually render on the Dashboard; zero new console errors across the whole run; Previous/goTo/Restart don't leak stale state (ARCHITECTURE.md §15); one-canvas invariant holds.
+9. **Report what was implemented and what was explicitly deferred** — every lesson prompt in this project ends with that ask; treat it as a hard requirement of "done," not a nice-to-have summary.

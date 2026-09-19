@@ -144,6 +144,11 @@ function neighborLine(state: OspfState, router: RouterId, neighbor: RouterId): s
   return `Neighbor ${ROUTER_IDS[neighbor]}: ${NEIGHBOR_STATE_LABEL[s]}`;
 }
 
+/** Interface id for `router`'s port facing `neighbor` — must match `interfacesFor`'s own `id` (Hop Inspector ingress/egress rows resolve interface names by this id). */
+function ifaceId(router: RouterId, neighbor: RouterId): string {
+  return `${router}-${neighbor}`;
+}
+
 /**
  * Per-router trace for the CURRENT packet in flight (if any), or for
  * an SPF run (spfRoot), or the idle umbrella pipeline otherwise.
@@ -202,18 +207,26 @@ export function traceFor(router: RouterId, state: OspfState, currentStepId: stri
     const kind = packetKind(activePacket);
     const from = activePacket.from as RouterId;
     if (router === activePacket.from) {
-      return { deviceId: router, stages: SEND_STAGES, activeStageId: "egress", completedStageIds: ["ospf-process", "build-packet"] };
+      const to = activePacket.to as RouterId;
+      return { deviceId: router, stages: SEND_STAGES, activeStageId: "egress", completedStageIds: ["ospf-process", "build-packet"], egressInterfaceId: ifaceId(router, to), nextHopId: to, nextHopLabel: ROUTER_IDS[to] };
     }
     // receiver
     const before = neighborLine(state, router, from);
+    const ingressInterfaceId = ifaceId(router, from);
     switch (kind) {
       case "hello": {
-        const nowState = state.neighborTables[router]?.[from]?.state ?? "DOWN";
+        const prevState = state.neighborTables[router]?.[from]?.state ?? "DOWN";
+        const nowState = prevState;
         return {
           deviceId: router,
           stages: HELLO_STAGES,
           activeStageId: i <= stepIndex("r2-to-init") ? "neighbor-lookup" : "state-transition",
           completedStageIds: ["ingress", "protocol89", "hello-processing", "validate-params"],
+          ingressInterfaceId,
+          lookupType: "Neighbor Lookup",
+          lookupKey: ROUTER_IDS[from],
+          lookupResult: `Neighbor state: ${NEIGHBOR_STATE_LABEL[nowState]}`,
+          reason: "Area, Hello/Dead interval, and network-type parameters matched.",
           packetBefore: before,
           packetAfter: `Neighbor ${ROUTER_IDS[from]}: ${NEIGHBOR_STATE_LABEL[nowState]}`,
         };
@@ -224,19 +237,45 @@ export function traceFor(router: RouterId, state: OspfState, currentStepId: stri
           stages: DBD_STAGES,
           activeStageId: currentStepId === "exstart" ? "neighbor-sync" : "compare-lsdb",
           completedStageIds: currentStepId === "exstart" ? ["ingress", "protocol89"] : ["ingress", "protocol89", "neighbor-sync"],
+          ingressInterfaceId,
+          lookupType: "DBD Summary Compare",
+          lookupKey: ROUTER_IDS[from],
+          reason: currentStepId === "exstart" ? "Master/slave relationship and initial sequence number negotiated." : "Comparing this DBD's LSA headers against the local LSDB to find missing entries.",
         };
       case "lsr":
-        return { deviceId: router, stages: LSR_STAGES, activeStageId: "lsdb-gap", completedStageIds: ["ingress", "protocol89", "lsr-processing"] };
+        return {
+          deviceId: router,
+          stages: LSR_STAGES,
+          activeStageId: "lsdb-gap",
+          completedStageIds: ["ingress", "protocol89", "lsr-processing"],
+          ingressInterfaceId,
+          lookupType: "LSR Processing",
+          lookupKey: ROUTER_IDS[from],
+          reason: "Identifying which LSAs the requester is missing from its LSDB.",
+        };
       case "lsu":
         return {
           deviceId: router,
           stages: LSU_STAGES,
           activeStageId: currentStepId === "flood-lsas" || currentStepId === "lsa-reflooded" ? "flood" : "lsdb-install",
           completedStageIds: ["ingress", "ospf-lsu", "validate-lsa"],
+          ingressInterfaceId,
+          lookupType: "LSDB Install",
+          lookupResult: "New/updated Router-LSA installed",
+          reason: currentStepId === "flood-lsas" || currentStepId === "lsa-reflooded" ? "Topology changed — this LSA must be reflooded out every other adjacency." : "LSA sequence number is newer than what's currently in the LSDB.",
           forwardingAction: "New/updated Router-LSA installed into local LSDB.",
         };
       case "lsack":
-        return { deviceId: router, stages: LSACK_STAGES, activeStageId: "state-transition", completedStageIds: ["ingress", "protocol89", "lsack-processing", "lsdb-confirm"] };
+        return {
+          deviceId: router,
+          stages: LSACK_STAGES,
+          activeStageId: "state-transition",
+          completedStageIds: ["ingress", "protocol89", "lsack-processing", "lsdb-confirm"],
+          ingressInterfaceId,
+          lookupType: "LSAck Confirm",
+          lookupKey: ROUTER_IDS[from],
+          reason: "Reliable flooding confirmed — no retransmission needed for this LSA.",
+        };
       default:
         return idleTrace(router);
     }

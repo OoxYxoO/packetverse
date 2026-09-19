@@ -45,8 +45,13 @@ import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
 import { PlaneViewSwitcher, type PlaneView } from "@/components/network3d/PlaneViewSwitcher";
 import { TopologyFrame } from "@/components/network3d/TopologyFrame";
 import { TopologyFocusMode } from "@/components/network3d/TopologyFocusMode";
+import { HopInspectorPanel } from "@/components/network3d/HopInspectorPanel";
+import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
+import { HopTimeline } from "@/components/network3d/HopTimeline";
+import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
+import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
-import type { ActivePacket3D, CameraMode, Link3DData, Node3DStatus } from "@/components/network3d/types";
+import type { ActivePacket3D, CameraMode, FocusTarget3D, Link3DData, Node3DStatus } from "@/components/network3d/types";
 import {
   ATTRIBUTE_INFO,
   PRIMARY_TRANSITION_ROUTER,
@@ -116,6 +121,7 @@ export default function BgpEnterpriseDemo() {
   const [userPacketHop, setUserPacketHop] = useState(0);
   const [sentPackets, setSentPackets] = useState<{ when: "before" | "after"; path: string[]; viaIsp?: string }[]>([]);
   const [focusMode, setFocusMode] = useState(false);
+  const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -258,19 +264,106 @@ export default function BgpEnterpriseDemo() {
   const deviceInterfaces = effectiveDeviceId ? interfacesFor(effectiveDeviceId, state, currentStep?.id ?? "", activePacket) : [];
   const devicePacketFrames = effectiveDeviceId ? packetFramesFor(activePacket) : undefined;
 
+  // --- Generic 3D object-focus sub-state ("3D Inspection & Selection UX
+  // Pass" / "Universal Interactive Topology Migration" §25) — layered ON
+  // TOP of `cameraMode`, never a 5th camera mode. Only reachable from the
+  // device-interior scene, so it reuses `deviceTrace`/`deviceInterfaces`/
+  // `devicePacketFrames` (the camera-following ones), never a separate
+  // computation. Cleared automatically once the object it names is no
+  // longer present in current data.
+  const focusedObjectStillValid =
+    focusedObject &&
+    (focusedObject.kind === "stage"
+      ? deviceTrace?.stages.some((s) => s.id === focusedObject.id)
+      : focusedObject.kind === "packetLayer"
+        ? devicePacketFrames?.some((f) => f.id === focusedObject.id)
+        : focusedObject.kind === "interface"
+          ? deviceInterfaces.some((i) => i.id === focusedObject.id)
+          : true);
+  const activeFocusedObject = focusedObjectStillValid ? focusedObject : undefined;
+
   const followNode3D = cameraMode === "packetFollow" && activePacket ? nodes3D.find((n) => n.id === activePacket.to) : undefined;
-  const focusPosition3D: [number, number, number] | undefined =
-    cameraMode === "freeOrbit" ? undefined : cameraMode === "bestPath" ? [0, 0, 0] : inDeviceMode ? [0, 0, deviceXray ? -0.2 : 0] : cameraMode === "packetFollow" ? followNode3D?.position : selectedNode3D?.position;
-  const eyeOffset3D: [number, number, number] | undefined = cameraMode === "bestPath" ? [0.01, 9, 0.01] : inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
+  const PACKET_FOLLOW_DEVICE_EYE_OFFSET: [number, number, number] = [1.7, 3.3, 6.6];
+  const focusPosition3D: [number, number, number] | undefined = activeFocusedObject
+    ? activeFocusedObject.position
+    : cameraMode === "freeOrbit"
+      ? undefined
+      : cameraMode === "bestPath"
+        ? [0, 0, 0]
+        : inDeviceMode
+          ? [0, 0, deviceXray ? -0.2 : 0]
+          : cameraMode === "packetFollow"
+            ? followNode3D?.position
+            : selectedNode3D?.position;
+  const eyeOffset3D: [number, number, number] | undefined = activeFocusedObject
+    ? eyeOffsetForFocusTarget(activeFocusedObject)
+    : cameraMode === "bestPath"
+      ? [0.01, 9, 0.01]
+      : inDeviceMode
+        ? cameraMode === "packetFollow"
+          ? PACKET_FOLLOW_DEVICE_EYE_OFFSET
+          : deviceXray
+            ? [0.6, 2.6, 5.2]
+            : [2.1, 1.5, 3.8]
+        : undefined;
 
   const explainTargetId = effectiveDeviceId ?? selectedNodeId ?? followNode3D?.id;
   const nodeExplanation = explainTargetId && DEVICE_ROUTERS.includes(explainTargetId as RouterId) ? explainRouter(state, explainTargetId as RouterId, currentStep?.id ?? "", activePacket) : undefined;
   const xrayPacket = activePacket && (selectedNodeId === activePacket.from || selectedNodeId === activePacket.to) ? activePacket : undefined;
-  // Generic-Focus-Mode smoke test (brief §2/§20/§24) — same sticky/Expand
-  // treatment as SR-MPLS, reusing the existing snapshot fields. BGP
-  // Enterprise has no enriched per-hop trace, so Focus Mode here stays
-  // basic: large topology + device inspect, no Hop Inspector/timeline.
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
+
+  // --- Hop Inspector target ("Universal Interactive Topology Migration"
+  // §23) — explicit selection wins outright, matching SR-MPLS's rule:
+  // selectedNodeId > effectiveDeviceId > activeDeviceId. Decoupled from
+  // `inDeviceMode` so a plain node click (no "Enter Device") already
+  // shows that router's Hop Inspector inside Focus Mode.
+  const focusInspectDeviceId = (selectedNodeId ?? effectiveDeviceId ?? activeDeviceId) as RouterId | undefined;
+  const focusTrace =
+    focusInspectDeviceId && dataPacketAtRouter === focusInspectDeviceId && dataPacketNextRouter
+      ? dataForwardTrace(focusInspectDeviceId, dataPacketNextRouter)
+      : focusInspectDeviceId
+        ? traceFor(focusInspectDeviceId, state, currentStep?.id ?? "", activePacket)
+        : undefined;
+  const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state, currentStep?.id ?? "", activePacket) : undefined;
+
+  // --- HopTimeline data — every packet-carrying step completed so far,
+  // re-describing `bgpSteps`/`index` (already-decided data) rather than a
+  // separate journey log, since BgpState tracks FSM/table state, not a
+  // growing per-hop array the way SR-MPLS's `state.journey` does.
+  const journeyHopEntries = bgpSteps.slice(0, index + 1).filter((s) => !!s.packet).map((s) => ({ id: s.id, label: s.label }));
+
+  /** Detail shown in <ObjectFocusPanel> for a focused stage/packetLayer/interface. Every field comes straight off `deviceTrace`/`deviceInterfaces`/`devicePacketFrames`; link focus reuses <LinkDetailPanel> instead. */
+  function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
+    if (target.kind === "stage" && deviceTrace) {
+      const stage = deviceTrace.stages.find((s) => s.id === target.id);
+      const fields: { label: string; value: string }[] = [];
+      if (stage?.detail) fields.push({ label: "Detail", value: stage.detail });
+      if (deviceTrace.activeStageId === target.id) {
+        if (deviceTrace.lookupType) fields.push({ label: "Lookup", value: deviceTrace.lookupType });
+        if (deviceTrace.lookupKey) fields.push({ label: "Match", value: deviceTrace.lookupKey });
+        if (deviceTrace.lookupResult) fields.push({ label: "Result", value: deviceTrace.lookupResult });
+        const egressIface = deviceInterfaces.find((i) => i.id === deviceTrace.egressInterfaceId);
+        if (egressIface) fields.push({ label: "Egress", value: egressIface.name });
+        if (deviceTrace.reason) fields.push({ label: "Why", value: deviceTrace.reason });
+      }
+      return { title: stage?.label ?? target.id, fields };
+    }
+    if (target.kind === "packetLayer") {
+      const frame = devicePacketFrames?.find((f) => f.id === target.id);
+      return { title: frame?.text ?? target.id, fields: frame ? [{ label: "Layer type", value: frame.tone }] : [] };
+    }
+    if (target.kind === "interface") {
+      const iface = deviceInterfaces.find((i) => i.id === target.id);
+      if (!iface) return { title: target.id, fields: [] };
+      const fields: { label: string; value: string }[] = [];
+      if (iface.neighborLabel) fields.push({ label: "Peer", value: iface.neighborLabel });
+      fields.push({ label: "Current role", value: iface.role === "ingress" ? "Ingress" : iface.role === "egress" ? "Egress" : "Idle" });
+      fields.push({ label: "Status", value: iface.status === "up" ? "Up" : "Down" });
+      if (iface.ip) fields.push({ label: "IP", value: iface.ip });
+      return { title: iface.name, fields };
+    }
+    return { title: target.id, fields: [] };
+  }
 
   function handleCameraModeChange(v: CameraMode | "bestPath") {
     setCameraMode(v);
@@ -280,6 +373,15 @@ export default function BgpEnterpriseDemo() {
       setSelectedNodeId(undefined);
     }
     if (v === "freeOrbit" || v === "bestPath") setEnteredDeviceId(undefined);
+  }
+
+  // --- Manual object focus vs. Play — resuming playback is an explicit
+  // request to keep watching the journey move, so it takes priority over
+  // a previously-focused stage/layer/interface (see sr-mpls-foundations
+  // for the same rule).
+  function handleToggleAutoPlay() {
+    if (!autoPlay) setFocusedObject(undefined);
+    setAutoPlay((v) => !v);
   }
 
   const selectedLinkDetail = selectedLinkId ? linkDetailFor(selectedLinkId, state, activePacket) : undefined;
@@ -467,6 +569,7 @@ export default function BgpEnterpriseDemo() {
     setSendingUserPacket(false);
     setUserPacketHop(0);
     setSentPackets([]);
+    setFocusedObject(undefined);
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Change policy to continue" : "Next Step →";
@@ -614,6 +717,7 @@ export default function BgpEnterpriseDemo() {
                   setPacketSelected(false);
                 }}
                 selectedLinkId={selectedLinkId}
+                onFocusLink={setFocusedObject}
                 onSelectPacket={() => {
                   setPacketSelected(true);
                   setAutoPlay(false);
@@ -638,6 +742,8 @@ export default function BgpEnterpriseDemo() {
                         },
                         packetSelected,
                         pipelineTitle: "Conceptual BGP Control-Plane Pipeline",
+                        onFocusObject: setFocusedObject,
+                        focusedObjectId: activeFocusedObject?.id,
                       }
                     : undefined
                 }
@@ -959,7 +1065,7 @@ export default function BgpEnterpriseDemo() {
               <Button size="sm" onClick={() => engine.advance()} disabled={!canAdvance}>
                 {nextLabel}
               </Button>
-              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={() => setAutoPlay((v) => !v)}>
+              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={handleToggleAutoPlay}>
                 {autoPlay ? "⏸ Auto-Playing" : "▶ Auto-Play"}
               </Button>
               <div className="flex gap-1 rounded-full border border-pv-border p-0.5">
@@ -1096,7 +1202,7 @@ export default function BgpEnterpriseDemo() {
               </div>
               {questionActive ? (
                 <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Prediction pending — answer on the lesson page to continue
+                  Prediction pending — answer in the panel to continue
                 </span>
               ) : (
                 currentStep?.narrative && (
@@ -1129,6 +1235,7 @@ export default function BgpEnterpriseDemo() {
                 }}
                 onSelectLink={(id) => setSelectedLinkId(id)}
                 selectedLinkId={selectedLinkId}
+                onFocusLink={setFocusedObject}
                 onSelectPacket={() => setPacketSelected(true)}
                 packetSelected={packetSelected}
                 focusPosition={focusPosition3D}
@@ -1147,6 +1254,8 @@ export default function BgpEnterpriseDemo() {
                         onSelectPacket: () => setPacketSelected(true),
                         packetSelected,
                         pipelineTitle: "Conceptual BGP Control-Plane Pipeline",
+                        onFocusObject: setFocusedObject,
+                        focusedObjectId: activeFocusedObject?.id,
                       }
                     : undefined
                 }
@@ -1154,7 +1263,44 @@ export default function BgpEnterpriseDemo() {
             </div>
           }
           inspector={
-            inDeviceMode ? (
+            currentStep?.question ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
+                <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
+              </>
+            ) : selectedLinkDetail ? (
+              <LinkDetailPanel
+                detail={selectedLinkDetail}
+                onClose={() => {
+                  setSelectedLinkId(undefined);
+                  setFocusedObject(undefined);
+                }}
+              />
+            ) : activeFocusedObject && activeFocusedObject.kind !== "link" ? (
+              <ObjectFocusPanel
+                kind={activeFocusedObject.kind}
+                title={focusPanelFieldsFor(activeFocusedObject).title}
+                fields={focusPanelFieldsFor(activeFocusedObject).fields}
+                onBack={() => setFocusedObject(undefined)}
+                onOverview={() => {
+                  setFocusedObject(undefined);
+                  handleCameraModeChange("overview");
+                }}
+              />
+            ) : focusTrace ? (
+              <div className="space-y-3">
+                <HopInspectorPanel
+                  trace={focusTrace}
+                  deviceName={focusInspectDeviceId ?? "—"}
+                  interfaces={focusInterfaces}
+                  onFocusNextHop={(id) => {
+                    setSelectedNodeId(id);
+                    if (cameraMode === "device") setEnteredDeviceId(id as RouterId);
+                  }}
+                />
+                <PacketDiffViewer before={focusTrace.packetBeforeFrames} after={focusTrace.packetAfterFrames} beforeText={focusTrace.packetBefore} afterText={focusTrace.packetAfter} mutations={focusTrace.mutations} />
+              </div>
+            ) : inDeviceMode ? (
               <DeviceExplorerPanel
                 explanation={nodeExplanation!}
                 tabs={explorerTabs}
@@ -1170,9 +1316,40 @@ export default function BgpEnterpriseDemo() {
               <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} xrayEnabled={false} />
             ) : (
               <GlassPanel className="p-4">
-                <p className="text-xs text-pv-text-faint">Select a device to inspect it. This lesson doesn&apos;t model a per-hop packet trace, so Focus Mode here stays to topology + device inspection.</p>
+                <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
               </GlassPanel>
             )
+          }
+          timeline={
+            <div className="space-y-2">
+              <HopTimeline
+                hops={journeyHopEntries}
+                currentIndex={journeyHopEntries.length - 1}
+                onSelectHop={(i) => {
+                  const step = bgpSteps.filter((s) => !!s.packet)[i];
+                  const p = step?.packet?.(state);
+                  const router = p?.to ?? p?.from;
+                  if (!router || !DEVICE_ROUTERS.includes(router as RouterId)) return;
+                  setSelectedNodeId(router);
+                  if (cameraMode === "device") setEnteredDeviceId(router as RouterId);
+                }}
+              />
+              <PacketFlowControls
+                playing={autoPlay}
+                onTogglePlay={handleToggleAutoPlay}
+                onPrevHop={() => engine.goTo(Math.max(0, index - 1))}
+                onNextHop={() => engine.advance()}
+                onReset={handleRestart}
+                canPrevHop={index > 0}
+                canNextHop={canAdvance}
+                speed={speed as PlaySpeed}
+                onSpeedChange={setSpeed}
+                followPacket={cameraMode === "packetFollow"}
+                onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
+                view3D={viewMode === "3d"}
+                onToggleView3D={() => setViewMode((v) => (v === "3d" ? "physical" : "3d"))}
+              />
+            </div>
           }
         />
       )}
@@ -1280,4 +1457,12 @@ function ChallengeControl({
       )}
     </GlassPanel>
   );
+}
+
+/** Derives a close-but-non-clipping camera eye offset from a focused object's world-space bounding size, rather than a hardcoded per-kind distance (see sr-mpls-foundations for the same helper). */
+function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number] {
+  const [sx, sy, sz] = target.size ?? [0.6, 0.3, 0.3];
+  const maxDim = Math.max(sx, sy, sz);
+  const dist = Math.max(0.55, maxDim * 1.8);
+  return [dist * 0.55, dist * 0.5, dist * 0.75];
 }

@@ -126,6 +126,11 @@ function packetKind(packet: PacketVisual): "tcp" | "open" | "keepalive" | "updat
   return undefined;
 }
 
+/** Interface id for `router`'s port facing `neighbor` — must match `interfacesFor`'s own `id` (brief §17: Hop Inspector ingress/egress rows resolve interface names by this id). */
+function ifaceId(router: RouterId, neighbor: RouterId): string {
+  return `${router}-${neighbor}`;
+}
+
 function sessionIdFor(a: RouterId, b: RouterId): SessionId | undefined {
   const direct = `${a}-${b}` as SessionId;
   const alt = `${b}-${a}` as SessionId;
@@ -213,14 +218,38 @@ export function traceFor(router: RouterId, state: BgpState, currentStepId: strin
   }
   if (currentStepId === "install-r1" && router === "R1") {
     const best = state.bgpTables.R1.find((p) => p.best);
-    return { deviceId: router, stages: UPDATE_STAGES, activeStageId: "rib", completedStageIds: ["ingress", "parse-update", "validate-attrs", "policy", "candidate-path", "best-path-eval", "bgp-table"], forwardingAction: best ? `Installed: ${DEST_PREFIX} via ${best.isp}, NEXT_HOP ${best.attrs.nextHop}.` : undefined };
+    return {
+      deviceId: router,
+      stages: UPDATE_STAGES,
+      activeStageId: "rib",
+      completedStageIds: ["ingress", "parse-update", "validate-attrs", "policy", "candidate-path", "best-path-eval", "bgp-table"],
+      lookupType: "RIB Install",
+      lookupKey: DEST_PREFIX,
+      lookupResult: best ? `via ${best.isp}, NEXT_HOP ${best.attrs.nextHop}` : undefined,
+      nextHopId: best?.advertisedBy,
+      nextHopLabel: best?.advertisedBy,
+      reason: best ? `LOCAL_PREF ${best.attrs.localPref}, AS_PATH length ${best.attrs.asPath.length} won the comparison.` : undefined,
+      forwardingAction: best ? `Installed: ${DEST_PREFIX} via ${best.isp}, NEXT_HOP ${best.attrs.nextHop}.` : undefined,
+    };
   }
   if (currentStepId === "bestpath-r2" && router === "R2") {
     return { deviceId: router, stages: UPDATE_STAGES, activeStageId: "best-path-eval", completedStageIds: ["ingress", "parse-update", "validate-attrs", "policy", "candidate-path"], forwardingAction: "R2 runs the identical comparison over its own two candidates." };
   }
   if (currentStepId === "install-r2" && router === "R2") {
     const best = state.bgpTables.R2.find((p) => p.best);
-    return { deviceId: router, stages: UPDATE_STAGES, activeStageId: "rib", completedStageIds: ["ingress", "parse-update", "validate-attrs", "policy", "candidate-path", "best-path-eval", "bgp-table"], forwardingAction: best ? `Installed: ${DEST_PREFIX} via ${best.isp}, NEXT_HOP ${best.attrs.nextHop}${best.nextHopReachable ? "" : " — NOT reachable"}.` : undefined };
+    return {
+      deviceId: router,
+      stages: UPDATE_STAGES,
+      activeStageId: "rib",
+      completedStageIds: ["ingress", "parse-update", "validate-attrs", "policy", "candidate-path", "best-path-eval", "bgp-table"],
+      lookupType: "RIB Install",
+      lookupKey: DEST_PREFIX,
+      lookupResult: best ? `via ${best.isp}, NEXT_HOP ${best.attrs.nextHop}${best.nextHopReachable ? "" : " (not reachable)"}` : undefined,
+      nextHopId: best?.advertisedBy,
+      nextHopLabel: best?.advertisedBy,
+      reason: best ? `LOCAL_PREF ${best.attrs.localPref}, AS_PATH length ${best.attrs.asPath.length} won the comparison.` : undefined,
+      forwardingAction: best ? `Installed: ${DEST_PREFIX} via ${best.isp}, NEXT_HOP ${best.attrs.nextHop}${best.nextHopReachable ? "" : " — NOT reachable"}.` : undefined,
+    };
   }
   if (currentStepId === "trouble-fix" && (router === "R1" || router === "R2")) {
     const path = state.bgpTables[router].find((p) => p.isp === "ISP-A" && p.attrs.peerType === (router === "R1" ? "eBGP" : "iBGP"));
@@ -231,7 +260,19 @@ export function traceFor(router: RouterId, state: BgpState, currentStepId: strin
   }
   if (currentStepId === "localpref-change" && (router === "R1" || router === "R2")) {
     const best = state.bgpTables[router].find((p) => p.best);
-    return { deviceId: router, stages: UPDATE_STAGES, activeStageId: "rib", completedStageIds: ["ingress", "parse-update", "validate-attrs", "policy", "candidate-path", "best-path-eval", "bgp-table"], forwardingAction: best ? `New best path installed: via ${best.isp} (LOCAL_PREF ${best.attrs.localPref}).` : undefined };
+    return {
+      deviceId: router,
+      stages: UPDATE_STAGES,
+      activeStageId: "rib",
+      completedStageIds: ["ingress", "parse-update", "validate-attrs", "policy", "candidate-path", "best-path-eval", "bgp-table"],
+      lookupType: "RIB Install",
+      lookupKey: DEST_PREFIX,
+      lookupResult: best ? `via ${best.isp}, LOCAL_PREF ${best.attrs.localPref}` : undefined,
+      nextHopId: best?.advertisedBy,
+      nextHopLabel: best?.advertisedBy,
+      reason: "LOCAL_PREF is compared before AS_PATH length — the changed value now wins.",
+      forwardingAction: best ? `New best path installed: via ${best.isp} (LOCAL_PREF ${best.attrs.localPref}).` : undefined,
+    };
   }
   if ((currentStepId === "challenge-intro" || currentStepId === "challenge") && (router === "R1" || router === "R2")) {
     const best = state.bgpTables[router].find((p) => p.best);
@@ -243,24 +284,83 @@ export function traceFor(router: RouterId, state: BgpState, currentStepId: strin
     const kind = packetKind(activePacket);
     if (router === activePacket.from) {
       const sendStages = kind === "tcp" ? TCP_SEND_STAGES : kind === "open" ? OPEN_SEND_STAGES : kind === "keepalive" ? KEEPALIVE_SEND_STAGES : UPDATE_SEND_STAGES;
-      return { deviceId: router, stages: sendStages, activeStageId: "egress", completedStageIds: [sendStages[0].id] };
+      const to = activePacket.to as RouterId;
+      return {
+        deviceId: router,
+        stages: sendStages,
+        activeStageId: "egress",
+        completedStageIds: [sendStages[0].id],
+        egressInterfaceId: ifaceId(router, to),
+        nextHopId: to,
+        nextHopLabel: to,
+      };
     }
     // receiver
+    const from = activePacket.from as RouterId;
     switch (kind) {
       case "tcp": {
         const t = TCP_STEP_TRANSITIONS[currentStepId];
-        return { deviceId: router, stages: TCP_RECEIVE_STAGES, activeStageId: "session-state", completedStageIds: ["ingress", "tcp-179"], packetBefore: t ? `TCP: ${t.before}` : undefined, packetAfter: t ? `TCP: ${t.after}` : undefined };
+        return {
+          deviceId: router,
+          stages: TCP_RECEIVE_STAGES,
+          activeStageId: "session-state",
+          completedStageIds: ["ingress", "tcp-179"],
+          ingressInterfaceId: ifaceId(router, from),
+          lookupType: "TCP State",
+          lookupResult: t ? `${t.before} → ${t.after}` : undefined,
+          reason: "TCP three-way handshake step toward port 179.",
+          packetBefore: t ? `TCP: ${t.before}` : undefined,
+          packetAfter: t ? `TCP: ${t.after}` : undefined,
+        };
       }
       case "open": {
         const t = BGP_STEP_TRANSITIONS[currentStepId];
-        return { deviceId: router, stages: OPEN_RECEIVE_STAGES, activeStageId: "fsm-transition", completedStageIds: ["ingress", "bgp-open", "peer-validation", "capability-negotiation"], packetBefore: t ? `BGP: ${BGP_STATE_LABEL[t.before]}` : undefined, packetAfter: t ? `BGP: ${BGP_STATE_LABEL[t.after]}` : undefined };
+        return {
+          deviceId: router,
+          stages: OPEN_RECEIVE_STAGES,
+          activeStageId: "fsm-transition",
+          completedStageIds: ["ingress", "bgp-open", "peer-validation", "capability-negotiation"],
+          ingressInterfaceId: ifaceId(router, from),
+          lookupType: "BGP OPEN",
+          lookupKey: `Peer AS ${ROUTER_AS[from]}`,
+          lookupResult: t ? `FSM ${BGP_STATE_LABEL[t.before]} → ${BGP_STATE_LABEL[t.after]}` : undefined,
+          reason: "Peer AS and BGP Identifier validated; capabilities negotiated.",
+          packetBefore: t ? `BGP: ${BGP_STATE_LABEL[t.before]}` : undefined,
+          packetAfter: t ? `BGP: ${BGP_STATE_LABEL[t.after]}` : undefined,
+        };
       }
       case "keepalive": {
         const t = BGP_STEP_TRANSITIONS[currentStepId];
-        return { deviceId: router, stages: KEEPALIVE_RECEIVE_STAGES, activeStageId: "fsm-transition", completedStageIds: ["ingress", "bgp-keepalive", "liveness-confirmed"], packetBefore: t ? `BGP: ${BGP_STATE_LABEL[t.before]}` : undefined, packetAfter: t ? `BGP: ${BGP_STATE_LABEL[t.after]}` : undefined, forwardingAction: "Session ESTABLISHED on both sides." };
+        return {
+          deviceId: router,
+          stages: KEEPALIVE_RECEIVE_STAGES,
+          activeStageId: "fsm-transition",
+          completedStageIds: ["ingress", "bgp-keepalive", "liveness-confirmed"],
+          ingressInterfaceId: ifaceId(router, from),
+          lookupType: "BGP KEEPALIVE",
+          lookupResult: t ? `FSM ${BGP_STATE_LABEL[t.before]} → ${BGP_STATE_LABEL[t.after]}` : undefined,
+          reason: "Valid KEEPALIVE confirms peer liveness — session reaches ESTABLISHED.",
+          packetBefore: t ? `BGP: ${BGP_STATE_LABEL[t.before]}` : undefined,
+          packetAfter: t ? `BGP: ${BGP_STATE_LABEL[t.after]}` : undefined,
+          forwardingAction: "Session ESTABLISHED on both sides.",
+        };
       }
-      case "update":
-        return { deviceId: router, stages: UPDATE_STAGES, activeStageId: "candidate-path", completedStageIds: ["ingress", "parse-update", "validate-attrs", "policy"], packetBefore: `${(state.bgpTables[router] ?? []).length} candidate path(s) before`, packetAfter: `${(state.bgpTables[router] ?? []).length + 1} candidate path(s) after` };
+      case "update": {
+        const before = (state.bgpTables[router] ?? []).length;
+        return {
+          deviceId: router,
+          stages: UPDATE_STAGES,
+          activeStageId: "candidate-path",
+          completedStageIds: ["ingress", "parse-update", "validate-attrs", "policy"],
+          ingressInterfaceId: ifaceId(router, from),
+          lookupType: "UPDATE Parse",
+          lookupKey: DEST_PREFIX,
+          lookupResult: `${before} → ${before + 1} candidate path(s)`,
+          reason: "New candidate path added to the BGP table; best-path evaluation happens in a later step.",
+          packetBefore: `${before} candidate path(s) before`,
+          packetAfter: `${before + 1} candidate path(s) after`,
+        };
+      }
       default:
         return idleTrace(router);
     }
