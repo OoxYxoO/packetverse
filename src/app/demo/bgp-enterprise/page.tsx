@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
+import type { PacketVisual } from "@/lib/sim-engine/types";
 import {
   BGP_STATE_INFO,
   BGP_STATE_LABEL,
@@ -122,6 +123,8 @@ export default function BgpEnterpriseDemo() {
   const [sentPackets, setSentPackets] = useState<{ when: "before" | "after"; path: string[]; viaIsp?: string }[]>([]);
   const [focusMode, setFocusMode] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
+  /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
+  const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -326,11 +329,32 @@ export default function BgpEnterpriseDemo() {
         : undefined;
   const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state, currentStep?.id ?? "", activePacket) : undefined;
 
-  // --- HopTimeline data — every packet-carrying step completed so far,
-  // re-describing `bgpSteps`/`index` (already-decided data) rather than a
-  // separate journey log, since BgpState tracks FSM/table state, not a
-  // growing per-hop array the way SR-MPLS's `state.journey` does.
-  const journeyHopEntries = bgpSteps.slice(0, index + 1).filter((s) => !!s.packet).map((s) => ({ id: s.id, label: s.label }));
+  // --- HopTimeline data — every packet-carrying OR FSM-transition step
+  // completed so far (`PRIMARY_TRANSITION_ROUTER` already identifies the
+  // no-packet transition steps — TCP/BGP state moves with no message of
+  // their own), re-describing `bgpSteps`/`index` rather than a separate
+  // journey log, since BgpState tracks FSM/table state, not a growing
+  // per-hop array the way SR-MPLS's `state.journey` does.
+  const journeyStepIndices = bgpSteps
+    .map((s, i) => ({ s, i }))
+    .filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined));
+  const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
+
+  // --- Historical inspection ("Historical Timeline Inspection Fix" §3/§4)
+  // — reuses ScenarioEngine's OWN `stateByIndex` snapshot (exposed via
+  // `getStateAt`) rather than a second, hand-rolled journey record: the
+  // engine already freezes the exact state at the moment each index was
+  // entered, which is what `goTo()` itself restores from. Presentation-
+  // only — never calls `engine.goTo()`, so the live lesson never moves.
+  const historicalState = historicalIndex !== undefined ? engine.getStateAt(historicalIndex) : undefined;
+  const historicalStep = historicalIndex !== undefined ? bgpSteps[historicalIndex] : undefined;
+  const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
+  const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
+  const historicalTrace =
+    historicalDeviceId && historicalState
+      ? traceFor(historicalDeviceId, historicalState, historicalStep!.id, historicalPacket)
+      : undefined;
+  const historicalInterfaces = historicalDeviceId && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id, historicalPacket) : undefined;
 
   /** Detail shown in <ObjectFocusPanel> for a focused stage/packetLayer/interface. Every field comes straight off `deviceTrace`/`deviceInterfaces`/`devicePacketFrames`; link focus reuses <LinkDetailPanel> instead. */
   function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
@@ -380,7 +404,10 @@ export default function BgpEnterpriseDemo() {
   // a previously-focused stage/layer/interface (see sr-mpls-foundations
   // for the same rule).
   function handleToggleAutoPlay() {
-    if (!autoPlay) setFocusedObject(undefined);
+    if (!autoPlay) {
+      setFocusedObject(undefined);
+      setHistoricalIndex(undefined);
+    }
     setAutoPlay((v) => !v);
   }
 
@@ -570,6 +597,7 @@ export default function BgpEnterpriseDemo() {
     setUserPacketHop(0);
     setSentPackets([]);
     setFocusedObject(undefined);
+    setHistoricalIndex(undefined);
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Change policy to continue" : "Next Step →";
@@ -1287,6 +1315,20 @@ export default function BgpEnterpriseDemo() {
                   handleCameraModeChange("overview");
                 }}
               />
+            ) : historicalIndex !== undefined && historicalTrace ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-pv-violet">Historical — {historicalStep?.label}</span>
+                  </div>
+                  <button type="button" onClick={() => setHistoricalIndex(undefined)} className="text-[11px] font-semibold uppercase tracking-wide text-pv-text-faint transition-colors hover:text-pv-cyan-soft">
+                    Return to Current →
+                  </button>
+                </div>
+                <HopInspectorPanel trace={historicalTrace} deviceName={historicalDeviceId ?? "—"} interfaces={historicalInterfaces} />
+                <PacketDiffViewer before={historicalTrace.packetBeforeFrames} after={historicalTrace.packetAfterFrames} beforeText={historicalTrace.packetBefore} afterText={historicalTrace.packetAfter} mutations={historicalTrace.mutations} />
+              </div>
             ) : focusTrace ? (
               <div className="space-y-3">
                 <HopInspectorPanel
@@ -1324,21 +1366,38 @@ export default function BgpEnterpriseDemo() {
             <div className="space-y-2">
               <HopTimeline
                 hops={journeyHopEntries}
-                currentIndex={journeyHopEntries.length - 1}
+                currentIndex={historicalIndex !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalIndex) : journeyHopEntries.length - 1}
                 onSelectHop={(i) => {
-                  const step = bgpSteps.filter((s) => !!s.packet)[i];
-                  const p = step?.packet?.(state);
-                  const router = p?.to ?? p?.from;
-                  if (!router || !DEVICE_ROUTERS.includes(router as RouterId)) return;
-                  setSelectedNodeId(router);
-                  if (cameraMode === "device") setEnteredDeviceId(router as RouterId);
+                  const entry = journeyHopEntries[i];
+                  if (!entry) return;
+                  if (entry.index === index) {
+                    // The rightmost/current entry — return to live inspection.
+                    setHistoricalIndex(undefined);
+                    return;
+                  }
+                  setHistoricalIndex(entry.index);
+                  setFocusedObject(undefined);
+                  const histState = engine.getStateAt(entry.index);
+                  const histStep = bgpSteps[entry.index];
+                  const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
+                  const router = deviceForStep(entry.id, histPacket);
+                  if (router && DEVICE_ROUTERS.includes(router)) {
+                    setSelectedNodeId(router);
+                    if (cameraMode === "device") setEnteredDeviceId(router);
+                  }
                 }}
               />
               <PacketFlowControls
                 playing={autoPlay}
                 onTogglePlay={handleToggleAutoPlay}
-                onPrevHop={() => engine.goTo(Math.max(0, index - 1))}
-                onNextHop={() => engine.advance()}
+                onPrevHop={() => {
+                  setHistoricalIndex(undefined);
+                  engine.goTo(Math.max(0, index - 1));
+                }}
+                onNextHop={() => {
+                  setHistoricalIndex(undefined);
+                  engine.advance();
+                }}
                 onReset={handleRestart}
                 canPrevHop={index > 0}
                 canNextHop={canAdvance}
@@ -1457,6 +1516,12 @@ function ChallengeControl({
       )}
     </GlassPanel>
   );
+}
+
+/** Which router is the primary inspection subject of a given step — the packet's receiver (or sender, if no receiver applies) for a message-carrying step, or `PRIMARY_TRANSITION_ROUTER` for a no-packet FSM-transition step. Shared by both live and historical inspection so they agree on "whose hop is this." */
+function deviceForStep(stepId: string, packet: PacketVisual | undefined): RouterId | undefined {
+  if (packet) return (packet.to ?? packet.from) as RouterId;
+  return PRIMARY_TRANSITION_ROUTER[stepId];
 }
 
 /** Derives a close-but-non-clipping camera eye offset from a focused object's world-space bounding size, rather than a hardcoded per-kind distance (see sr-mpls-foundations for the same helper). */

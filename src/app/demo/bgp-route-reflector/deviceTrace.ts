@@ -3,7 +3,9 @@ import type { PacketVisual } from "@/lib/sim-engine/types";
 import {
   AS_NUMBER,
   CLUSTER_ID,
+  PREFIX,
   ROUTER_IP,
+  TWO_RR_DESIGN,
   connectedRrOf,
   evaluateReflection,
   isClientOf,
@@ -16,6 +18,11 @@ import {
   type RrDesign,
   type RrState,
 } from "@/lib/sim-engine/scenarios/bgpRouteReflector";
+
+/** Interface id for `router`'s port facing `neighbor` — must match `interfacesFor`'s own `id` (Hop Inspector ingress/egress rows resolve interface names by this id). */
+function ifaceId(router: RouterId, neighbor: RouterId): string {
+  return `${router}-${neighbor}`;
+}
 
 /**
  * The "Scene Adapter" (brief §29) for the Route Reflector 3D view.
@@ -146,30 +153,103 @@ export const PRIMARY_TRANSITION_ROUTER: Record<string, RouterId> = {
 export function traceFor(router: RouterId, state: RrState, currentStepId: string, activePacket: PacketVisual | undefined): DeviceProcessingTrace {
   // --- RR pipeline-stage steps with no packet object of their own ---
   if (currentStepId === "rr-receives" && router === "RR1") {
-    return { deviceId: router, stages: RR_PIPELINE_STAGES, activeStageId: "update-processing", completedStageIds: ["ingress", "session"], forwardingAction: "RR1 adds PE1's route to its BGP table." };
+    return {
+      deviceId: router,
+      stages: RR_PIPELINE_STAGES,
+      activeStageId: "update-processing",
+      completedStageIds: ["ingress", "session"],
+      ingressInterfaceId: ifaceId("RR1", "PE1"),
+      lookupType: "BGP Table Insert",
+      lookupKey: state.route?.prefix ?? PREFIX,
+      lookupResult: "Added — received from client PE1",
+      reason: "New candidate route added to RR1's BGP table.",
+      forwardingAction: "RR1 adds PE1's route to its BGP table.",
+    };
   }
   if (currentStepId === "rr-bestpath" && router === "RR1") {
-    return { deviceId: router, stages: RR_PIPELINE_STAGES, activeStageId: "bgp-table", completedStageIds: ["ingress", "session", "update-processing"], forwardingAction: "Only one candidate — trivially best." };
+    return {
+      deviceId: router,
+      stages: RR_PIPELINE_STAGES,
+      activeStageId: "bgp-table",
+      completedStageIds: ["ingress", "session", "update-processing"],
+      lookupType: "Best-Path Evaluation",
+      lookupKey: state.route?.prefix ?? PREFIX,
+      lookupResult: "Only one candidate — trivially best",
+      reason: "No competing path exists yet, so best-path comparison has nothing to decide between.",
+      forwardingAction: "Only one candidate — trivially best.",
+    };
   }
   if (currentStepId === "rr-reflection-decision" && router === "RR1") {
-    return { deviceId: router, stages: RR_PIPELINE_STAGES, activeStageId: "reflection-rule", completedStageIds: ["ingress", "session", "update-processing", "bgp-table", "source-peer-type"], forwardingAction: "Route came from client PE1 → reflect to every other client (and any non-client peer)." };
+    return {
+      deviceId: router,
+      stages: RR_PIPELINE_STAGES,
+      activeStageId: "reflection-rule",
+      completedStageIds: ["ingress", "session", "update-processing", "bgp-table", "source-peer-type"],
+      lookupType: "Reflection Rule",
+      lookupKey: "Source: client PE1",
+      lookupResult: "Reflect to every other client (and any non-client peer)",
+      reason: evaluateReflection("client", "client").reason,
+      forwardingAction: "Route came from client PE1 → reflect to every other client (and any non-client peer).",
+    };
   }
   if (currentStepId === "fault-intro" && router === "RR2") {
-    return { deviceId: router, stages: RR_PIPELINE_STAGES, activeStageId: "eligible-peers", completedStageIds: ["ingress", "session", "update-processing", "bgp-table", "source-peer-type", "reflection-rule", "loop-prevention"], forwardingAction: "PE3 is no longer eligible — RR2 now treats it as an ordinary (non-client) peer, and this route came from non-client peer RR1." };
+    const candidate = reflectionCandidatesFor(state.design, "RR2", "RR1").find((c) => c.routerId === "PE3");
+    return {
+      deviceId: router,
+      stages: RR_PIPELINE_STAGES,
+      activeStageId: "eligible-peers",
+      completedStageIds: ["ingress", "session", "update-processing", "bgp-table", "source-peer-type", "reflection-rule", "loop-prevention"],
+      ingressInterfaceId: ifaceId("RR2", "RR1"),
+      lookupType: "Reflection Rule",
+      lookupKey: "Source: non-client peer RR1",
+      lookupResult: "PE3 no longer eligible — ordinary (non-client) peer, not a client",
+      reason: candidate?.reason ?? "Between two non-client peers, ordinary iBGP split-horizon still applies.",
+      forwardingAction: "PE3 is no longer eligible — RR2 now treats it as an ordinary (non-client) peer, and this route came from non-client peer RR1.",
+    };
   }
   if (currentStepId === "repair-challenge" && router === "RR2" && state.repairAttempt?.correct) {
-    return { deviceId: router, stages: RR_PIPELINE_STAGES, activeStageId: "reflect", completedStageIds: ["ingress", "session", "update-processing", "bgp-table", "source-peer-type", "reflection-rule", "loop-prevention", "eligible-peers"], forwardingAction: "PE3 reconfigured as a client — now eligible, route reflected." };
+    const candidate = reflectionCandidatesFor(TWO_RR_DESIGN, "RR2", "RR1").find((c) => c.routerId === "PE3");
+    return {
+      deviceId: router,
+      stages: RR_PIPELINE_STAGES,
+      activeStageId: "reflect",
+      completedStageIds: ["ingress", "session", "update-processing", "bgp-table", "source-peer-type", "reflection-rule", "loop-prevention", "eligible-peers"],
+      ingressInterfaceId: ifaceId("RR2", "RR1"),
+      egressInterfaceId: ifaceId("RR2", "PE3"),
+      nextHopId: "PE3",
+      nextHopLabel: "PE3",
+      lookupType: "Reflection Rule",
+      lookupKey: "Source: non-client peer RR1",
+      lookupResult: "PE3 now eligible — reconfigured as RR2's client",
+      reason: candidate?.reason ?? "Non-client-learned routes are still reflected to clients.",
+      forwardingAction: "PE3 reconfigured as a client — now eligible, route reflected.",
+    };
   }
   if (currentStepId === "verify-fix" && router === "PE3") {
-    return { deviceId: router, stages: PE_RECEIVE_STAGES, activeStageId: "bgp-table", completedStageIds: ["ingress", "session", "update-processing"], forwardingAction: "Route present, ORIGINATOR_ID and a two-entry CLUSTER_LIST intact." };
+    const received = state.received.PE3;
+    return {
+      deviceId: router,
+      stages: PE_RECEIVE_STAGES,
+      activeStageId: "bgp-table",
+      completedStageIds: ["ingress", "session", "update-processing"],
+      ingressInterfaceId: ifaceId("PE3", "RR2"),
+      lookupType: "BGP Table",
+      lookupKey: state.route?.prefix ?? PREFIX,
+      lookupResult: received ? `Present — CLUSTER_LIST [${received.clusterList.join(", ")}]` : undefined,
+      reason: "Route re-reflected now that PE3 is a client of RR2 again.",
+      forwardingAction: "Route present, ORIGINATOR_ID and a two-entry CLUSTER_LIST intact.",
+    };
   }
 
   // --- packet-driven steps: sender gets the short SEND trace, receiver gets the type-specific trace ---
   if (activePacket && (router === activePacket.from || router === activePacket.to)) {
     if (router === activePacket.from) {
-      return { deviceId: router, stages: PE_SEND_STAGES, activeStageId: "egress", completedStageIds: ["bgp-process"] };
+      const to = activePacket.to as RouterId;
+      return { deviceId: router, stages: PE_SEND_STAGES, activeStageId: "egress", completedStageIds: ["bgp-process"], egressInterfaceId: ifaceId(router, to), nextHopId: to, nextHopLabel: to };
     }
     // receiver
+    const from = activePacket.from as RouterId;
+    const received = state.received[router];
     if (isRr(router)) {
       // This RR is itself relaying onward (reflect-through-two-rr's RR2 leg) — show the full pipeline through "reflect".
       return {
@@ -177,10 +257,27 @@ export function traceFor(router: RouterId, state: RrState, currentStepId: string
         stages: RR_PIPELINE_STAGES,
         activeStageId: "reflect",
         completedStageIds: ["ingress", "session", "update-processing", "bgp-table", "source-peer-type", "reflection-rule", "loop-prevention", "eligible-peers"],
+        ingressInterfaceId: ifaceId(router, from),
+        lookupType: "Reflection Rule",
+        lookupKey: `Source: ${relationshipOf(state.design, router, from) === "client" ? "client" : "non-client peer"} ${from}`,
+        lookupResult: received ? `Reflect onward — CLUSTER_LIST now [${received.clusterList.join(", ")}]` : undefined,
+        reason: "Reflects onward to its own clients, appending its own cluster to CLUSTER_LIST.",
         forwardingAction: "Reflects onward to its own clients, appending its own cluster to CLUSTER_LIST.",
       };
     }
-    return { deviceId: router, stages: PE_RECEIVE_STAGES, activeStageId: "bgp-table", completedStageIds: ["ingress", "session", "update-processing"], forwardingAction: `${(state.received[router]?.clusterList.length ?? 0) > 0 ? "Reflected route" : "Directly-learned route"} added to BGP table.` };
+    const viaReflection = (received?.clusterList.length ?? 0) > 0;
+    return {
+      deviceId: router,
+      stages: PE_RECEIVE_STAGES,
+      activeStageId: "bgp-table",
+      completedStageIds: ["ingress", "session", "update-processing"],
+      ingressInterfaceId: ifaceId(router, from),
+      lookupType: "BGP Table Insert",
+      lookupKey: state.route?.prefix ?? PREFIX,
+      lookupResult: viaReflection ? `Reflected — CLUSTER_LIST [${received?.clusterList.join(", ")}]` : "Directly learned",
+      reason: viaReflection ? "Route reached this PE via a Route Reflector, carrying ORIGINATOR_ID/CLUSTER_LIST." : "Route learned directly from an iBGP peer.",
+      forwardingAction: `${viaReflection ? "Reflected route" : "Directly-learned route"} added to BGP table.`,
+    };
   }
 
   return idleTrace(router);

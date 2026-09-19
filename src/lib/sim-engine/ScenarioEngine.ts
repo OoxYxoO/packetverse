@@ -156,6 +156,19 @@ export class ScenarioEngine<TState> {
   }
 
   /**
+   * Read-only lookup of the state snapshot taken the moment `index` was
+   * first entered — the same immutable record `goTo()` itself restores
+   * from, exposed so a presentation layer can derive historical
+   * inspection data (e.g. a Hop Inspector's before/after for an earlier
+   * hop) without calling goTo() or otherwise mutating the live lesson.
+   * Returns undefined for an index never visited. Generic — carries no
+   * protocol knowledge, just `TState` snapshots already being kept.
+   */
+  getStateAt = (index: number): TState | undefined => {
+    return this.stateByIndex.get(index);
+  };
+
+  /**
    * Runs a step's own run()/whatChanged() the moment it BECOMES the
    * current step (on construction, advance(), or restart()) — so a
    * step's data effects are always shown next to that same step's own
