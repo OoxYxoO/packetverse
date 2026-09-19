@@ -265,7 +265,7 @@ export default function SrMplsFoundationsDemo() {
     }
     if (target.kind === "packetLayer") {
       const frame = devicePacketFrames?.find((f) => f.id === target.id);
-      return { title: frame?.text ?? target.id, fields: frame ? [{ label: "Layer type", value: frame.tone }] : [] };
+      return { title: frame?.text ?? target.id, fields: [] };
     }
     if (target.kind === "interface") {
       const iface = deviceInterfaces.find((i) => i.id === target.id);
