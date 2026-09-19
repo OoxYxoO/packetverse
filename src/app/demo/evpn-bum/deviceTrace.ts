@@ -7,6 +7,18 @@ import { evpnBumSteps, GRAPH_EDGES, VNI, VTEP_LOOPBACK, type EvpnBumDeviceId, ty
  * computed FROM EvpnBumState; nothing here decides replication or
  * route-target policy, it only re-describes decisions the scenario
  * layer already made.
+ *
+ * Level 3 enrichment (mirrors evpn-vxlan/deviceTrace.ts): the existing
+ * per-stepIndex forwarding branches (LEAF1 classify/replicate, SPINE1
+ * underlay forward, LEAF2/LEAF3 decap/deliver) gained the Hop-Inspector-
+ * contract fields. New branches were added ONLY for the Type 3 (IMET)
+ * control-plane steps (every leaf originating/advertising its own Type
+ * 3 route, importing its peers', and building its flood list) — those
+ * previously fell through to the generic idle base with no inspectable
+ * detail. Type 3 control-plane branches stay entirely separate from the
+ * BUM replication data-plane branches throughout — a leaf's flood list
+ * is control-plane state; the replicas it produces from it are data
+ * plane, never the reverse.
  */
 
 const stepIndex = (id: string) => evpnBumSteps.findIndex((s) => s.id === id);
@@ -37,9 +49,34 @@ const LEAF_EGRESS_STAGES: ProcessingStage[] = [
   { id: "local-ports", label: "Local Eligible Ports" },
   { id: "eth-delivery", label: "Ethernet Delivery" },
 ];
+/** Every leaf's control-plane side — originating its own Type 3 (IMET) route, advertising it, importing its peers', and building the resulting flood list. Shared across LEAF1/LEAF2/LEAF3, since all three do exactly the same thing symmetrically. */
+const TYPE3_CONTROL_STAGES: ProcessingStage[] = [
+  { id: "originate", label: "Originate Local Type 3 (IMET)" },
+  { id: "attach-rd-rt", label: "Attach RD / RT" },
+  { id: "advertise", label: "BGP EVPN Advertise" },
+  { id: "receive-peers", label: "Receive Peer Type 3 Routes" },
+  { id: "rt-import-check", label: "RT Import Check (Per Peer)" },
+  { id: "flood-list-build", label: "Build Flood List" },
+];
 
 function allIds(stages: ProcessingStage[]) {
   return stages.map((s) => s.id);
+}
+
+function plainFrames(): PacketStackFrame[] {
+  return [
+    { id: "ethernet", text: "Ethernet (Broadcast)", tone: "generic" },
+    { id: "ip", text: "IP", tone: "ip" },
+  ];
+}
+function vxlanFrames(justChangedId?: string): PacketStackFrame[] {
+  return [
+    { id: "outer-eth", text: "Outer Ethernet", tone: "transport" },
+    { id: "outer-ip", text: "Outer IP", tone: "transport" },
+    { id: "udp", text: "UDP 4789", tone: "transport" },
+    { id: "vxlan", text: `VXLAN VNI ${VNI}`, tone: "vpn", justChanged: justChangedId === "vxlan" },
+    { id: "inner", text: "Original Broadcast Frame", tone: "generic" },
+  ];
 }
 
 export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: EvpnBumState, currentStepId: string): DeviceProcessingTrace {
@@ -49,22 +86,144 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
   const decapIndex = stepIndex("leaves-decap-bum");
   const verifyIndex = stepIndex("verify-dataplane");
 
+  if (device !== "SPINE1") {
+    const leaf = device;
+    // --- Control-plane branches — Type 3 (IMET) originate/advertise/import/flood-list ---
+    if (currentStepId === "type3-advertised") {
+      return {
+        deviceId: leaf,
+        stages: TYPE3_CONTROL_STAGES,
+        activeStageId: "advertise",
+        completedStageIds: ["originate", "attach-rd-rt"],
+        lookupType: "BGP EVPN Advertise (Type 3 / IMET)",
+        lookupKey: `VNI ${VNI}`,
+        lookupResult: `${leaf} advertises its own Type 3 route`,
+        reason: "Each leaf advertises its OWN Type 3 route for the VNI it participates in — never a MAC/IP, just VNI membership.",
+        forwardingAction: `${leaf} advertises a Type 3 (IMET) route for VNI ${VNI}.`,
+      };
+    }
+    if (currentStepId === "flood-list-built" || (i > stepIndex("type3-advertised") && i <= stepIndex("predict-type2-vs-type3"))) {
+      return {
+        deviceId: leaf,
+        stages: TYPE3_CONTROL_STAGES,
+        activeStageId: "flood-list-build",
+        completedStageIds: ["originate", "attach-rd-rt", "advertise", "receive-peers", "rt-import-check"],
+        lookupType: "Flood List",
+        lookupKey: `VNI ${VNI}`,
+        lookupResult: state.floodList[leaf].length ? state.floodList[leaf].join(", ") : "(empty)",
+        reason: "The flood list is built entirely from imported Type 3 routes — never from a MAC/IP lookup.",
+        forwardingAction: `${leaf}'s VNI ${VNI} flood list is ready.`,
+      };
+    }
+    if (currentStepId === "fault-injected") {
+      if (leaf === "LEAF3") {
+        return {
+          deviceId: leaf,
+          stages: TYPE3_CONTROL_STAGES,
+          activeStageId: "advertise",
+          completedStageIds: ["originate", "attach-rd-rt"],
+          lookupType: "BGP EVPN Advertise (Type 3 / IMET)",
+          lookupKey: `VNI ${VNI}`,
+          lookupResult: `Export RT misconfigured — now ${state.exportRt.LEAF3}`,
+          reason: "LEAF3 still advertises a Type 3 route, but with the wrong export RT — LEAF1 and LEAF2 will filter it before import.",
+          forwardingAction: `LEAF3's Type 3 export RT changed to ${state.exportRt.LEAF3}.`,
+        };
+      }
+      return {
+        deviceId: leaf,
+        stages: TYPE3_CONTROL_STAGES,
+        activeStageId: "rt-import-check",
+        completedStageIds: ["originate", "attach-rd-rt", "advertise", "receive-peers"],
+        lookupType: "RT Import Check (Per Peer)",
+        lookupKey: `LEAF3's Type 3 RT ${state.exportRt.LEAF3} vs. ${leaf}'s import RT ${state.importRt[leaf]}`,
+        lookupResult: "No match — LEAF3 dropped from flood list",
+        reason: "LEAF3's own Type 3 export RT no longer matches — its route is filtered before import, so it disappears from this leaf's flood list. LEAF1's/LEAF2's already-learned Type 2 (unicast) routes are completely unaffected.",
+        forwardingAction: `${leaf} drops LEAF3 from its VNI ${VNI} flood list.`,
+      };
+    }
+    if (currentStepId === "repair-challenge" && state.repairAttempt?.correct) {
+      if (leaf === "LEAF3") {
+        return {
+          deviceId: leaf,
+          stages: TYPE3_CONTROL_STAGES,
+          activeStageId: "advertise",
+          completedStageIds: ["originate", "attach-rd-rt"],
+          lookupType: "BGP EVPN Advertise (Type 3 / IMET)",
+          lookupResult: `Export RT corrected to ${state.exportRt.LEAF3}`,
+          reason: "LEAF3's export RT corrected back to match — LEAF1 and LEAF2 re-import it.",
+          forwardingAction: "LEAF3's Type 3 export RT corrected.",
+        };
+      }
+      return {
+        deviceId: leaf,
+        stages: TYPE3_CONTROL_STAGES,
+        activeStageId: "flood-list-build",
+        completedStageIds: ["originate", "attach-rd-rt", "advertise", "receive-peers", "rt-import-check"],
+        lookupType: "RT Import Check (Per Peer)",
+        lookupResult: `Match — LEAF3 re-added: ${state.floodList[leaf].join(", ")}`,
+        reason: "RT matches again — LEAF3 is reinstated in the flood list.",
+        forwardingAction: `${leaf} re-adds LEAF3 to its VNI ${VNI} flood list.`,
+      };
+    }
+  }
+
   if (device === "LEAF1") {
     const base: DeviceProcessingTrace = { deviceId: "LEAF1", ingressInterfaceId: "LEAF1-hosta", egressInterfaceId: "LEAF1-spine1", stages: LEAF1_BUM_STAGES, completedStageIds: [] };
     if (i !== classifyIndex && i !== verifyIndex) return { ...base, completedStageIds: i > classifyIndex ? allIds(LEAF1_BUM_STAGES) : [] };
-    return { ...base, activeStageId: "vxlan-replication", completedStageIds: ["access-frame", "determine-vni", "dest-classification", "bum", "vni-flood-list", "remote-vteps"], packetBefore: "Broadcast Ethernet frame", packetAfter: `${state.floodList.LEAF1.length} VXLAN cop${state.floodList.LEAF1.length === 1 ? "y" : "ies"}` };
+    return {
+      ...base,
+      activeStageId: "vxlan-replication",
+      completedStageIds: ["access-frame", "determine-vni", "dest-classification", "bum", "vni-flood-list", "remote-vteps"],
+      packetBefore: "Broadcast Ethernet frame",
+      packetAfter: `${state.floodList.LEAF1.length} VXLAN cop${state.floodList.LEAF1.length === 1 ? "y" : "ies"}`,
+      packetBeforeFrames: plainFrames(),
+      packetAfterFrames: vxlanFrames("vxlan"),
+      lookupType: "Destination Classification / Flood List",
+      lookupKey: "Dest MAC FF:FF:FF:FF:FF:FF",
+      lookupResult: `BUM → flood list [${state.floodList.LEAF1.join(", ")}]`,
+      nextHopId: "SPINE1",
+      nextHopLabel: "SPINE1",
+      mutations: [{ type: "ENCAPSULATE", detail: `VXLAN VNI ${VNI} — one independent copy per flood-list entry` }],
+      reason: "An unresolvable destination MAC means LEAF1 must consult its VNI flood list and replicate — never a single unicast decision. HOST-A still only ever sent one frame.",
+    };
   }
 
   if (device === "SPINE1") {
     const base: DeviceProcessingTrace = { deviceId: "SPINE1", ingressInterfaceId: "SPINE1-leaf1", egressInterfaceId: "SPINE1-leaf2", stages: SPINE1_STAGES, completedStageIds: [] };
     if (i !== spineIndex && i !== verifyIndex) return base;
-    return { ...base, activeStageId: "outer-ip-lookup", completedStageIds: ["underlay-ingress"], packetBefore: "2 underlay IP/UDP packets", packetAfter: "Forwarded independently, per outer dest IP" };
+    return {
+      ...base,
+      activeStageId: "outer-ip-lookup",
+      completedStageIds: ["underlay-ingress"],
+      packetBefore: "2 underlay IP/UDP packets",
+      packetAfter: "Forwarded independently, per outer dest IP",
+      packetBeforeFrames: vxlanFrames(),
+      packetAfterFrames: vxlanFrames(),
+      lookupType: "Outer IP Lookup (ECMP), Per Packet",
+      lookupResult: "Forwarded toward LEAF2 and LEAF3 independently",
+      reason: "SPINE1 treats each replica as an unrelated underlay IP packet — it never knows they originated from one frame, and never inspects the inner payload or any tenant MAC.",
+    };
   }
 
   // LEAF2 / LEAF3
   const base: DeviceProcessingTrace = { deviceId: device, ingressInterfaceId: `${device}-spine1`, egressInterfaceId: `${device}-${device === "LEAF2" ? "hostb" : "hostc"}`, stages: LEAF_EGRESS_STAGES, completedStageIds: [] };
   if (i !== decapIndex && i !== verifyIndex) return { ...base, completedStageIds: i > decapIndex ? allIds(LEAF_EGRESS_STAGES) : [] };
-  return { ...base, activeStageId: "vni-lookup", completedStageIds: ["vxlan-decap"], packetBefore: `VXLAN(VNI ${VNI})`, packetAfter: `Original broadcast frame → HOST-${device === "LEAF2" ? "B" : "C"}` };
+  return {
+    ...base,
+    activeStageId: "vni-lookup",
+    completedStageIds: ["vxlan-decap"],
+    packetBefore: `VXLAN(VNI ${VNI})`,
+    packetAfter: `Original broadcast frame → HOST-${device === "LEAF2" ? "B" : "C"}`,
+    packetBeforeFrames: vxlanFrames(),
+    packetAfterFrames: plainFrames(),
+    lookupType: "VNI → Local Eligible Ports",
+    lookupKey: `VNI ${VNI}`,
+    lookupResult: `Delivered to HOST-${device === "LEAF2" ? "B" : "C"}`,
+    nextHopId: device === "LEAF2" ? "HOST-B" : "HOST-C",
+    nextHopLabel: device === "LEAF2" ? "HOST-B" : "HOST-C",
+    mutations: [{ type: "DECAPSULATE", detail: `VXLAN VNI ${VNI} removed` }],
+    reason: "This copy was addressed specifically to this leaf's own VTEP — decapsulate and deliver locally, exactly like any other VXLAN egress.",
+  };
 }
 
 // ---------------------------------------------------------------------------
