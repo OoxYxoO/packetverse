@@ -54,7 +54,8 @@ import { HopInspectorPanel } from "@/components/network3d/HopInspectorPanel";
 import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
 import { HopTimeline } from "@/components/network3d/HopTimeline";
 import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
-import type { ActivePacket3D, CameraMode, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
+import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
+import type { ActivePacket3D, CameraMode, FocusTarget3D, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
 
@@ -99,6 +100,7 @@ export default function SrMplsFoundationsDemo() {
   const [xrayMode, setXrayMode] = useState(true);
   const [labSegments, setLabSegments] = useState<SegmentSpec[]>([{ type: "NODE", target: "R6" }]);
   const [focusMode, setFocusMode] = useState(false);
+  const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -198,11 +200,108 @@ export default function SrMplsFoundationsDemo() {
   const deviceInterfaces = effectiveDeviceId ? interfacesFor(effectiveDeviceId, state) : [];
   const devicePacketFrames: PacketStackFrame[] | undefined = effectiveDeviceId ? packetFramesFor(state) : undefined;
 
-  const followNode3D = cameraMode === "packetFollow" && activePacket ? nodes3D.find((n) => n.id === (state.packetAt ?? activePacket.to)) : undefined;
-  const focusPosition3D: [number, number, number] | undefined =
-    cameraMode === "freeOrbit" ? undefined : inDeviceMode ? [0, 0, deviceXray ? -0.2 : 0] : cameraMode === "packetFollow" ? followNode3D?.position : selectedNode3D?.position;
-  const eyeOffset3D: [number, number, number] | undefined = inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
+  // --- Generic 3D object-focus sub-state (brief: "3D Inspection & Selection
+  // UX Pass" §4/§12) — layered ON TOP of `cameraMode`, never a 5th camera
+  // mode of its own. Cleared automatically once the object it names is no
+  // longer present in current data (e.g. the packet moved past that stage)
+  // rather than fighting the learner by staying locked onto something
+  // stale; a "link" target is exempt since graph edge ids are static, so
+  // it only clears when the learner explicitly backs out or picks another
+  // object.
+  const focusedObjectStillValid =
+    focusedObject &&
+    (focusedObject.kind === "stage"
+      ? deviceTrace?.stages.some((s) => s.id === focusedObject.id)
+      : focusedObject.kind === "packetLayer"
+        ? devicePacketFrames?.some((f) => f.id === focusedObject.id)
+        : focusedObject.kind === "interface"
+          ? deviceInterfaces.some((i) => i.id === focusedObject.id)
+          : true);
+  const activeFocusedObject = focusedObjectStillValid ? focusedObject : undefined;
 
+  const followNode3D = cameraMode === "packetFollow" && activePacket ? nodes3D.find((n) => n.id === (state.packetAt ?? activePacket.to)) : undefined;
+  // Wider default framing than a manually-entered "Device" view — Packet
+  // Follow's auto-entered device should show the whole conceptual pipeline
+  // first (brief §11: "see whole pipeline → choose stage → zoom into
+  // stage"), not immediately crop it the way a deliberate "Enter Device"
+  // close-up is allowed to.
+  const PACKET_FOLLOW_DEVICE_EYE_OFFSET: [number, number, number] = [1.7, 3.3, 6.6];
+  const focusPosition3D: [number, number, number] | undefined = activeFocusedObject
+    ? activeFocusedObject.position
+    : cameraMode === "freeOrbit"
+      ? undefined
+      : inDeviceMode
+        ? [0, 0, deviceXray ? -0.2 : 0]
+        : cameraMode === "packetFollow"
+          ? followNode3D?.position
+          : selectedNode3D?.position;
+  const eyeOffset3D: [number, number, number] | undefined = activeFocusedObject
+    ? eyeOffsetForFocusTarget(activeFocusedObject)
+    : inDeviceMode
+      ? cameraMode === "packetFollow"
+        ? PACKET_FOLLOW_DEVICE_EYE_OFFSET
+        : deviceXray
+          ? [0.6, 2.6, 5.2]
+          : [2.1, 1.5, 3.8]
+      : undefined;
+
+  /** Detail shown in <ObjectFocusPanel> for a focused stage/packetLayer/interface — every field comes straight off data the page already computed (`deviceTrace`, `devicePacketFrames`, `deviceInterfaces`); nothing here is a new protocol computation ("3D Inspection & Selection UX Pass" §7/§8/§9). Link focus reuses the existing `<LinkDetailPanel>` path instead (§10) so it isn't handled here. */
+  function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
+    if (target.kind === "stage" && deviceTrace) {
+      const stage = deviceTrace.stages.find((s) => s.id === target.id);
+      const fields: { label: string; value: string }[] = [];
+      if (stage?.detail) fields.push({ label: "Detail", value: stage.detail });
+      if (deviceTrace.activeStageId === target.id) {
+        if (deviceTrace.lookupType) fields.push({ label: "Lookup", value: deviceTrace.lookupType });
+        if (deviceTrace.lookupKey) fields.push({ label: "Input", value: deviceTrace.lookupKey });
+        if (deviceTrace.lookupResult) fields.push({ label: "Result", value: deviceTrace.lookupResult });
+        const egressIface = deviceInterfaces.find((i) => i.id === deviceTrace.egressInterfaceId);
+        if (egressIface) fields.push({ label: "Egress", value: egressIface.name });
+        if (deviceTrace.reason) fields.push({ label: "Why", value: deviceTrace.reason });
+      }
+      return { title: stage?.label ?? target.id, fields };
+    }
+    if (target.kind === "packetLayer") {
+      const frame = devicePacketFrames?.find((f) => f.id === target.id);
+      return { title: frame?.text ?? target.id, fields: frame ? [{ label: "Layer type", value: frame.tone }] : [] };
+    }
+    if (target.kind === "interface") {
+      const iface = deviceInterfaces.find((i) => i.id === target.id);
+      if (!iface) return { title: target.id, fields: [] };
+      const fields: { label: string; value: string }[] = [];
+      if (iface.neighborLabel) fields.push({ label: "Peer", value: iface.neighborLabel });
+      fields.push({ label: "Current role", value: iface.role === "ingress" ? "Ingress" : iface.role === "egress" ? "Egress" : "Idle" });
+      fields.push({ label: "Status", value: iface.status === "up" ? "Up" : "Down" });
+      if (iface.ip) fields.push({ label: "IP", value: iface.ip });
+      return { title: iface.name, fields };
+    }
+    return { title: target.id, fields: [] };
+  }
+
+  // --- Selection precedence ("3D Inspection & Selection UX Pass" §15) ---
+  // Two different targets read from the same underlying click state
+  // (`selectedNodeId`/`enteredDeviceId`/`activeDeviceId`), each with its
+  // own deterministic, explicit rule — neither "blindly" copies the other:
+  //
+  // `explainTargetId` (below, feeds NodeInspectorPanel/DeviceExplorerPanel):
+  //   effectiveDeviceId > selectedNodeId > followNode3D
+  //   `effectiveDeviceId` wins first here because it is ITSELF already an
+  //   explicit action once cameraMode is "device" (the learner clicked
+  //   "Enter Device →", setting `enteredDeviceId`) — and while auto-following
+  //   in "packetFollow" mode, deliberately keeps riding the currently-
+  //   processing device rather than freezing on a stale prior node click,
+  //   which is the entire point of Auto-Enter Devices. Both branches only
+  //   apply while `inDeviceMode` is true, and in that state the 3D scene
+  //   renders the device INTERIOR (no other clickable topology node exists
+  //   to conflict with it) — so this never actually overrides a same-frame
+  //   explicit click.
+  //
+  // `focusInspectDeviceId` (Hop Inspector, below): explicit selection wins
+  //   outright — see its own comment.
+  //
+  // `activeFocusedObject` (object-focus, above) is a separate axis entirely
+  //   and never touches `selectedNodeId` — it can't silently substitute for
+  //   either of the above.
   const explainTargetId = (effectiveDeviceId ?? selectedNodeId ?? followNode3D?.id) as RouterId | undefined;
   const nodeExplanation = explainTargetId ? explainNode(state, explainTargetId, currentStep?.id ?? "") : undefined;
   const xrayPacket = activePacket && (selectedNodeId === activePacket.from || selectedNodeId === activePacket.to) ? activePacket : undefined;
@@ -222,6 +321,17 @@ export default function SrMplsFoundationsDemo() {
   // entry just moves `selectedNodeId` to that hop's router — no engine.goTo()
   // needed, since `traceFor` already reads directly off the current,
   // never-shrinking `state.journey` log for any router in it.
+  //
+  // Deterministic precedence ("3D Inspection & Selection UX Pass" §3/§14/§15):
+  //   selectedNodeId > effectiveDeviceId > activeDeviceId
+  // `selectedNodeId` is set by exactly three explicit, mutually-exclusive
+  // learner gestures — clicking a 3D node, clicking a HopTimeline entry, or
+  // clicking the Hop Inspector's "Go to next hop" CTA — and always wins,
+  // so a direct node click can never be silently overridden by the current
+  // processing device or by "there happens to be a next hop." Because all
+  // three gestures funnel through the same single piece of state rather
+  // than three competing ones, none of them can race or silently substitute
+  // for another — whichever the learner clicked most recently is what shows.
   const focusInspectDeviceId = (selectedNodeId ?? effectiveDeviceId ?? activeDeviceId) as RouterId | undefined;
   const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state) : undefined;
   const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state) : undefined;
@@ -239,6 +349,17 @@ export default function SrMplsFoundationsDemo() {
       setSelectedNodeId(undefined);
     }
     if (v === "freeOrbit") setEnteredDeviceId(undefined);
+  }
+
+  // --- Manual object-focus vs. Play Traffic (brief: "3D Inspection &
+  // Selection UX Pass" §13/§5) — resuming playback is an explicit request
+  // to keep watching the journey move, so it takes priority over a
+  // previously-focused stage/layer/interface rather than leaving the
+  // camera silently parked on a device the packet has already left.
+  // Pausing again does NOT re-focus anything — the learner has to click.
+  function handleToggleAutoPlay() {
+    if (!autoPlay) setFocusedObject(undefined);
+    setAutoPlay((v) => !v);
   }
 
   // --- In-scene "current device" callout (brief §14) — reuses the exact
@@ -383,6 +504,7 @@ export default function SrMplsFoundationsDemo() {
     setTopoView("physical");
     setLabSegments([{ type: "NODE", target: "R6" }]);
     setFocusMode(false);
+    setFocusedObject(undefined);
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Apply the correct fix to continue" : "Next Step →";
@@ -501,6 +623,7 @@ export default function SrMplsFoundationsDemo() {
                       setPacketSelected(false);
                     }}
                     selectedLinkId={selectedLinkId}
+                    onFocusLink={setFocusedObject}
                     onSelectPacket={() => {
                       setPacketSelected(true);
                       setAutoPlay(false);
@@ -525,6 +648,8 @@ export default function SrMplsFoundationsDemo() {
                               setAutoPlay(false);
                             },
                             packetSelected,
+                            onFocusObject: setFocusedObject,
+                            focusedObjectId: activeFocusedObject?.id,
                           }
                         : undefined
                     }
@@ -553,9 +678,28 @@ export default function SrMplsFoundationsDemo() {
                 />
               )}
 
-              {selectedLinkDetail && !packetSelected && <LinkDetailPanel detail={selectedLinkDetail} onClose={() => setSelectedLinkId(undefined)} />}
+              {selectedLinkDetail && !packetSelected && (
+                <LinkDetailPanel
+                  detail={selectedLinkDetail}
+                  onClose={() => {
+                    setSelectedLinkId(undefined);
+                    setFocusedObject(undefined);
+                  }}
+                />
+              )}
 
-              {inDeviceMode && !packetSelected && !selectedLinkDetail ? (
+              {!packetSelected && !selectedLinkDetail && activeFocusedObject && activeFocusedObject.kind !== "link" ? (
+                <ObjectFocusPanel
+                  kind={activeFocusedObject.kind}
+                  title={focusPanelFieldsFor(activeFocusedObject).title}
+                  fields={focusPanelFieldsFor(activeFocusedObject).fields}
+                  onBack={() => setFocusedObject(undefined)}
+                  onOverview={() => {
+                    setFocusedObject(undefined);
+                    handleCameraModeChange("overview");
+                  }}
+                />
+              ) : inDeviceMode && !packetSelected && !selectedLinkDetail ? (
                 <DeviceExplorerPanel
                   explanation={nodeExplanation!}
                   tabs={explorerTabsFor(effectiveDeviceId!)}
@@ -727,7 +871,7 @@ export default function SrMplsFoundationsDemo() {
               <Button size="sm" onClick={() => engine.advance()} disabled={!canAdvance}>
                 {nextLabel}
               </Button>
-              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={() => setAutoPlay((v) => !v)}>
+              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={handleToggleAutoPlay}>
                 {autoPlay ? "⏸ Auto-Playing" : "▶ Auto-Play"}
               </Button>
               <div className="flex gap-1 rounded-full border border-pv-border p-0.5">
@@ -817,6 +961,7 @@ export default function SrMplsFoundationsDemo() {
                   }}
                   onSelectLink={(id) => setSelectedLinkId(id)}
                   selectedLinkId={selectedLinkId}
+                  onFocusLink={setFocusedObject}
                   onSelectPacket={() => setPacketSelected(true)}
                   packetSelected={packetSelected}
                   focusPosition={focusPosition3D}
@@ -835,6 +980,8 @@ export default function SrMplsFoundationsDemo() {
                           selectedInterfaceId,
                           onSelectPacket: () => setPacketSelected(true),
                           packetSelected,
+                          onFocusObject: setFocusedObject,
+                          focusedObjectId: activeFocusedObject?.id,
                         }
                       : undefined
                   }
@@ -858,6 +1005,28 @@ export default function SrMplsFoundationsDemo() {
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
                   <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
                 </>
+              ) : selectedLinkDetail ? (
+                // Link focus (brief §10) reuses the exact same <LinkDetailPanel>
+                // the normal page already shows outside Focus Mode — no
+                // duplicate link-state logic.
+                <LinkDetailPanel
+                  detail={selectedLinkDetail}
+                  onClose={() => {
+                    setSelectedLinkId(undefined);
+                    setFocusedObject(undefined);
+                  }}
+                />
+              ) : activeFocusedObject && activeFocusedObject.kind !== "link" ? (
+                <ObjectFocusPanel
+                  kind={activeFocusedObject.kind}
+                  title={focusPanelFieldsFor(activeFocusedObject).title}
+                  fields={focusPanelFieldsFor(activeFocusedObject).fields}
+                  onBack={() => setFocusedObject(undefined)}
+                  onOverview={() => {
+                    setFocusedObject(undefined);
+                    handleCameraModeChange("overview");
+                  }}
+                />
               ) : focusTrace ? (
                 <>
                   <HopInspectorPanel
@@ -892,7 +1061,7 @@ export default function SrMplsFoundationsDemo() {
               />
               <PacketFlowControls
                 playing={autoPlay}
-                onTogglePlay={() => setAutoPlay((v) => !v)}
+                onTogglePlay={handleToggleAutoPlay}
                 onPrevHop={() => engine.goTo(Math.max(0, index - 1))}
                 onNextHop={() => engine.advance()}
                 onReset={handleRestart}
@@ -911,6 +1080,21 @@ export default function SrMplsFoundationsDemo() {
       )}
     </div>
   );
+}
+
+/**
+ * Derives a close-but-non-clipping camera eye offset from a focused
+ * object's world-space bounding size, rather than a hardcoded per-kind
+ * distance ("3D Inspection & Selection UX Pass" §5: "use bounding-box /
+ * object bounds ... rather than hardcoded camera coordinates"). A link's
+ * bounding size includes its full length, so longer links correctly get
+ * pulled back further to keep both endpoints in frame.
+ */
+function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number] {
+  const [sx, sy, sz] = target.size ?? [0.6, 0.3, 0.3];
+  const maxDim = Math.max(sx, sy, sz);
+  const dist = Math.max(0.55, maxDim * 1.8);
+  return [dist * 0.55, dist * 0.5, dist * 0.75];
 }
 
 function linkIdsOnPath(path: RouterId[], links: SrMplsState["links"]): string[] {

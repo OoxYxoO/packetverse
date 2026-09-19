@@ -3,17 +3,19 @@
 import { useState } from "react";
 import { Text } from "@react-three/drei";
 import { THEME } from "./theme";
-import type { DeviceInterfaceData } from "./types";
+import type { DeviceInterfaceData, FocusTarget3D } from "./types";
 
 interface DeviceInterfacePort3DProps {
   iface: DeviceInterfaceData;
   position: [number, number, number];
   onSelect?: (id: string) => void;
   selected?: boolean;
+  /** Fired alongside `onSelect` — generic camera-focus request ("3D Inspection & Selection UX Pass" §4/§9). Additive: `onSelect`'s existing list-highlight behavior is unchanged. */
+  onFocus?: (target: FocusTarget3D) => void;
 }
 
 /** One physical, clickable port on a device's faceplate (brief §2/§3). */
-export function DeviceInterfacePort3D({ iface, position, onSelect, selected }: DeviceInterfacePort3DProps) {
+export function DeviceInterfacePort3D({ iface, position, onSelect, selected, onFocus }: DeviceInterfacePort3DProps) {
   const [hovered, setHovered] = useState(false);
   const ledColor = iface.role === "ingress" ? THEME.cyan : iface.role === "egress" ? THEME.success : iface.status === "up" ? THEME.border : "#2a2f3d";
 
@@ -23,6 +25,7 @@ export function DeviceInterfacePort3D({ iface, position, onSelect, selected }: D
       onClick={(e) => {
         e.stopPropagation();
         onSelect?.(iface.id);
+        onFocus?.({ kind: "interface", id: iface.id, position, size: [0.27, 0.18, 0.08] });
       }}
       onPointerOver={(e) => {
         e.stopPropagation();

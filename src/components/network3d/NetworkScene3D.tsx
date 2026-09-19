@@ -11,7 +11,7 @@ import { CameraController3D } from "./CameraController3D";
 import { DeviceInteriorScene3D } from "./DeviceInteriorScene3D";
 import { HopCallout3D } from "./HopCallout3D";
 import { THEME } from "./theme";
-import type { ActivePacket3D, DeviceInterfaceData, DeviceProcessingTrace, Link3DData, Node3DData, PacketStackFrame, Region3DData } from "./types";
+import type { ActivePacket3D, DeviceInterfaceData, DeviceProcessingTrace, FocusTarget3D, Link3DData, Node3DData, PacketStackFrame, Region3DData } from "./types";
 
 interface DeviceViewProps {
   deviceLabel: string;
@@ -25,6 +25,9 @@ interface DeviceViewProps {
   packetSelected?: boolean;
   focusTones?: PacketStackFrame["tone"][];
   pipelineTitle?: string;
+  /** Generic object-focus interaction ("3D Inspection & Selection UX Pass" §4) — see <DeviceInteriorScene3D>. */
+  onFocusObject?: (target: FocusTarget3D) => void;
+  focusedObjectId?: string;
 }
 
 /** One simultaneous copy of a control-plane object (an LSA flood, say) traveling a specific edge — distinct from `activePacket`, which is the single normal in-flight packet. Several can be shown at once, e.g. an LSA reaching two neighbors in the same wave. */
@@ -59,6 +62,8 @@ interface NetworkScene3DProps {
   deviceView?: DeviceViewProps;
   /** Compact in-scene callout (brief §14) near whichever device is currently processing — overview mode only. Purely presentational; the page decides what text belongs in it. */
   callout?: { position: [number, number, number]; title: string; lines: string[] };
+  /** Generic object-focus interaction ("3D Inspection & Selection UX Pass" §4) — fired when a clickable link is clicked in overview mode. Device-interior objects (pipeline stage/packet layer/interface) fire this same callback via `deviceView.onFocusObject` below. */
+  onFocusLink?: (target: FocusTarget3D) => void;
 }
 
 /**
@@ -71,7 +76,7 @@ interface NetworkScene3DProps {
  * One persistent <Canvas> across overview <-> device mode so entering/
  * leaving a device is a camera move, not a WebGL context teardown.
  */
-export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSelectFloodCopy, selectedFloodCopyId, regions, onSelectRegion, selectedRegionId, onSelectNode, onSelectLink, selectedLinkId, onSelectPacket, packetSelected, focusPosition, eyeOffset, mode = "overview", deviceView, callout }: NetworkScene3DProps) {
+export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSelectFloodCopy, selectedFloodCopyId, regions, onSelectRegion, selectedRegionId, onSelectNode, onSelectLink, selectedLinkId, onSelectPacket, packetSelected, focusPosition, eyeOffset, mode = "overview", deviceView, callout, onFocusLink }: NetworkScene3DProps) {
   const positionById = useMemo(() => new Map(nodes.map((n) => [n.id, n.position])), [nodes]);
 
   return (
@@ -114,7 +119,7 @@ export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSele
                 const from = positionById.get(l.a);
                 const to = positionById.get(l.b);
                 if (!from || !to) return null;
-                return <NetworkLink3D key={l.id} id={l.id} from={from} to={to} label={l.label} active={l.active} onPath={l.onPath} visualState={l.visualState} onSelect={onSelectLink} selected={selectedLinkId === l.id} />;
+                return <NetworkLink3D key={l.id} id={l.id} from={from} to={to} label={l.label} active={l.active} onPath={l.onPath} visualState={l.visualState} onSelect={onSelectLink} selected={selectedLinkId === l.id} onFocus={onFocusLink} />;
               })}
               {nodes.map((n, i) => (
                 <NetworkNode3D key={n.id} node={n} onSelect={onSelectNode} phase={i * 1.35} />
@@ -148,6 +153,8 @@ export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSele
                 packetSelected={deviceView.packetSelected}
                 focusTones={deviceView.focusTones}
                 pipelineTitle={deviceView.pipelineTitle}
+                onFocusObject={deviceView.onFocusObject}
+                focusedObjectId={deviceView.focusedObjectId}
               />
             )
           )}

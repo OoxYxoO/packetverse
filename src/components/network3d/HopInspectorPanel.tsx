@@ -40,8 +40,15 @@ export function HopInspectorPanel({ trace, deviceName, interfaces, onFocusNextHo
 
   return (
     <GlassPanel strong className="space-y-3 p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-cyan-soft">Hop Inspector</h3>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-cyan-soft">Hop Inspector</h3>
+
+      {/* Unmistakable "what device is THIS panel about" line — deliberately
+          separate from the "Next Hop" row below and from the next-hop CTA
+          button, so a learner can never read this panel as already showing
+          the next router ("3D Inspection & Selection UX Pass" §2). */}
+      <div className="flex items-center gap-2 rounded-lg border border-pv-cyan/30 bg-pv-cyan/5 px-3 py-2">
+        <span className="h-2 w-2 shrink-0 rounded-full bg-pv-cyan" />
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Inspecting</span>
         <Badge tone="cyan">{deviceName}</Badge>
       </div>
 
@@ -63,12 +70,15 @@ export function HopInspectorPanel({ trace, deviceName, interfaces, onFocusNextHo
       )}
 
       {trace.nextHopId && onFocusNextHop && (
+        // Deliberately worded "Go to next hop" rather than "Inspect X" — the
+        // latter reads as if X were already the panel's current subject,
+        // which is exactly the confusion this pass fixes (brief §2).
         <button
           type="button"
           onClick={() => onFocusNextHop(trace.nextHopId!)}
           className="w-full rounded-full border border-pv-border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-pv-text-faint transition-colors hover:border-pv-cyan/40 hover:text-pv-cyan-soft"
         >
-          Inspect {trace.nextHopLabel ?? trace.nextHopId} →
+          Go to next hop: {trace.nextHopLabel ?? trace.nextHopId} →
         </button>
       )}
 

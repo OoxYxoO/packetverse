@@ -7,7 +7,7 @@ import { DeviceInterfacePort3D } from "./DeviceInterfacePort3D";
 import { ForwardingPipeline3D } from "./ForwardingPipeline3D";
 import { PacketStack3D } from "./PacketStack3D";
 import { THEME } from "./theme";
-import type { DeviceInterfaceData, DeviceProcessingTrace, PacketStackFrame } from "./types";
+import type { DeviceInterfaceData, DeviceProcessingTrace, FocusTarget3D, PacketStackFrame } from "./types";
 
 interface DeviceInteriorScene3DProps {
   deviceLabel: string;
@@ -22,6 +22,9 @@ interface DeviceInteriorScene3DProps {
   focusTones?: PacketStackFrame["tone"][];
   /** Passed through to <ForwardingPipeline3D> — see its `title` prop. */
   pipelineTitle?: string;
+  /** Generic object-focus interaction ("3D Inspection & Selection UX Pass" §4) — fired from a pipeline stage, packet layer, or interface anchor. Optional; every existing lesson keeps rendering unchanged. */
+  onFocusObject?: (target: FocusTarget3D) => void;
+  focusedObjectId?: string;
 }
 
 /**
@@ -33,7 +36,7 @@ interface DeviceInteriorScene3DProps {
  * a layout computation, not a protocol decision (the trace already
  * carries the decision).
  */
-export function DeviceInteriorScene3D({ deviceLabel, interfaces, xray, trace, packetFrames, onSelectInterface, selectedInterfaceId, onSelectPacket, packetSelected, focusTones, pipelineTitle }: DeviceInteriorScene3DProps) {
+export function DeviceInteriorScene3D({ deviceLabel, interfaces, xray, trace, packetFrames, onSelectInterface, selectedInterfaceId, onSelectPacket, packetSelected, focusTones, pipelineTitle, onFocusObject, focusedObjectId }: DeviceInteriorScene3DProps) {
   const xrayT = xray ? 1 : 0;
 
   const portPositions = useMemo<[number, number, number][]>(() => {
@@ -68,11 +71,21 @@ export function DeviceInteriorScene3D({ deviceLabel, interfaces, xray, trace, pa
       </Text>
       <RouterChassis3D xray={xrayT} width={Math.max(3, interfaces.length * 1.15 + 1)} />
       {interfaces.map((iface, i) => (
-        <DeviceInterfacePort3D key={iface.id} iface={iface} position={portPositions[i]} onSelect={onSelectInterface} selected={selectedInterfaceId === iface.id} />
+        <DeviceInterfacePort3D key={iface.id} iface={iface} position={portPositions[i]} onSelect={onSelectInterface} selected={selectedInterfaceId === iface.id} onFocus={onFocusObject} />
       ))}
-      {xray && trace && <ForwardingPipeline3D trace={trace} position={[0, 0.85, -0.95]} title={pipelineTitle} />}
+      {xray && trace && (
+        <ForwardingPipeline3D trace={trace} position={[0, 0.85, -0.95]} title={pipelineTitle} onFocusStage={onFocusObject} focusedStageId={focusedObjectId} />
+      )}
       {packetFrames && packetFrames.length > 0 && packetPosition && (
-        <PacketStack3D frames={packetFrames} position={packetPosition} onSelect={onSelectPacket} selected={packetSelected} focusTones={xray ? focusTones : undefined} />
+        <PacketStack3D
+          frames={packetFrames}
+          position={packetPosition}
+          onSelect={onSelectPacket}
+          selected={packetSelected}
+          focusTones={xray ? focusTones : undefined}
+          onFocusFrame={onFocusObject}
+          focusedFrameId={focusedObjectId}
+        />
       )}
     </group>
   );

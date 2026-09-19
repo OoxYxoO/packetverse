@@ -1,14 +1,18 @@
 "use client";
 
+import { useState } from "react";
 import { Line, Text } from "@react-three/drei";
 import { THEME } from "./theme";
-import type { DeviceProcessingTrace } from "./types";
+import type { DeviceProcessingTrace, FocusTarget3D } from "./types";
 
 interface ForwardingPipeline3DProps {
   trace: DeviceProcessingTrace;
   position?: [number, number, number];
   /** Umbrella heading over the stage list — defaults to a plane-agnostic label; a lesson with a meaningful control/data-plane distinction (BGP: "Conceptual BGP Control-Plane Pipeline") can override it. */
   title?: string;
+  /** Fired when a stage box is clicked — generic camera-focus request (brief: "3D Inspection & Selection UX Pass" §4/§7). Optional so every existing lesson keeps rendering unchanged. */
+  onFocusStage?: (target: FocusTarget3D) => void;
+  focusedStageId?: string;
 }
 
 /**
@@ -18,7 +22,7 @@ interface ForwardingPipeline3DProps {
  * it has no idea what "VRF lookup" or "LFIB" mean, it just walks the
  * list the lesson's adapter computed.
  */
-export function ForwardingPipeline3D({ trace, position = [0, 1.1, 0], title = "Conceptual Forwarding Pipeline" }: ForwardingPipeline3DProps) {
+export function ForwardingPipeline3D({ trace, position = [0, 1.1, 0], title = "Conceptual Forwarding Pipeline", onFocusStage, focusedStageId }: ForwardingPipeline3DProps) {
   const spacing = 0.42;
   const stages = trace.stages;
   // Grows UPWARD from `position` (the base, near the chassis top) rather than
@@ -36,31 +40,94 @@ export function ForwardingPipeline3D({ trace, position = [0, 1.1, 0], title = "C
         const y = i * spacing;
         const isActive = stage.id === trace.activeStageId;
         const isDone = trace.completedStageIds.includes(stage.id);
+        const isFocused = focusedStageId === stage.id;
         const color = isActive ? THEME.cyan : isDone ? THEME.success : THEME.border;
         return (
           <group key={stage.id}>
             {i > 0 && <Line points={[[0, y - spacing, 0], [0, y - 0.16, 0]]} color={color} opacity={isDone || isActive ? 0.8 : 0.3} transparent lineWidth={1.5} />}
-            <group position={[0, y, 0]}>
-              <mesh>
-                <boxGeometry args={[1.9, 0.28, 0.04]} />
-                <meshStandardMaterial color={THEME.bgElevated} emissive={color} emissiveIntensity={isActive ? 1 : isDone ? 0.45 : 0.12} roughness={0.4} metalness={0.3} />
-              </mesh>
-              <mesh>
-                <boxGeometry args={[1.94, 0.32, 0.001]} />
-                <meshBasicMaterial color={color} wireframe transparent opacity={isActive ? 0.7 : 0.25} />
-              </mesh>
-              <Text position={[0, 0, 0.03]} fontSize={0.11} color={isActive ? THEME.cyanSoft : isDone ? THEME.success : THEME.text} anchorX="center" anchorY="middle" maxWidth={1.7}>
-                {stage.label}
-              </Text>
-              {isActive && stage.detail && (
-                <Text position={[1.15, 0, 0.03]} fontSize={0.08} color={THEME.cyanSoft} anchorX="left" anchorY="middle" maxWidth={2}>
-                  {stage.detail}
-                </Text>
-              )}
-            </group>
+            <StageBox
+              y={y}
+              color={color}
+              isActive={isActive}
+              isDone={isDone}
+              isFocused={isFocused}
+              label={stage.label}
+              detail={stage.detail}
+              onClick={
+                onFocusStage
+                  ? () => onFocusStage({ kind: "stage", id: stage.id, position: [position[0], position[1] + y, position[2]], size: [1.9, 0.28, 0.04] })
+                  : undefined
+              }
+            />
           </group>
         );
       })}
+    </group>
+  );
+}
+
+function StageBox({
+  y,
+  color,
+  isActive,
+  isDone,
+  isFocused,
+  label,
+  detail,
+  onClick,
+}: {
+  y: number;
+  color: string;
+  isActive: boolean;
+  isDone: boolean;
+  isFocused: boolean;
+  label: string;
+  detail?: string;
+  onClick?: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <group
+      position={[0, y, 0]}
+      onClick={
+        onClick &&
+        ((e) => {
+          e.stopPropagation();
+          onClick();
+        })
+      }
+      onPointerOver={
+        onClick &&
+        ((e) => {
+          e.stopPropagation();
+          setHovered(true);
+          document.body.style.cursor = "pointer";
+        })
+      }
+      onPointerOut={
+        onClick &&
+        (() => {
+          setHovered(false);
+          document.body.style.cursor = "auto";
+        })
+      }
+    >
+      <mesh>
+        <boxGeometry args={[1.9, 0.28, 0.04]} />
+        <meshStandardMaterial color={THEME.bgElevated} emissive={color} emissiveIntensity={isActive ? 1 : isDone ? 0.45 : 0.12} roughness={0.4} metalness={0.3} />
+      </mesh>
+      <mesh>
+        <boxGeometry args={[1.94, 0.32, 0.001]} />
+        <meshBasicMaterial color={isFocused ? THEME.text : color} wireframe transparent opacity={isFocused ? 0.9 : hovered ? 0.75 : isActive ? 0.7 : 0.25} />
+      </mesh>
+      <Text position={[0, 0, 0.03]} fontSize={0.11} color={isActive ? THEME.cyanSoft : isDone ? THEME.success : THEME.text} anchorX="center" anchorY="middle" maxWidth={1.7}>
+        {label}
+      </Text>
+      {isActive && detail && (
+        <Text position={[1.15, 0, 0.03]} fontSize={0.08} color={THEME.cyanSoft} anchorX="left" anchorY="middle" maxWidth={2}>
+          {detail}
+        </Text>
+      )}
     </group>
   );
 }

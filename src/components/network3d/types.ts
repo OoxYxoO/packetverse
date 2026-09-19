@@ -238,6 +238,25 @@ export interface Region3DData {
   tone?: "cyan" | "violet" | "warning" | "muted";
 }
 
+/**
+ * A clicked-and-focused sub-object inside the 3D scene (forwarding-pipeline
+ * stage, packet/header layer, interface anchor, or link) — generic camera
+ * + identity contract only. `position`/`size` are world-space, computed by
+ * whichever mesh component fired the click; the PAGE decides what detail
+ * panel to show for a given `kind`+`id` by looking the id up in data it
+ * already has (trace.stages, packetFrames, interfaces, linkDetailFor) —
+ * this type carries no protocol knowledge and no detail fields itself.
+ */
+export type FocusableObjectKind = "stage" | "packetLayer" | "interface" | "link";
+
+export interface FocusTarget3D {
+  kind: FocusableObjectKind;
+  id: string;
+  position: [number, number, number];
+  /** Rough world-space bounding size, so the camera can frame it without a hardcoded per-kind distance. */
+  size?: [number, number, number];
+}
+
 /** Detail shown for a clicked link (brief §10). */
 export interface LinkDetail {
   aLabel: string;

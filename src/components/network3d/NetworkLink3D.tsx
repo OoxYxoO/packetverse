@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import * as THREE from "three";
 import { Line, Text } from "@react-three/drei";
 import { LINK_ANCHOR_STYLE, LINK_STATE_STYLE, THEME } from "./theme";
-import type { LinkVisualState } from "./types";
+import type { FocusTarget3D, LinkVisualState } from "./types";
 
 interface NetworkLink3DProps {
   id: string;
@@ -17,6 +17,8 @@ interface NetworkLink3DProps {
   selected?: boolean;
   /** Optional richer state (brief §7) — when omitted, falls back to the original active/onPath/selected coloring exactly as before. */
   visualState?: LinkVisualState;
+  /** Fired alongside `onSelect` — generic camera-focus request ("3D Inspection & Selection UX Pass" §4/§10). */
+  onFocus?: (target: FocusTarget3D) => void;
 }
 
 /** How far a port/interface anchor sits from a device's center, toward its neighbor — a generic approximation (not a real per-kind socket position) shared by every device shape. */
@@ -30,7 +32,7 @@ const ANCHOR_OFFSET = 0.42;
  * §7) so a link visibly terminates at a specific point on a device
  * rather than appearing to vanish into its center.
  */
-export function NetworkLink3D({ id, from, to, label, active, onPath, onSelect, selected, visualState }: NetworkLink3DProps) {
+export function NetworkLink3D({ id, from, to, label, active, onPath, onSelect, selected, visualState, onFocus }: NetworkLink3DProps) {
   const [hovered, setHovered] = useState(false);
   const resolvedState: LinkVisualState = visualState ?? (selected ? "selected" : active ? "activePath" : onPath ? "backup" : "normal");
   const style = LINK_STATE_STYLE[resolvedState];
@@ -88,6 +90,7 @@ export function NetworkLink3D({ id, from, to, label, active, onPath, onSelect, s
         onClick={(e) => {
           e.stopPropagation();
           onSelect?.(id);
+          onFocus?.({ kind: "link", id, position: [mid.x, mid.y, mid.z], size: [proxyGeom.length, 0.36, 0.36] });
         }}
         onPointerOver={(e) => {
           e.stopPropagation();
