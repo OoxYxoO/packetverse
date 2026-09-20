@@ -5,7 +5,6 @@ import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
 import {
-  FABRIC_DEVICES,
   GRAPH_EDGES,
   GRAPH_NODES,
   GRAPH_REGIONS,
@@ -18,6 +17,7 @@ import {
   createEvpnArpNdState,
   evpnArpNdSteps,
   outerIpLayerIndex,
+  replicaPacket,
   withEvpnMesh,
   type EvpnArpNdDeviceId,
   type EvpnArpNdState,
@@ -38,17 +38,49 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useProgressStore } from "@/lib/state/useProgressStore";
 import { NetworkScene3D, type FloodCopy3D } from "@/components/network3d/NetworkScene3D";
-import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { NodeInspectorPanel } from "@/components/network3d/NodeInspectorPanel";
 import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
 import { PlaneViewSwitcher } from "@/components/network3d/PlaneViewSwitcher";
 import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@/components/network3d/DeviceExplorerPanel";
 import { PacketDetailPanel } from "@/components/network3d/PacketDetailPanel";
 import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
+import { TopologyFrame } from "@/components/network3d/TopologyFrame";
+import { TopologyFocusMode } from "@/components/network3d/TopologyFocusMode";
+import { HopInspectorPanel } from "@/components/network3d/HopInspectorPanel";
+import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
+import { HopTimeline } from "@/components/network3d/HopTimeline";
+import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
+import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
-import type { ActivePacket3D, CameraMode, Link3DData, Node3DStatus } from "@/components/network3d/types";
+import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus } from "@/components/network3d/types";
+import type { PacketVisual } from "@/lib/sim-engine/types";
 import { explainNode } from "./explain";
 import { bindingRowsFor, buildArpNdCliCommands, buildSpineCliCommands, evpnRibRowsFor, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+
+const FABRIC_DEVICES: ("LEAF1" | "SPINE1" | "LEAF2" | "LEAF3")[] = ["LEAF1", "SPINE1", "LEAF2", "LEAF3"];
+
+/** Which fabric device is the primary inspection subject of a no-packet control-plane step — mirrors evpn-bum's PRIMARY_TRANSITION_ROUTER. */
+const PRIMARY_TRANSITION_ROUTER: Record<string, "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3"> = {
+  "leaf1-classify-bum": "LEAF1",
+  "flood-replicate": "LEAF1",
+  "flood-delivered": "SPINE1",
+  "enter-leaf1-suppression-pipeline": "LEAF1",
+  "fault-injected": "LEAF1",
+  "repair-challenge": "LEAF1",
+};
+
+/** Sender-priority device resolution — every trace branch here is keyed off the ACTING device (mirrors evpn-bum/evpn-mac-mobility — see ARCHITECTURE.md §18). */
+function deviceForStep(stepId: string, packet: PacketVisual | undefined): EvpnArpNdDeviceId | undefined {
+  if (packet) return (packet.from ?? packet.to) as EvpnArpNdDeviceId;
+  return PRIMARY_TRANSITION_ROUTER[stepId];
+}
+
+function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number] {
+  const [sx, sy, sz] = target.size ?? [0.6, 0.3, 0.3];
+  const maxDim = Math.max(sx, sy, sz);
+  const dist = Math.max(0.55, maxDim * 1.8);
+  return [dist * 0.55, dist * 0.5, dist * 0.75];
+}
 
 const REPAIR_OPTIONS = [
   { id: "restart-evpn", label: "Restart the BGP EVPN session" },
@@ -74,8 +106,13 @@ export default function EvpnArpNdDemo() {
   const [deviceXray, setDeviceXray] = useState(true);
   const [selectedInterfaceId, setSelectedInterfaceId] = useState<string | undefined>(undefined);
   const [selectedLinkId, setSelectedLinkId] = useState<string | undefined>(undefined);
+  const [selectedFloodCopyId, setSelectedFloodCopyId] = useState<string | undefined>(undefined);
   const [packetSelected, setPacketSelected] = useState(false);
   const [xrayMode, setXrayMode] = useState(true);
+  const [focusMode, setFocusMode] = useState(false);
+  const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
+  const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
+  const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -120,12 +157,19 @@ export default function EvpnArpNdDemo() {
   }));
   const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
+  // Replication camera model (mirrors evpn-bum): during replication, the camera/scene shows either the
+  // replication overview (all copies animating in parallel via FloodCopy3D — the default) or, once the
+  // learner clicks one specific copy, that copy's own packet inspector — it never fakes single-packet Follow.
   const floodCopies3D: FloodCopy3D[] | undefined =
-    state.replicaStage === "leaf1-to-spine" ? state.replicas.map((r) => ({ id: r.id, fromId: "LEAF1", toId: "SPINE1" })) : state.replicaStage === "spine-to-leaves" ? state.replicas.map((r) => ({ id: r.id, fromId: "SPINE1", toId: r.toLeaf })) : undefined;
+    state.replicaStage === "leaf1-to-spine"
+      ? state.replicas.map((r) => ({ id: r.id, fromId: "LEAF1", toId: "SPINE1" }))
+      : state.replicaStage === "spine-to-leaves"
+        ? state.replicas.map((r) => ({ id: r.id, fromId: "SPINE1", toId: r.toLeaf }))
+        : undefined;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
   const isFabricDevice = (id: EvpnArpNdDeviceId | undefined): id is "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3" => id === "LEAF1" || id === "SPINE1" || id === "LEAF2" || id === "LEAF3";
-  const activeDeviceId = FABRIC_DEVICES.find((d) => d !== "SPINE1" && state.journey[state.journey.length - 1]?.device === d);
+  const activeDeviceId = FABRIC_DEVICES.find((d) => isFabricDevice(d) && traceFor(d, state, currentStep?.id ?? "").activeStageId !== undefined);
   const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : undefined;
   const inDeviceMode = !!effectiveDeviceId;
 
@@ -133,16 +177,107 @@ export default function EvpnArpNdDemo() {
   const deviceInterfaces = isFabricDevice(effectiveDeviceId) ? interfacesFor(effectiveDeviceId, state, currentStep?.id ?? "") : [];
   const devicePacketFrames = effectiveDeviceId ? packetFramesFor(state) : undefined;
 
-  const focusPosition3D: [number, number, number] | undefined = cameraMode === "freeOrbit" ? undefined : inDeviceMode ? [0, 0, deviceXray ? -0.2 : 0] : selectedNode3D?.position;
-  const eyeOffset3D: [number, number, number] | undefined = inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
+  const focusedObjectStillValid =
+    focusedObject &&
+    (focusedObject.kind === "stage"
+      ? deviceTrace?.stages.some((s) => s.id === focusedObject.id)
+      : focusedObject.kind === "packetLayer"
+        ? devicePacketFrames?.some((f) => f.id === focusedObject.id)
+        : focusedObject.kind === "interface"
+          ? deviceInterfaces.some((i) => i.id === focusedObject.id)
+          : true);
+  const activeFocusedObject = focusedObjectStillValid ? focusedObject : undefined;
+
+  const focusPosition3D: [number, number, number] | undefined = activeFocusedObject
+    ? activeFocusedObject.position
+    : cameraMode === "freeOrbit"
+      ? undefined
+      : inDeviceMode
+        ? [0, 0, deviceXray ? -0.2 : 0]
+        : selectedNode3D?.position;
+  const eyeOffset3D: [number, number, number] | undefined = activeFocusedObject ? eyeOffsetForFocusTarget(activeFocusedObject) : inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
 
   const explainTargetId = effectiveDeviceId ?? selectedNodeId;
   const nodeExplanation = explainTargetId ? explainNode(state, explainTargetId) : undefined;
   const xrayPacket = activePacket && (selectedNodeId === activePacket.from || selectedNodeId === activePacket.to) ? activePacket : undefined;
 
   const selectedLinkDetail = selectedLinkId ? linkDetailFor(selectedLinkId, state) : undefined;
+  const selectedReplica = selectedFloodCopyId ? state.replicas.find((r) => r.id === selectedFloodCopyId) : undefined;
+  const selectedReplicaPacket =
+    selectedReplica && state.replicaStage !== "none"
+      ? replicaPacket(selectedReplica, state.replicaStage === "leaf1-to-spine" ? "LEAF1" : "SPINE1", state.replicaStage === "leaf1-to-spine" ? "SPINE1" : selectedReplica.toLeaf, state.replicaStage !== "delivered")
+      : undefined;
   const packetCurrentDeviceLabel = effectiveDeviceId ?? state.packetAt ?? activePacket?.from ?? "—";
   const devicePacketForTab = xrayPacket ?? (effectiveDeviceId && state.packetAt === effectiveDeviceId ? activePacket : undefined);
+
+  // --- Hop Inspector target — explicit selection wins outright: selectedNodeId > effectiveDeviceId > activeDeviceId. ---
+  const selectedFabricId = isFabricDevice(selectedNodeId) ? selectedNodeId : undefined;
+  const effectiveFabricId = isFabricDevice(effectiveDeviceId) ? effectiveDeviceId : undefined;
+  const focusInspectDeviceId = selectedFabricId ?? effectiveFabricId ?? activeDeviceId;
+  const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state, currentStep?.id ?? "") : undefined;
+  const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state, currentStep?.id ?? "") : undefined;
+
+  const journeyStepIndices = evpnArpNdSteps.map((s, i) => ({ s, i })).filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined));
+  const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
+
+  const historicalState = historicalIndex !== undefined ? engine.getStateAt(historicalIndex) : undefined;
+  const historicalStep = historicalIndex !== undefined ? evpnArpNdSteps[historicalIndex] : undefined;
+  const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
+  const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
+  const historicalTrace = historicalDeviceId && isFabricDevice(historicalDeviceId) && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+  const historicalInterfaces = historicalDeviceId && isFabricDevice(historicalDeviceId) && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+
+  function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
+    if (target.kind === "stage" && deviceTrace) {
+      const stage = deviceTrace.stages.find((s) => s.id === target.id);
+      const fields: { label: string; value: string }[] = [];
+      if (stage?.detail) fields.push({ label: "Detail", value: stage.detail });
+      if (deviceTrace.activeStageId === target.id) {
+        if (deviceTrace.lookupType) fields.push({ label: "Lookup", value: deviceTrace.lookupType });
+        if (deviceTrace.lookupKey) fields.push({ label: "Match", value: deviceTrace.lookupKey });
+        if (deviceTrace.lookupResult) fields.push({ label: "Result", value: deviceTrace.lookupResult });
+        const egressIface = deviceInterfaces.find((i) => i.id === deviceTrace.egressInterfaceId);
+        if (egressIface) fields.push({ label: "Egress", value: egressIface.name });
+        if (deviceTrace.reason) fields.push({ label: "Why", value: deviceTrace.reason });
+      }
+      return { title: stage?.label ?? target.id, fields };
+    }
+    if (target.kind === "packetLayer") {
+      const frame = devicePacketFrames?.find((f) => f.id === target.id);
+      return { title: frame?.text ?? target.id, fields: [] };
+    }
+    if (target.kind === "interface") {
+      const iface = deviceInterfaces.find((i) => i.id === target.id);
+      if (!iface) return { title: target.id, fields: [] };
+      const fields: { label: string; value: string }[] = [];
+      if (iface.neighborLabel) fields.push({ label: "Peer", value: iface.neighborLabel });
+      fields.push({ label: "Current role", value: iface.role === "ingress" ? "Ingress" : iface.role === "egress" ? "Egress" : "Idle" });
+      fields.push({ label: "Status", value: iface.status === "up" ? "Up" : "Down" });
+      if (iface.ip) fields.push({ label: "IP", value: iface.ip });
+      if (iface.extra) fields.push(...iface.extra);
+      return { title: iface.name, fields };
+    }
+    return { title: target.id, fields: [] };
+  }
+
+  function handleCameraModeChange(v: CameraMode) {
+    setCameraMode(v);
+    if (v === "device" && !enteredDeviceId) setEnteredDeviceId(isFabricDevice(selectedNodeId) ? selectedNodeId : (activeDeviceId ?? "LEAF1"));
+    if (v === "overview") {
+      setEnteredDeviceId(undefined);
+      setSelectedNodeId(undefined);
+    }
+    if (v === "freeOrbit") setEnteredDeviceId(undefined);
+  }
+
+  function handleToggleAutoPlay() {
+    if (!autoPlay) {
+      setFocusedObject(undefined);
+      setHistoricalIndex(undefined);
+      setInspectorSurface("hop");
+    }
+    setAutoPlay((v) => !v);
+  }
 
   const diagnosticLayers: DiagnosticLayer[] = [
     { label: "Physical", status: "healthy" },
@@ -182,7 +317,11 @@ export default function EvpnArpNdDemo() {
     setEnteredDeviceId(undefined);
     setSelectedNodeId(undefined);
     setSelectedLinkId(undefined);
+    setSelectedFloodCopyId(undefined);
     setPacketSelected(false);
+    setFocusedObject(undefined);
+    setHistoricalIndex(undefined);
+    setInspectorSurface("hop");
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Apply the correct fix to continue" : "Next Step →";
@@ -194,7 +333,7 @@ export default function EvpnArpNdDemo() {
         { id: "overview", label: "Overview", content: <OverviewTab explanation={nodeExplanation} /> },
         { id: "interfaces", label: "Interfaces", content: <InterfaceListTab interfaces={deviceInterfaces} selectedInterfaceId={selectedInterfaceId} onSelectInterface={setSelectedInterfaceId} /> },
         { id: "underlay", label: "Underlay Routes", content: <CLIOutputPanel commands={buildSpineCliCommands()} /> },
-        { id: "packet", label: "Packet", content: devicePacketForTab ? <PacketInspector packet={devicePacketForTab} /> : <p className="text-xs text-pv-text-faint">No packet at this device right now.</p> },
+        { id: "packet", label: "Packet", content: devicePacketForTab ? <PacketInspector packet={devicePacketForTab} /> : <p className="text-xs text-pv-text-faint">No single packet at this device right now — click a VXLAN copy in the 3D view during replication to inspect it.</p> },
         { id: "cli", label: "CLI", content: <CLIOutputPanel commands={buildSpineCliCommands()} /> },
       ];
     }
@@ -206,7 +345,7 @@ export default function EvpnArpNdDemo() {
       { id: "mac-evpn", label: "MAC / EVPN", content: <EvpnRibViewer title={device} rows={evpnRibRowsFor(state, device)} /> },
       { id: "bindings", label: "MAC-IP Bindings", content: <KeyValueTab rows={bindingRowsFor(state, device)} /> },
       { id: "arp-nd", label: "ARP / ND", content: <KeyValueTab rows={device === "LEAF1" ? [{ label: "Suppression", value: state.suppressionEnabled ? "Enabled" : "Not yet introduced" }, { label: `Last lookup (${HOST_B_IP})`, value: state.faultActive ? "Miss — fallback to BUM" : state.suppressionEnabled ? "Hit — local proxy reply" : "n/a" }] : [{ label: "Suppression", value: "Only LEAF1 is the ingress VTEP in this lesson's flow" }]} /> },
-      { id: "packet", label: "Packet", content: devicePacketForTab ? <PacketInspector packet={devicePacketForTab} /> : <p className="text-xs text-pv-text-faint">No packet at this device right now.</p> },
+      { id: "packet", label: "Packet", content: devicePacketForTab ? <PacketInspector packet={devicePacketForTab} /> : <p className="text-xs text-pv-text-faint">No single packet at this device right now — click a VXLAN copy in the 3D view during replication to inspect it.</p> },
       {
         id: "control",
         label: "Control Plane",
@@ -220,6 +359,19 @@ export default function EvpnArpNdDemo() {
       { id: "cli", label: "CLI", content: <CLIOutputPanel commands={buildArpNdCliCommands(state, device)} /> },
     ];
   };
+
+  const floodCopyInspector = selectedReplicaPacket && (
+    <GlassPanel strong className="space-y-3 p-5">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-pv-text">VXLAN Copy Inspector</h3>
+        <button type="button" onClick={() => setSelectedFloodCopyId(undefined)} className="text-xs text-pv-text-faint hover:text-pv-text">
+          ✕
+        </button>
+      </div>
+      <p className="text-xs text-pv-text-muted">One of {state.replicas.length} independent VXLAN copies LEAF1 created from the single original ARP broadcast — HOST-A never transmitted more than one original request.</p>
+      <PacketInspector packet={selectedReplicaPacket} />
+    </GlassPanel>
+  );
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
@@ -268,12 +420,7 @@ export default function EvpnArpNdDemo() {
             <TopologyModeSwitcher
               options={[{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "freeOrbit", label: "Free Orbit" }]}
               value={cameraMode}
-              onChange={(v) => {
-                setCameraMode(v);
-                if (v === "device" && !enteredDeviceId) setEnteredDeviceId(isFabricDevice(selectedNodeId) ? selectedNodeId : (activeDeviceId ?? "LEAF1"));
-                if (v === "overview") { setEnteredDeviceId(undefined); setSelectedNodeId(undefined); }
-                if (v === "freeOrbit") setEnteredDeviceId(undefined);
-              }}
+              onChange={handleCameraModeChange}
             />
             {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
             <TopologyModeSwitcher options={[{ value: "off", label: "Normal View" }, { value: "on", label: "X-Ray Packet View" }]} value={xrayMode ? "on" : "off"} onChange={(v) => setXrayMode(v === "on")} tone="violet" />
@@ -286,15 +433,21 @@ export default function EvpnArpNdDemo() {
         <div className="space-y-6">
           {viewMode === "3d" ? (
             <>
-              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D} regions={regions3D}>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+              {focusMode ? (
+                <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" />
+              ) : (
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
                 activePacket={inDeviceMode ? undefined : activePacket3D}
                 floodCopies={inDeviceMode ? undefined : floodCopies3D}
+                onSelectFloodCopy={setSelectedFloodCopyId}
+                selectedFloodCopyId={selectedFloodCopyId}
                 regions={regions3D}
-                onSelectNode={(id) => { setSelectedNodeId(id as EvpnArpNdDeviceId); setSelectedLinkId(undefined); setPacketSelected(false); }}
-                onSelectLink={(id) => { setSelectedLinkId(id); setSelectedNodeId(undefined); setPacketSelected(false); }}
+                onSelectNode={(id) => { setSelectedNodeId(id as EvpnArpNdDeviceId); setSelectedLinkId(undefined); setSelectedFloodCopyId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
+                onSelectLink={(id) => { setSelectedLinkId(id); setSelectedNodeId(undefined); setSelectedFloodCopyId(undefined); setPacketSelected(false); }}
+                onFocusLink={setFocusedObject}
                 selectedLinkId={selectedLinkId}
                 onSelectPacket={() => { setPacketSelected(true); setAutoPlay(false); }}
                 packetSelected={packetSelected}
@@ -314,11 +467,14 @@ export default function EvpnArpNdDemo() {
                         onSelectPacket: () => { setPacketSelected(true); setAutoPlay(false); },
                         packetSelected,
                         pipelineTitle: effectiveDeviceId === "LEAF1" ? (state.suppressionEnabled ? "Conceptual ARP Suppression Pipeline" : "Conceptual BUM Forwarding Pipeline") : "Conceptual Underlay Forwarding Pipeline",
+                        onFocusObject: setFocusedObject,
+                        focusedObjectId: activeFocusedObject?.id,
                       }
                     : undefined
                 }
               />
-              </TopologyQuickExpand>
+              )}
+              </TopologyFrame>
 
               {packetSelected && activePacket && (
                 <PacketDetailPanel
@@ -336,12 +492,15 @@ export default function EvpnArpNdDemo() {
                 />
               )}
 
-              {selectedLinkDetail && !packetSelected && <LinkDetailPanel detail={selectedLinkDetail} onClose={() => setSelectedLinkId(undefined)} />}
+              {floodCopyInspector && !packetSelected && floodCopyInspector}
 
-              {inDeviceMode && !packetSelected && !selectedLinkDetail ? (
+              {selectedLinkDetail && !packetSelected && !selectedReplicaPacket && <LinkDetailPanel detail={selectedLinkDetail} onClose={() => setSelectedLinkId(undefined)} />}
+
+              {inDeviceMode && !packetSelected && !selectedReplicaPacket && !selectedLinkDetail ? (
                 <DeviceExplorerPanel explanation={nodeExplanation!} tabs={isFabricDevice(effectiveDeviceId) ? explorerTabsFor(effectiveDeviceId) : []} xrayEnabled={deviceXray} onToggleXray={() => setDeviceXray((v) => !v)} onExit={() => { setCameraMode("overview"); setEnteredDeviceId(undefined); }} />
               ) : (
                 !packetSelected &&
+                !selectedReplicaPacket &&
                 !selectedLinkDetail && (
                   <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} focusLayerIndices={xrayMode ? focusIndices : undefined} xrayEnabled={xrayMode}>
                     {selectedNodeId && isFabricDevice(selectedNodeId) && (
@@ -444,7 +603,7 @@ export default function EvpnArpNdDemo() {
             <div className="flex flex-wrap items-center gap-3">
               <Button variant="secondary" size="sm" onClick={() => engine.goTo(Math.max(0, index - 1))} disabled={index === 0}>← Previous</Button>
               <Button size="sm" onClick={() => engine.advance()} disabled={!canAdvance}>{nextLabel}</Button>
-              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={() => setAutoPlay((v) => !v)}>{autoPlay ? "⏸ Auto-Playing" : "▶ Auto-Play"}</Button>
+              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={handleToggleAutoPlay}>{autoPlay ? "⏸ Auto-Playing" : "▶ Auto-Play"}</Button>
               <div className="flex gap-1 rounded-full border border-pv-border p-0.5">
                 {([0.5, 1, 2] as const).map((s) => (<button key={s} type="button" onClick={() => setSpeed(s)} className={clsx("rounded-full px-2.5 py-1 text-[10px] font-semibold pv-mono transition-colors", speed === s ? "bg-pv-cyan/15 text-pv-cyan-soft" : "text-pv-text-faint hover:text-pv-text")}>{s}x</button>))}
               </div>
@@ -458,6 +617,213 @@ export default function EvpnArpNdDemo() {
           <PacketJourneyTimeline hops={state.journey.map((h) => ({ router: h.device, action: h.action, output: h.output }))} />
         </div>
       </div>
+
+      {focusMode && (
+        <TopologyFocusMode
+          onClose={() => setFocusMode(false)}
+          toolbar={
+            <>
+              <TopologyModeSwitcher
+                options={[{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "freeOrbit", label: "Free Orbit" }]}
+                value={cameraMode}
+                onChange={handleCameraModeChange}
+              />
+              {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+            </>
+          }
+          header={
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <Badge tone="muted">Step {index + 1} / {totalSteps}</Badge>
+                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label}</span>
+              </div>
+              {questionActive ? (
+                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
+                  Prediction pending — answer in the panel to continue
+                </span>
+              ) : (
+                currentStep?.narrative && (
+                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
+                    {currentStep.narrative}
+                  </p>
+                )
+              )}
+            </div>
+          }
+          canvas={
+            <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
+              <NetworkScene3D
+                nodes={nodes3D}
+                links={links3D}
+                activePacket={inDeviceMode ? undefined : activePacket3D}
+                floodCopies={inDeviceMode ? undefined : floodCopies3D}
+                onSelectFloodCopy={setSelectedFloodCopyId}
+                selectedFloodCopyId={selectedFloodCopyId}
+                regions={regions3D}
+                onSelectNode={(id) => { setSelectedNodeId(id as EvpnArpNdDeviceId); setSelectedLinkId(undefined); setSelectedFloodCopyId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
+                onSelectLink={(id) => setSelectedLinkId(id)}
+                onFocusLink={setFocusedObject}
+                selectedLinkId={selectedLinkId}
+                onSelectPacket={() => setPacketSelected(true)}
+                packetSelected={packetSelected}
+                focusPosition={focusPosition3D}
+                eyeOffset={eyeOffset3D}
+                mode={inDeviceMode ? "device" : "overview"}
+                deviceView={
+                  inDeviceMode
+                    ? {
+                        deviceLabel: effectiveDeviceId!,
+                        interfaces: deviceInterfaces,
+                        xray: deviceXray,
+                        trace: deviceTrace,
+                        packetFrames: devicePacketFrames,
+                        onSelectInterface: setSelectedInterfaceId,
+                        selectedInterfaceId,
+                        onSelectPacket: () => setPacketSelected(true),
+                        packetSelected,
+                        pipelineTitle: effectiveDeviceId === "LEAF1" ? (state.suppressionEnabled ? "Conceptual ARP Suppression Pipeline" : "Conceptual BUM Forwarding Pipeline") : "Conceptual Underlay Forwarding Pipeline",
+                        onFocusObject: setFocusedObject,
+                        focusedObjectId: activeFocusedObject?.id,
+                      }
+                    : undefined
+                }
+              />
+            </div>
+          }
+          inspector={
+            currentStep?.question ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
+                <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
+              </>
+            ) : currentStep?.id === "repair-challenge" ? (
+              <RepairChallenge options={REPAIR_OPTIONS} attempt={state.repairAttempt} onTry={(choice) => engine.act({ choice })} />
+            ) : selectedLinkDetail ? (
+              <LinkDetailPanel detail={selectedLinkDetail} onClose={() => { setSelectedLinkId(undefined); setFocusedObject(undefined); }} />
+            ) : floodCopyInspector ? (
+              floodCopyInspector
+            ) : activeFocusedObject && activeFocusedObject.kind !== "link" ? (
+              <ObjectFocusPanel
+                kind={activeFocusedObject.kind}
+                title={focusPanelFieldsFor(activeFocusedObject).title}
+                fields={focusPanelFieldsFor(activeFocusedObject).fields}
+                onBack={() => setFocusedObject(undefined)}
+                onOverview={() => {
+                  setFocusedObject(undefined);
+                  handleCameraModeChange("overview");
+                }}
+              />
+            ) : inspectorSurface === "device" ? (
+              inDeviceMode ? (
+                <div className="space-y-3">
+                  <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" />
+                  <DeviceExplorerPanel
+                    explanation={nodeExplanation!}
+                    tabs={isFabricDevice(effectiveDeviceId) ? explorerTabsFor(effectiveDeviceId) : []}
+                    xrayEnabled={deviceXray}
+                    onToggleXray={() => setDeviceXray((v) => !v)}
+                    onExit={() => {
+                      setCameraMode("overview");
+                      setEnteredDeviceId(undefined);
+                    }}
+                  />
+                </div>
+              ) : nodeExplanation ? (
+                <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} focusLayerIndices={xrayMode ? focusIndices : undefined} xrayEnabled={xrayMode} />
+              ) : (
+                <GlassPanel className="p-4">
+                  <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+                </GlassPanel>
+              )
+            ) : historicalIndex !== undefined && historicalTrace ? (
+              <div className="space-y-3">
+                {inDeviceMode && (
+                  <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" disabledValues={["device"]} />
+                )}
+                <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-pv-violet">Historical — {historicalStep?.label}</span>
+                  </div>
+                  <button type="button" onClick={() => setHistoricalIndex(undefined)} className="text-[11px] font-semibold uppercase tracking-wide text-pv-text-faint transition-colors hover:text-pv-cyan-soft">
+                    Return to Current →
+                  </button>
+                </div>
+                <HopInspectorPanel trace={historicalTrace} deviceName={historicalDeviceId ?? "—"} interfaces={historicalInterfaces} />
+                <PacketDiffViewer before={historicalTrace.packetBeforeFrames} after={historicalTrace.packetAfterFrames} beforeText={historicalTrace.packetBefore} afterText={historicalTrace.packetAfter} mutations={historicalTrace.mutations} />
+              </div>
+            ) : focusTrace ? (
+              <div className="space-y-3">
+                {inDeviceMode && <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" />}
+                <HopInspectorPanel
+                  trace={focusTrace}
+                  deviceName={focusInspectDeviceId ?? "—"}
+                  interfaces={focusInterfaces}
+                  onFocusNextHop={(id) => {
+                    setSelectedNodeId(id as EvpnArpNdDeviceId);
+                    setInspectorSurface("hop");
+                    if (cameraMode === "device") setEnteredDeviceId(id as EvpnArpNdDeviceId);
+                  }}
+                />
+                <PacketDiffViewer before={focusTrace.packetBeforeFrames} after={focusTrace.packetAfterFrames} beforeText={focusTrace.packetBefore} afterText={focusTrace.packetAfter} mutations={focusTrace.mutations} />
+              </div>
+            ) : (
+              <GlassPanel className="p-4">
+                <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+              </GlassPanel>
+            )
+          }
+          timeline={
+            <div className="space-y-2">
+              <HopTimeline
+                hops={journeyHopEntries}
+                currentIndex={historicalIndex !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalIndex) : journeyHopEntries.length - 1}
+                onSelectHop={(i) => {
+                  const entry = journeyHopEntries[i];
+                  if (!entry) return;
+                  setInspectorSurface("hop");
+                  if (entry.index === index) {
+                    setHistoricalIndex(undefined);
+                    return;
+                  }
+                  setHistoricalIndex(entry.index);
+                  setFocusedObject(undefined);
+                  const histState = engine.getStateAt(entry.index);
+                  const histStep = evpnArpNdSteps[entry.index];
+                  const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
+                  const device = deviceForStep(entry.id, histPacket);
+                  if (device && isFabricDevice(device)) {
+                    setSelectedNodeId(device);
+                    if (cameraMode === "device") setEnteredDeviceId(device);
+                  }
+                }}
+              />
+              <PacketFlowControls
+                playing={autoPlay}
+                onTogglePlay={handleToggleAutoPlay}
+                onPrevHop={() => {
+                  setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
+                  engine.goTo(Math.max(0, index - 1));
+                }}
+                onNextHop={() => {
+                  setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
+                  engine.advance();
+                }}
+                onReset={handleRestart}
+                canPrevHop={index > 0}
+                canNextHop={canAdvance}
+                speed={speed as PlaySpeed}
+                onSpeedChange={setSpeed}
+                followPacket={false}
+                view3D={viewMode === "3d"}
+                onToggleView3D={() => setViewMode((v) => (v === "3d" ? "physical" : "3d"))}
+              />
+            </div>
+          }
+        />
+      )}
     </div>
   );
 }

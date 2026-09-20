@@ -1,4 +1,4 @@
-import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
+import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketMutation, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
 import type { EvpnRibRow } from "@/components/protocol/EvpnRouteTable";
 import {
   GRAPH_EDGES,
@@ -14,6 +14,14 @@ import {
   type EvpnArpNdState,
   type LeafId,
 } from "@/lib/sim-engine/scenarios/evpnArpNdSuppression";
+
+/**
+ * Scene Adapter for EVPN ARP/ND Suppression — mirrors the shape of
+ * evpn-bum's deviceTrace.ts (the closest reference: both lessons are
+ * ingress-replication/BUM lessons). No suppression-lookup rule lives
+ * here — every Level-3 field below is re-described FROM
+ * EvpnArpNdState, never invented.
+ */
 
 const stepIndex = (id: string) => evpnArpNdSteps.findIndex((s) => s.id === id);
 
@@ -49,42 +57,161 @@ function allIds(stages: ProcessingStage[]) {
   return stages.map((s) => s.id);
 }
 
+function plainFrames(): PacketStackFrame[] {
+  return [
+    { id: "ethernet", text: "Ethernet (ARP)", tone: "generic" },
+    { id: "arp", text: "ARP", tone: "ip" },
+  ];
+}
+function vxlanFrames(justChanged = false): PacketStackFrame[] {
+  return [
+    { id: "outer-eth", text: "Outer Ethernet", tone: "transport" },
+    { id: "outer-ip", text: "Outer IP", tone: "transport" },
+    { id: "udp", text: "UDP 4789", tone: "transport" },
+    { id: "vxlan", text: `VXLAN VNI ${VNI}`, tone: "vpn", justChanged },
+    { id: "inner", text: "Original ARP Broadcast Frame", tone: "generic" },
+  ];
+}
+
 export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: EvpnArpNdState, currentStepId: string): DeviceProcessingTrace {
   const i = stepIndex(currentStepId);
+  const bumIndex = stepIndex("leaf1-classify-bum");
+  const floodReplicateIndex = stepIndex("flood-replicate");
+  const floodDeliveredIndex = stepIndex("flood-delivered");
+  const suppressionEnterIndex = stepIndex("enter-leaf1-suppression-pipeline");
+  const proxyIndex = stepIndex("proxy-reply-built");
+  const verifyIndex = stepIndex("verify-dataplane");
+  const faultIndex = stepIndex("fault-injected");
+  const faultVisualizeIndex = stepIndex("visualize-fault");
+  const repairIndex = stepIndex("repair-challenge");
 
   if (device === "SPINE1") {
     const base: DeviceProcessingTrace = { deviceId: "SPINE1", stages: SPINE1_STAGES, completedStageIds: [] };
-    if (state.replicaStage === "none" && i !== stepIndex("flood-delivered")) return base;
-    return { ...base, activeStageId: "outer-ip-lookup", completedStageIds: ["underlay-ingress"] };
+    if (i !== floodDeliveredIndex) return { ...base, completedStageIds: state.replicaStage === "delivered" || state.replicaStage === "spine-to-leaves" ? allIds(SPINE1_STAGES) : [] };
+    return {
+      ...base,
+      ingressInterfaceId: "SPINE1-leaf1",
+      activeStageId: "outer-ip-lookup",
+      completedStageIds: ["underlay-ingress"],
+      packetBefore: "2 underlay IP/UDP packets (from LEAF1)",
+      packetAfter: "Forwarded independently toward LEAF2 and LEAF3",
+      packetBeforeFrames: vxlanFrames(),
+      packetAfterFrames: vxlanFrames(),
+      lookupType: "Outer IP Lookup, Per Packet",
+      lookupKey: "Outer dst IP — one lookup per replica",
+      lookupResult: "Forwarded toward LEAF2 and LEAF3 independently",
+      reason: "SPINE1 treats each replica as an unrelated underlay packet — it never knows they came from one ARP broadcast, and never inspects the ARP payload.",
+    };
   }
 
   if (device === "LEAF1") {
-    const bumIndex = stepIndex("leaf1-classify-bum");
-    const flResIndex = stepIndex("flood-replicate");
-    const suppressionIndex = stepIndex("enter-leaf1-suppression-pipeline");
-    const proxyIndex = stepIndex("proxy-reply-built");
-    const faultVisualizeIndex = stepIndex("visualize-fault");
-    if (i === bumIndex || i === flResIndex) return { deviceId: "LEAF1", stages: LEAF1_BUM_STAGES, activeStageId: "vxlan-replication", completedStageIds: ["access-port", "dest-classification", "bum", "vni-flood-list"] };
-    if (i === suppressionIndex || i === proxyIndex) {
+    if (i === bumIndex || i === floodReplicateIndex || i === faultVisualizeIndex) {
+      const fallback = i === faultVisualizeIndex;
+      return {
+        deviceId: "LEAF1",
+        ingressInterfaceId: "LEAF1-hosta",
+        egressInterfaceId: "LEAF1-spine1",
+        stages: LEAF1_BUM_STAGES,
+        activeStageId: "vxlan-replication",
+        completedStageIds: ["access-port", "dest-classification", "bum", "vni-flood-list"],
+        packetBefore: "ARP broadcast (FF:FF:FF:FF:FF:FF)",
+        packetAfter: "2 VXLAN copies created",
+        packetBeforeFrames: plainFrames(),
+        packetAfterFrames: vxlanFrames(true),
+        lookupType: fallback ? "EVPN Suppression Lookup (MISS) → Flood List" : "Destination Classification → Flood List",
+        lookupKey: fallback ? `${HOST_B_IP} — no valid IP information` : "Dest MAC FF:FF:FF:FF:FF:FF",
+        lookupResult: "BUM → flood list [LEAF2, LEAF3]",
+        nextHopId: "SPINE1",
+        nextHopLabel: "SPINE1",
+        mutations: [{ type: "ENCAPSULATE", detail: `VXLAN VNI ${VNI} — one independent copy per flood-list entry` }],
+        reason: fallback
+          ? "Suppression tried its lookup first; only because the binding was incomplete does it fall back to ordinary flood-and-learn — never because flooding was disabled."
+          : "Suppression doesn't exist yet at this point in the lesson — an unresolved broadcast destination always falls back to ordinary BUM replication.",
+      };
+    }
+    if (i === suppressionEnterIndex || i === proxyIndex || i === verifyIndex) {
       const binding = lookupMacIpBinding(state.macIpBindings.LEAF1, HOST_B_IP);
       const canSuppress = canSuppressNeighborDiscovery(binding);
-      return { deviceId: "LEAF1", stages: LEAF1_SUPPRESSION_STAGES, activeStageId: i === proxyIndex ? "build-reply" : "binding-branch", completedStageIds: i === proxyIndex ? ["access-ingress", "arp-request", "target-ip", "evpn-lookup", "binding-branch"] : ["access-ingress", "arp-request", "target-ip", "evpn-lookup"], forwardingAction: canSuppress ? "YES → local reply" : "NO → normal BUM handling" };
+      const built = i === proxyIndex || i === verifyIndex;
+      return {
+        deviceId: "LEAF1",
+        ingressInterfaceId: "LEAF1-hosta",
+        egressInterfaceId: "LEAF1-hosta",
+        stages: LEAF1_SUPPRESSION_STAGES,
+        activeStageId: built ? "build-reply" : "binding-branch",
+        completedStageIds: built ? ["access-ingress", "arp-request", "target-ip", "evpn-lookup", "binding-branch"] : ["access-ingress", "arp-request", "target-ip", "evpn-lookup"],
+        packetBefore: `ARP Request — who has ${HOST_B_IP}?`,
+        packetAfter: built ? `Proxy ARP Reply — ${HOST_B_IP} is at ${binding?.mac}` : undefined,
+        lookupType: "EVPN MAC/IP Database Lookup",
+        lookupKey: HOST_B_IP,
+        lookupResult: canSuppress ? `Binding found — ${binding?.mac} via remote VTEP ${binding?.vtep} — suppress and reply locally` : "No valid binding — falling back to normal BUM handling",
+        nextHopId: built ? "HOST-A" : undefined,
+        nextHopLabel: built ? "HOST-A" : undefined,
+        forwardingAction: canSuppress ? "YES → local reply" : "NO → normal BUM handling",
+        reason: "A valid, complete MAC/IP binding was found locally — LEAF1 answers directly from its own EVPN-learned state instead of flooding the fabric.",
+      };
     }
-    if (i === faultVisualizeIndex) return { deviceId: "LEAF1", stages: LEAF1_BUM_STAGES, activeStageId: "vxlan-replication", completedStageIds: ["access-port", "dest-classification", "bum", "vni-flood-list"], forwardingAction: "Binding miss — fallback BUM" };
+    if (i === faultIndex) {
+      const binding = lookupMacIpBinding(state.macIpBindings.LEAF1, HOST_B_IP);
+      return {
+        deviceId: "LEAF1",
+        stages: LEAF1_SUPPRESSION_STAGES,
+        activeStageId: "evpn-lookup",
+        completedStageIds: ["access-ingress", "arp-request", "target-ip"],
+        lookupType: "EVPN MAC/IP Database Lookup (DEGRADED)",
+        lookupKey: HOST_B_IP,
+        lookupResult: binding ? `MAC known (${binding.mac}), but IP information missing — binding incomplete` : "No binding",
+        packetBefore: "Binding: complete (MAC + IP)",
+        packetAfter: "Binding: MAC known, IP information MISSING",
+        reason: "The underlying Type-2 MAC route is untouched — only the IP portion of the binding that suppression actually needs has degraded.",
+      };
+    }
+    if (i === repairIndex) {
+      const binding = lookupMacIpBinding(state.macIpBindings.LEAF1, HOST_B_IP);
+      const fixed = state.challengeSucceeded === true;
+      return {
+        deviceId: "LEAF1",
+        stages: LEAF1_SUPPRESSION_STAGES,
+        activeStageId: fixed ? "binding-branch" : "evpn-lookup",
+        completedStageIds: fixed ? ["access-ingress", "arp-request", "target-ip", "evpn-lookup"] : ["access-ingress", "arp-request", "target-ip"],
+        lookupType: "EVPN MAC/IP Database Lookup",
+        lookupKey: HOST_B_IP,
+        lookupResult: fixed ? `IP information restored — ${binding?.mac} via ${binding?.vtep}, binding complete again` : "IP information still missing",
+        packetBefore: "Binding: MAC known, IP information MISSING",
+        packetAfter: fixed ? "Binding: complete (MAC + IP) again" : undefined,
+        reason: fixed ? "The repair restores the missing Type-2 IP information — suppression can use the binding again." : "Suppression stays correctly degraded to fallback flooding until the IP information is actually restored.",
+      };
+    }
     return { deviceId: "LEAF1", stages: LEAF1_SUPPRESSION_STAGES, completedStageIds: state.suppressionEnabled ? allIds(LEAF1_SUPPRESSION_STAGES) : [] };
   }
 
-  // LEAF2 / LEAF3
+  // LEAF2 / LEAF3 — flood-copy recipients only; never do suppression lookups themselves in this lesson.
+  if (i === floodDeliveredIndex) {
+    const mutations: PacketMutation[] = [{ type: "DECAPSULATE", detail: `VXLAN VNI ${VNI} removed` }];
+    return {
+      deviceId: device,
+      ingressInterfaceId: `${device}-spine1`,
+      stages: IDLE_STAGES,
+      activeStageId: "l2-vni",
+      completedStageIds: allIds(IDLE_STAGES),
+      packetBefore: `VXLAN(VNI ${VNI}) from LEAF1`,
+      packetAfter: "ARP broadcast flooded onto local VLAN 10",
+      packetBeforeFrames: vxlanFrames(),
+      packetAfterFrames: plainFrames(),
+      lookupType: "VNI → Local Eligible Ports",
+      lookupKey: `VNI ${VNI}`,
+      lookupResult: "Decapsulated and flooded onto every locally eligible VLAN 10 port",
+      mutations,
+      reason: "This leaf is on LEAF1's flood list for this VNI — it decapsulates its own copy and floods the now-plain ARP request locally, exactly like any other BUM delivery. Neither leaf performs a suppression lookup itself; only the ingress VTEP does.",
+    };
+  }
   const touched = state.replicas.some((r) => r.toLeaf === device) || state.hostBLocation === device;
   return { deviceId: device, stages: IDLE_STAGES, completedStageIds: touched ? allIds(IDLE_STAGES) : [], activeStageId: touched && state.replicaStage !== "none" ? "l2-vni" : undefined };
 }
 
 export function packetFramesFor(state: EvpnArpNdState): PacketStackFrame[] | undefined {
   if (state.replicaStage === "none" && !state.packetAt) return undefined;
-  return [
-    { id: "ethernet", text: "Ethernet (ARP)", tone: "generic" },
-    { id: "arp", text: "ARP", tone: "ip" },
-  ];
+  return plainFrames();
 }
 
 interface IfaceDef {
@@ -130,7 +257,7 @@ export function interfacesFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", st
     mtu: def.mtu,
     protocols: def.protocols,
     packetCount: trace.completedStageIds.length > 0 || processing ? 1 : 0,
-    role: processing ? "ingress" : "idle",
+    role: processing && def.id === trace.ingressInterfaceId ? "ingress" : processing && def.id === trace.egressInterfaceId ? "egress" : "idle",
     extra: def.extra,
   }));
 }
