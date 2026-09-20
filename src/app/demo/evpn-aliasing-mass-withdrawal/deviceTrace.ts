@@ -1,4 +1,4 @@
-import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
+import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketMutation, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
 import type { EvpnRibRow } from "@/components/protocol/EvpnRouteTable";
 import {
   ESI,
@@ -11,10 +11,100 @@ import {
   getEligibleEsPeers,
   type EvpnAliasingDeviceId,
   type EvpnAliasingState,
+  type JourneyHop,
   type LeafId,
+  type MwAction,
 } from "@/lib/sim-engine/scenarios/evpnAliasingMassWithdrawal";
 
 const stepIndex = (id: string) => evpnAliasingSteps.findIndex((s) => s.id === id);
+
+/**
+ * Level-3 enrichment (brief §2/§18/§21) — every field below is
+ * re-described FROM the scenario's own JourneyHop, never a new domain
+ * decision. See docs/ARCHITECTURE.md §18 "enrich an existing adapter".
+ */
+function plainFrames(): PacketStackFrame[] {
+  return [
+    { id: "ethernet", text: "Ethernet", tone: "generic" },
+    { id: "ip", text: "IP", tone: "ip" },
+  ];
+}
+function vxlanFrames(justChanged = false): PacketStackFrame[] {
+  return [
+    { id: "outer-eth", text: "Outer Ethernet", tone: "transport" },
+    { id: "outer-ip", text: "Outer IP", tone: "transport" },
+    { id: "udp", text: "UDP 4789", tone: "transport" },
+    { id: "vxlan", text: `VXLAN VNI ${VNI}`, tone: "vpn", justChanged },
+    { id: "inner", text: "Original Ethernet Frame", tone: "generic" },
+  ];
+}
+
+const ACTION_LOOKUP_TYPE: Record<MwAction, string> = {
+  UNDERLAY_FORWARD: "Underlay Route Lookup",
+  ALIAS_SELECT: "Type-2 → ESI → A-D Per-EVI → Eligible Set → Flow Selection",
+  VXLAN_DECAP: "VXLAN Decapsulation",
+  LOCAL_DELIVER: "VNI → Local ESI → Access Delivery",
+  ES_ATTACHMENT_UNAVAILABLE: "Local ES Attachment State",
+};
+const ACTION_REASON: Record<MwAction, string> = {
+  UNDERLAY_FORWARD: "No ESI or aliasing awareness at all — forwards strictly on the outer underlay destination IP.",
+  ALIAS_SELECT: "LEAF3 selects one eligible next hop per flow — a deterministic flow-selection abstraction standing in for ECMP hashing, never per-packet round robin.",
+  VXLAN_DECAP: "Generic VXLAN decapsulation before the local delivery decision.",
+  LOCAL_DELIVER: "This PE recognizes the VNI as its own local Ethernet Segment and delivers directly to SERVER-A — no DF status check is involved in known-unicast delivery.",
+  ES_ATTACHMENT_UNAVAILABLE: "This PE's local ES-facing attachment to SERVER-A is down — the PE device itself, its underlay, and its BGP EVPN session all remain healthy.",
+};
+
+function findLastHop(journey: JourneyHop[], device: EvpnAliasingDeviceId, action: MwAction): JourneyHop | undefined {
+  for (let idx = journey.length - 1; idx >= 0; idx--) {
+    if (journey[idx].device === device && journey[idx].action === action) return journey[idx];
+  }
+  return undefined;
+}
+
+/** The scenario's own hop.output text already names the selected PE (e.g. "...toward LEAF2") — read it back rather than re-deciding it. */
+function extractLeafFromText(text: string): LeafId | undefined {
+  const m = text.match(/LEAF[12]/);
+  return m ? (m[0] as LeafId) : undefined;
+}
+
+function ifacePairForHop(device: "LEAF1" | "LEAF2" | "LEAF3", action: MwAction): { ingressInterfaceId?: string; egressInterfaceId?: string } {
+  if (device === "LEAF3") return { ingressInterfaceId: "LEAF3-hostb", egressInterfaceId: "LEAF3-spine1" };
+  const servera = `${device}-servera`;
+  const spine1 = `${device}-spine1`;
+  if (action === "ES_ATTACHMENT_UNAVAILABLE") return { ingressInterfaceId: spine1, egressInterfaceId: undefined };
+  return { ingressInterfaceId: spine1, egressInterfaceId: servera };
+}
+
+function hopToTrace(device: "LEAF1" | "LEAF2" | "LEAF3", hop: JourneyHop, stages: ProcessingStage[], activeStageId: string): DeviceProcessingTrace {
+  const isEncap = hop.action === "ALIAS_SELECT";
+  const isDecap = hop.action === "LOCAL_DELIVER" || hop.action === "VXLAN_DECAP";
+  const unreachable = hop.action === "ES_ATTACHMENT_UNAVAILABLE";
+  const mutations: PacketMutation[] | undefined = isEncap
+    ? [{ type: "ENCAPSULATE", detail: `VXLAN VNI ${VNI} toward the selected eligible PE` }]
+    : isDecap
+      ? [{ type: "DECAPSULATE", detail: "VXLAN removed — delivered to SERVER-A" }]
+      : undefined;
+  const nextHopId = isEncap ? extractLeafFromText(hop.output) : hop.action === "LOCAL_DELIVER" ? "SERVER-A" : undefined;
+  const nextHopLabel = nextHopId ?? (unreachable ? "(unreachable — ES attachment down)" : undefined);
+  return {
+    deviceId: device,
+    ...ifacePairForHop(device, hop.action),
+    stages,
+    activeStageId,
+    completedStageIds: stages.map((s) => s.id),
+    packetBefore: hop.input,
+    packetAfter: unreachable ? undefined : hop.output,
+    packetBeforeFrames: isEncap ? plainFrames() : vxlanFrames(),
+    packetAfterFrames: unreachable ? undefined : isEncap ? vxlanFrames(true) : plainFrames(),
+    lookupType: ACTION_LOOKUP_TYPE[hop.action],
+    lookupKey: hop.lookup,
+    lookupResult: hop.output,
+    nextHopId,
+    nextHopLabel,
+    reason: ACTION_REASON[hop.action],
+    mutations,
+  };
+}
 
 const CONTROL_PIPELINE_STAGES: ProcessingStage[] = [
   { id: "type2-advertised", label: "Type-2 MAC Route Advertised" },
@@ -68,22 +158,38 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
   }
 
   if (device === "LEAF3") {
+    // LEAF3's own signature aliasing-selection moments — real JourneyHop data.
+    if (currentStepId === "flow-a-leaf3-pipeline" || currentStepId === "flow-b-delivered" || currentStepId === "convergence-problem" || currentStepId === "resend-after-mass-withdrawal" || currentStepId === "verify-converged") {
+      const hop = findLastHop(state.journey, "LEAF3", "ALIAS_SELECT");
+      if (hop) return hopToTrace("LEAF3", hop, LEAF3_ALIAS_STAGES, "flow-select");
+    }
     const massWithdrawStart = stepIndex("withdraw-per-es");
     const massWithdrawEnd = stepIndex("next-hop-transformation");
     if (i >= massWithdrawStart && i < massWithdrawEnd) {
       const base: DeviceProcessingTrace = { deviceId: "LEAF3", stages: LEAF3_MASSWITHDRAW_STAGES, completedStageIds: [] };
       if (i === massWithdrawStart) return base;
-      if (!state.massWithdrawalProcessed) return { ...base, activeStageId: "find-dependents", completedStageIds: ["bgp-withdraw", "route-type1-per-es", "esi-x", "failed-pe"] };
-      return { ...base, completedStageIds: allIds(LEAF3_MASSWITHDRAW_STAGES) };
+      if (!state.massWithdrawalProcessed) return { ...base, activeStageId: "find-dependents", completedStageIds: ["bgp-withdraw", "route-type1-per-es", "esi-x", "failed-pe"], lookupType: "Route Type 1, A-D Per-ES", lookupKey: `ESI ${ESI.slice(-8)} — failed PE LEAF1`, reason: "The per-ES withdrawal identifies the failed PE; every destination behind this Ethernet Segment must have that PE pruned from its eligible next-hop set." };
+      return { ...base, completedStageIds: allIds(LEAF3_MASSWITHDRAW_STAGES), lookupType: "Route Type 1, A-D Per-ES", lookupKey: `ESI ${ESI.slice(-8)} — failed PE LEAF1`, lookupResult: "LEAF1 pruned from every dependent eligible set", reason: "One ES-level withdrawal invalidates the failed PE for every destination behind that segment at once — not a one-by-one MAC route cleanup." };
     }
     const base: DeviceProcessingTrace = { deviceId: "LEAF3", stages: LEAF3_ALIAS_STAGES, completedStageIds: [] };
     if (!state.macRoute) return base;
     if (!state.aliasing) return { ...base, activeStageId: "esi-identified", completedStageIds: ["dest-mac-lookup", "type2-route"] };
-    if (!state.activeFlow) return { ...base, activeStageId: "eligible-set", completedStageIds: ["dest-mac-lookup", "type2-route", "esi-identified", "adevi-lookup"] };
+    if (!state.activeFlow) return { ...base, activeStageId: "eligible-set", completedStageIds: ["dest-mac-lookup", "type2-route", "esi-identified", "adevi-lookup"], lookupType: ACTION_LOOKUP_TYPE.ALIAS_SELECT, lookupResult: `Eligible set { ${state.aliasing.eligiblePEs.join(", ")} }`, reason: ACTION_REASON.ALIAS_SELECT };
     return { ...base, completedStageIds: allIds(LEAF3_ALIAS_STAGES) };
   }
 
   const leaf = device as "LEAF1" | "LEAF2";
+
+  // The leaf's own signature local-delivery / unreachable moment.
+  if (currentStepId === "convergence-problem" && leaf === "LEAF1") {
+    const hop = findLastHop(state.journey, "LEAF1", "ES_ATTACHMENT_UNAVAILABLE");
+    if (hop) return hopToTrace("LEAF1", hop, DECAP_STAGES, "esi-local");
+  }
+  if ((currentStepId === "flow-a-delivered" || currentStepId === "flow-b-delivered" || currentStepId === "resend-after-mass-withdrawal" || currentStepId === "verify-converged") && state.aliasing) {
+    const hop = findLastHop(state.journey, leaf, "LOCAL_DELIVER");
+    if (hop) return hopToTrace(leaf, hop, DECAP_STAGES, "deliver");
+  }
+
   const buildEnd = stepIndex("aliasing-decision-chamber");
   if (i < buildEnd) {
     const base: DeviceProcessingTrace = { deviceId: leaf, stages: CONTROL_PIPELINE_STAGES, completedStageIds: [] };
@@ -146,7 +252,7 @@ export function interfacesFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", st
       mtu: def.mtu,
       protocols: def.protocols,
       packetCount: trace.completedStageIds.length > 0 || processing ? 1 : 0,
-      role: processing ? "ingress" : "idle",
+      role: processing && def.id === trace.ingressInterfaceId ? "ingress" : processing && def.id === trace.egressInterfaceId ? "egress" : processing ? "ingress" : "idle",
       extra: def.extra,
     }));
 }
