@@ -1,4 +1,4 @@
-import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
+import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketMutation, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
 import type { EvpnRibRow } from "@/components/protocol/EvpnRouteTable";
 import {
   ESI,
@@ -13,10 +13,93 @@ import {
   shouldForwardBumToEs,
   type EvpnMultihomingDeviceId,
   type EvpnMultihomingState,
+  type JourneyHop,
   type LeafId,
+  type MhAction,
 } from "@/lib/sim-engine/scenarios/evpnMultihoming";
 
 const stepIndex = (id: string) => evpnMultihomingSteps.findIndex((s) => s.id === id);
+
+/**
+ * Level-3 enrichment (brief §2/§11/§12): every field below is re-described
+ * FROM the scenario's own JourneyHop/DfState — never a new domain decision.
+ * See docs/ARCHITECTURE.md §18 "enrich an existing adapter" rule.
+ */
+function plainFrames(): PacketStackFrame[] {
+  return [
+    { id: "ethernet", text: "Ethernet", tone: "generic" },
+    { id: "ip", text: "IP", tone: "ip" },
+  ];
+}
+function vxlanFrames(justChanged = false): PacketStackFrame[] {
+  return [
+    { id: "outer-eth", text: "Outer Ethernet", tone: "transport" },
+    { id: "outer-ip", text: "Outer IP", tone: "transport" },
+    { id: "udp", text: "UDP 4789", tone: "transport" },
+    { id: "vxlan", text: `VXLAN VNI ${VNI}`, tone: "vpn", justChanged },
+    { id: "inner", text: "Original Ethernet Frame", tone: "generic" },
+  ];
+}
+
+const ACTION_LOOKUP_TYPE: Record<MhAction, string> = {
+  UNDERLAY_FORWARD: "VNI Flood List Lookup",
+  DF_FORWARD_TO_ES: "Destination ES → DF Status",
+  NDF_SUPPRESS: "Destination ES → DF Status",
+  UNICAST_DELIVER: "MAC Lookup — DF/NDF Irrelevant",
+};
+const ACTION_REASON: Record<MhAction, string> = {
+  UNDERLAY_FORWARD: "LEAF3 replicates the broadcast toward every remote VTEP in the VNI's flood list — replication itself doesn't know or care about DF status at all.",
+  DF_FORWARD_TO_ES: "This PE's DF status for this ESI/EVI is DF — it is the one PE permitted to forward BUM traffic onto the shared Ethernet Segment right now.",
+  NDF_SUPPRESS: "This PE's DF status for this ESI/EVI is NON-DF — BUM delivery onto the segment is suppressed to avoid a duplicate. A deliberate forwarding decision, never a dropped or malformed packet.",
+  UNICAST_DELIVER: "DF/NDF status only governs BUM forwarding toward the Ethernet Segment — ordinary unicast forwarding proceeds normally regardless of which PE happens to be DF.",
+};
+
+function findLastHop(journey: JourneyHop[], device: EvpnMultihomingDeviceId, action: MhAction): JourneyHop | undefined {
+  for (let idx = journey.length - 1; idx >= 0; idx--) {
+    if (journey[idx].device === device && journey[idx].action === action) return journey[idx];
+  }
+  return undefined;
+}
+
+function ifacePairForHop(device: "LEAF1" | "LEAF2" | "LEAF3", action: MhAction): { ingressInterfaceId?: string; egressInterfaceId?: string } {
+  if (device === "LEAF3") return { ingressInterfaceId: "LEAF3-hostb", egressInterfaceId: "LEAF3-spine1" };
+  const servera = `${device}-servera`;
+  const spine1 = `${device}-spine1`;
+  if (action === "UNICAST_DELIVER") return { ingressInterfaceId: servera, egressInterfaceId: spine1 };
+  return { ingressInterfaceId: spine1, egressInterfaceId: action === "NDF_SUPPRESS" ? undefined : servera };
+}
+
+function hopToTrace(device: "LEAF1" | "LEAF2" | "LEAF3", hop: JourneyHop, stages: ProcessingStage[], activeStageId: string): DeviceProcessingTrace {
+  const isDecap = hop.action === "DF_FORWARD_TO_ES" || hop.action === "NDF_SUPPRESS";
+  const isEncap = hop.action === "UNDERLAY_FORWARD";
+  const suppressed = hop.action === "NDF_SUPPRESS";
+  const mutations: PacketMutation[] | undefined = isEncap
+    ? [{ type: "ENCAPSULATE", detail: `VXLAN VNI ${VNI} — replica copies created toward the ES members` }]
+    : isDecap
+      ? [{ type: "DECAPSULATE", detail: suppressed ? "VXLAN removed, then suppressed by NDF role — not forwarded onto the ES" : "VXLAN removed — forwarded onto the Ethernet Segment" }]
+      : undefined;
+  const nextHopId = hop.action === "DF_FORWARD_TO_ES" ? "SERVER-A" : undefined;
+  const nextHopLabel = hop.action === "DF_FORWARD_TO_ES" ? "SERVER-A" : hop.action === "UNDERLAY_FORWARD" ? "LEAF1 + LEAF2 (both ES members)" : hop.action === "NDF_SUPPRESS" ? "(suppressed — no forwarding)" : "HOST-B (via underlay, not modeled further)";
+  return {
+    deviceId: device,
+    ...ifacePairForHop(device, hop.action),
+    stages,
+    activeStageId,
+    completedStageIds: stages.map((s) => s.id),
+    packetBefore: hop.input,
+    packetAfter: suppressed ? undefined : hop.output,
+    packetBeforeFrames: isEncap ? plainFrames() : vxlanFrames(),
+    packetAfterFrames: suppressed ? undefined : isEncap ? vxlanFrames(true) : plainFrames(),
+    lookupType: ACTION_LOOKUP_TYPE[hop.action],
+    lookupKey: hop.lookup,
+    lookupResult: hop.output,
+    nextHopId,
+    nextHopLabel,
+    reason: ACTION_REASON[hop.action],
+    mutations,
+    forwardingAction: hop.action === "DF_FORWARD_TO_ES" ? "FORWARD TO ES" : hop.action === "NDF_SUPPRESS" ? "SUPPRESS ES DELIVERY" : undefined,
+  };
+}
 
 const CONTROL_PIPELINE_STAGES: ProcessingStage[] = [
   { id: "es-configured", label: "Ethernet Segment Configured" },
@@ -58,13 +141,18 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
   if (device === "SPINE1") {
     const base: DeviceProcessingTrace = { deviceId: "SPINE1", stages: SPINE1_STAGES, completedStageIds: [] };
     if (state.replicaStage === "none") return base;
-    return { ...base, activeStageId: "outer-ip-lookup", completedStageIds: ["underlay-ingress"] };
+    return { ...base, activeStageId: "outer-ip-lookup", completedStageIds: ["underlay-ingress"], lookupType: "Outer IP Lookup (Underlay)", reason: "No ESI/DF awareness at all — forwards strictly on the outer underlay destination IP." };
   }
 
+  // LEAF3's own signature moments — a real journey hop derived directly off JourneyHop.
   if (device === "LEAF3") {
+    if (currentStepId === "bum-reaches-leaf1-leaf2" || currentStepId === "resend-bum-after-failure" || currentStepId === "verify-single-df") {
+      const hop = findLastHop(state.journey, "LEAF3", "UNDERLAY_FORWARD");
+      if (hop) return hopToTrace("LEAF3", hop, LEAF3_STAGES, "replicate");
+    }
     const base: DeviceProcessingTrace = { deviceId: "LEAF3", stages: LEAF3_STAGES, completedStageIds: [] };
     if (state.replicaStage === "none") return base;
-    return { ...base, activeStageId: "replicate", completedStageIds: ["access-port", "bum-classify", "flood-list"] };
+    return { ...base, activeStageId: "replicate", completedStageIds: ["access-port", "bum-classify", "flood-list"], lookupType: "VNI Flood List Lookup", reason: "Replicates BUM traffic toward every remote VTEP in the VNI's flood list, unaware which of them is DF." };
   }
 
   const leaf = device as "LEAF1" | "LEAF2";
@@ -83,11 +171,29 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
     return base;
   }
 
+  // The leaf's own signature BUM forwarding/suppression moment — real JourneyHop data.
+  if (currentStepId === "leaf1-df-forwards" && leaf === "LEAF1") {
+    const hop = findLastHop(state.journey, "LEAF1", "DF_FORWARD_TO_ES");
+    if (hop) return hopToTrace("LEAF1", hop, BUM_PIPELINE_STAGES, "forward-or-suppress");
+  }
+  if (currentStepId === "leaf2-ndf-suppresses" && leaf === "LEAF2") {
+    const hop = findLastHop(state.journey, "LEAF2", "NDF_SUPPRESS");
+    if (hop) return hopToTrace("LEAF2", hop, BUM_PIPELINE_STAGES, "forward-or-suppress");
+  }
+  if (currentStepId === "all-active-unicast-proof" && leaf === "LEAF2") {
+    const hop = findLastHop(state.journey, "LEAF2", "UNICAST_DELIVER");
+    if (hop) return hopToTrace("LEAF2", hop, BUM_PIPELINE_STAGES, "forward-or-suppress");
+  }
+  if ((currentStepId === "resend-bum-after-failure" || currentStepId === "verify-single-df") && leaf === state.dfState.winner) {
+    const hop = findLastHop(state.journey, leaf, "DF_FORWARD_TO_ES");
+    if (hop) return hopToTrace(leaf, hop, BUM_PIPELINE_STAGES, "forward-or-suppress");
+  }
+
   if (i >= bumStart) {
     const base: DeviceProcessingTrace = { deviceId: leaf, stages: BUM_PIPELINE_STAGES, completedStageIds: [] };
     if (state.replicaStage === "none") return { ...base, completedStageIds: state.journey.some((h) => h.device === leaf) ? allIds(BUM_PIPELINE_STAGES) : [] };
     const isDf = shouldForwardBumToEs(leaf, state.dfState);
-    return { ...base, activeStageId: "forward-or-suppress", completedStageIds: ["vxlan-decap", "vni", "dest-bum", "dest-es", "df-status"], forwardingAction: isDf ? "FORWARD TO ES" : "SUPPRESS ES DELIVERY" };
+    return { ...base, activeStageId: "forward-or-suppress", completedStageIds: ["vxlan-decap", "vni", "dest-bum", "dest-es", "df-status"], forwardingAction: isDf ? "FORWARD TO ES" : "SUPPRESS ES DELIVERY", lookupType: ACTION_LOOKUP_TYPE[isDf ? "DF_FORWARD_TO_ES" : "NDF_SUPPRESS"], reason: ACTION_REASON[isDf ? "DF_FORWARD_TO_ES" : "NDF_SUPPRESS"] };
   }
 
   return { deviceId: leaf, stages: CONTROL_PIPELINE_STAGES, completedStageIds: allIds(CONTROL_PIPELINE_STAGES) };
@@ -139,7 +245,7 @@ export function interfacesFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", st
       mtu: def.mtu,
       protocols: def.protocols,
       packetCount: trace.completedStageIds.length > 0 || processing ? 1 : 0,
-      role: processing ? "ingress" : "idle",
+      role: processing && def.id === trace.ingressInterfaceId ? "ingress" : processing && def.id === trace.egressInterfaceId ? "egress" : processing ? "ingress" : "idle",
       extra: def.extra,
     }));
 }

@@ -1,20 +1,104 @@
-import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
+import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketMutation, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
 import type { EvpnRibRow } from "@/components/protocol/EvpnRouteTable";
 import {
   ESI,
   GRAPH_EDGES,
   LOCAL_AC_VLAN,
   REMOTE_AC_VLAN,
+  TRANSPORT_LABEL,
   VPWS_SERVICE_ID,
+  VPWS_SERVICE_LABEL,
   discoverVpwsEndpoint,
   evpnVpwsSteps,
   pbRoleFor,
   type EvpnVpwsDeviceId,
   type EvpnVpwsState,
+  type JourneyAction,
+  type JourneyHop,
   type PeId,
 } from "@/lib/sim-engine/scenarios/evpnVpws";
 
 const stepIndex = (id: string) => evpnVpwsSteps.findIndex((s) => s.id === id);
+
+/**
+ * Level-3 enrichment (brief §2/§28/§31/§32) — every field below is
+ * re-described FROM the scenario's own JourneyHop, never a new domain
+ * decision. See docs/ARCHITECTURE.md §18 "enrich an existing adapter".
+ */
+function ethernetFrames(): PacketStackFrame[] {
+  return [{ id: "ethernet", text: "Ethernet (Customer Frame)", tone: "generic" }];
+}
+function mplsFrames(justChanged = false): PacketStackFrame[] {
+  return [
+    { id: "transport", text: `MPLS Shim (transport) — Label ${TRANSPORT_LABEL}`, tone: "transport" },
+    { id: "service", text: `MPLS Shim (service) — Label ${VPWS_SERVICE_LABEL}`, tone: "vpn", justChanged },
+    { id: "ethernet", text: "Ethernet (Customer Frame)", tone: "generic" },
+  ];
+}
+const ACTION_LOOKUP_TYPE: Record<JourneyAction, string> = {
+  AC_INGRESS: "Access Circuit → VPWS Service",
+  SERVICE_LOOKUP: "Service Lookup (Not MAC Lookup)",
+  PUSH_LABELS: "Push Service + Transport Labels",
+  TRANSPORT_FORWARD: "Top Transport Label (Swap)",
+  POP_TRANSPORT: "Pop Transport Label",
+  POP_SERVICE: "Pop Service Label → Identify AC",
+  AC_EGRESS: "Access Circuit Egress",
+  AC_UNAVAILABLE: "Access Circuit State",
+};
+const ACTION_REASON: Record<JourneyAction, string> = {
+  AC_INGRESS: "The customer frame enters on CE-A's attachment circuit and is mapped straight to VPWS-500 — no MAC learning is involved.",
+  SERVICE_LOOKUP: "VPWS-500 has exactly one remote service endpoint, so no destination-MAC lookup is needed to select among multiple remote sites — the provider decision is service/AC based.",
+  PUSH_LABELS: "A two-label stack is pushed: the VPWS service label identifies the service/AC at the far end, the transport label carries the packet across the core.",
+  TRANSPORT_FORWARD: "The core performs ordinary transport label swap forwarding — it never inspects the VPWS service label or customer MACs, and never selects a VPWS AC.",
+  POP_TRANSPORT: "Transport label removed — the service label beneath it is now exposed for the disposition PE to read.",
+  POP_SERVICE: "The service label identifies VPWS-500 and its CE-B attachment circuit — the customer frame is forwarded there unchanged.",
+  AC_EGRESS: "The customer frame leaves on the identified attachment circuit exactly as it arrived — VPWS never modifies customer MACs.",
+  AC_UNAVAILABLE: "This PE's attachment circuit to its customer edge is down — the PE device itself, its underlay, and BGP EVPN session all remain healthy.",
+};
+
+function findLastHop(journey: JourneyHop[], device: EvpnVpwsDeviceId, action: JourneyAction): JourneyHop | undefined {
+  for (let idx = journey.length - 1; idx >= 0; idx--) {
+    if (journey[idx].device === device && journey[idx].action === action) return journey[idx];
+  }
+  return undefined;
+}
+
+function ifacePairForHop(device: "PE1" | "PE2" | "PE3", action: JourneyAction): { ingressInterfaceId?: string; egressInterfaceId?: string } {
+  const ce = device === "PE3" ? `${device}-ceb` : `${device}-cea`;
+  const core = `${device}-core`;
+  if (action === "SERVICE_LOOKUP" || action === "PUSH_LABELS") return { ingressInterfaceId: ce, egressInterfaceId: core };
+  if (action === "POP_SERVICE" || action === "AC_EGRESS") return { ingressInterfaceId: core, egressInterfaceId: ce };
+  return { ingressInterfaceId: core, egressInterfaceId: undefined };
+}
+
+function hopToTrace(device: "PE1" | "PE2" | "PE3", hop: JourneyHop, stages: ProcessingStage[], activeStageId: string): DeviceProcessingTrace {
+  const isPush = hop.action === "PUSH_LABELS";
+  const isPop = hop.action === "POP_SERVICE";
+  const mutations: PacketMutation[] | undefined = isPush
+    ? [{ type: "PUSH", detail: `Service label ${VPWS_SERVICE_LABEL}` }, { type: "PUSH", detail: `Transport label ${TRANSPORT_LABEL}` }]
+    : isPop
+      ? [{ type: "POP", detail: "Transport + service labels removed — customer frame forwarded to the AC" }]
+      : undefined;
+  const nextHopId = hop.action === "PUSH_LABELS" ? "CORE" : hop.action === "SERVICE_LOOKUP" && device !== "PE3" ? "PE3" : isPop ? "CE-B" : undefined;
+  return {
+    deviceId: device,
+    ...ifacePairForHop(device, hop.action),
+    stages,
+    activeStageId,
+    completedStageIds: stages.map((s) => s.id),
+    packetBefore: hop.input,
+    packetAfter: hop.output,
+    packetBeforeFrames: isPush ? ethernetFrames() : isPop ? mplsFrames() : undefined,
+    packetAfterFrames: isPush ? mplsFrames(true) : isPop ? ethernetFrames() : undefined,
+    lookupType: ACTION_LOOKUP_TYPE[hop.action],
+    lookupKey: hop.lookup,
+    lookupResult: hop.output,
+    nextHopId,
+    nextHopLabel: nextHopId,
+    reason: ACTION_REASON[hop.action],
+    mutations,
+  };
+}
 
 const CONTROL_PIPELINE_STAGES: ProcessingStage[] = [
   { id: "es-configured", label: "Ethernet Segment Configured" },
@@ -49,13 +133,41 @@ function allIds(stages: ProcessingStage[]) {
   return stages.map((s) => s.id);
 }
 
+/** Exact (step, device) → (action, stage table, activeStageId) map — avoids matching a stale hop from an earlier step for the same device. */
+const SIGNATURE_MOMENT: Record<string, { device: "PE1" | "PE2" | "PE3"; action: JourneyAction; stages: ProcessingStage[]; activeStageId: string }[]> = {
+  "pe1-service-lookup": [{ device: "PE1", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" }],
+  "mpls-data-plane": [{ device: "PE1", action: "PUSH_LABELS", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "push-labels" }],
+  "pe3-disposition": [{ device: "PE3", action: "POP_SERVICE", stages: PE3_EGRESS_STAGES, activeStageId: "forward-ce" }],
+  "return-direction": [
+    { device: "PE3", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
+    { device: "PE1", action: "POP_SERVICE", stages: PE3_EGRESS_STAGES, activeStageId: "forward-ce" },
+  ],
+  "data-path-failover": [
+    { device: "PE3", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
+    { device: "PE2", action: "POP_SERVICE", stages: PE3_EGRESS_STAGES, activeStageId: "forward-ce" },
+  ],
+  "verify-repair": [
+    { device: "PE1", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
+    { device: "PE2", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
+  ],
+  "challenge-resend": [{ device: "PE2", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" }],
+};
+
 export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpwsState, currentStepId: string): DeviceProcessingTrace {
   const i = stepIndex(currentStepId);
 
   if (device === "CORE") {
     const base: DeviceProcessingTrace = { deviceId: "CORE", stages: CORE_STAGES, completedStageIds: [] };
     if (!state.packetAt) return base;
-    return { ...base, activeStageId: "transport-forward", completedStageIds: ["underlay-ingress", "top-label"] };
+    return { ...base, activeStageId: "transport-forward", completedStageIds: ["underlay-ingress", "top-label"], lookupType: "Top Transport Label (Swap)", lookupKey: `Label ${TRANSPORT_LABEL}`, reason: "Ordinary transport forwarding — never inspects the VPWS service label or customer MACs, and never selects a VPWS AC." };
+  }
+
+  // Exact signature moments for PE1/PE2/PE3 — real JourneyHop data, never a stale earlier hop.
+  const moments = SIGNATURE_MOMENT[currentStepId];
+  const moment = moments?.find((m) => m.device === device);
+  if (moment) {
+    const hop = findLastHop(state.journey, device, moment.action);
+    if (hop) return hopToTrace(device, hop, moment.stages, moment.activeStageId);
   }
 
   const controlEnd = stepIndex("act2-intro");
@@ -69,8 +181,11 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
       if (i < stepIndex("vpws-route-discovery")) return { ...base, activeStageId: "adevi-advertised", completedStageIds: ["es-configured", "election"] };
       return { ...base, completedStageIds: allIds(CONTROL_PIPELINE_STAGES) };
     }
+    if (device === "PE1" && state.pe1AcFailed) {
+      return { deviceId: device, stages: PE1_PE2_FORWARD_STAGES, completedStageIds: [], lookupType: ACTION_LOOKUP_TYPE.AC_UNAVAILABLE, reason: ACTION_REASON.AC_UNAVAILABLE };
+    }
     const base: DeviceProcessingTrace = { deviceId: device, stages: PE1_PE2_FORWARD_STAGES, completedStageIds: [] };
-    const forwarded = state.journey.some((h) => h.device === device && (h.action === "PUSH_LABELS" || h.action === "SERVICE_LOOKUP"));
+    const forwarded = state.journey.some((h) => h.device === device && (h.action === "PUSH_LABELS" || h.action === "SERVICE_LOOKUP" || h.action === "POP_SERVICE"));
     if (!forwarded) return base;
     return { ...base, completedStageIds: allIds(PE1_PE2_FORWARD_STAGES) };
   }
@@ -88,9 +203,8 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
 
 export function packetFramesFor(state: EvpnVpwsState): PacketStackFrame[] | undefined {
   if (!state.packet && state.journey.length === 0) return undefined;
-  return [
-    { id: "ethernet", text: "Ethernet", tone: "generic" },
-  ];
+  if (state.packet && state.packet.labels.length > 0) return mplsFrames();
+  return ethernetFrames();
 }
 
 interface IfaceDef { id: string; name: string; ip?: string; neighborId: EvpnVpwsDeviceId; neighborLabel: string; linkType: string; mtu: number; protocols: string[]; extra?: { label: string; value: string }[]; }
@@ -131,7 +245,7 @@ export function interfacesFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: Evp
       mtu: def.mtu,
       protocols: def.protocols,
       packetCount: trace.completedStageIds.length > 0 || processing ? 1 : 0,
-      role: processing ? "ingress" : "idle",
+      role: processing && def.id === trace.ingressInterfaceId ? "ingress" : processing && def.id === trace.egressInterfaceId ? "egress" : processing ? "ingress" : "idle",
       extra: def.extra,
     }));
 }
