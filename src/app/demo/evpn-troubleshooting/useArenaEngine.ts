@@ -4,7 +4,7 @@ import { useCallback, useMemo, useReducer } from "react";
 import { installDerived } from "@/lib/sim-engine/arena/faultRegistry";
 import { generateScenario, type GeneratedScenario } from "@/lib/sim-engine/arena/scenarioGenerator";
 import { computeScore, type ScoreBreakdown } from "@/lib/sim-engine/arena/scoring";
-import { CATEGORY_TO_HYPOTHESIS, type ArenaDeviceId, type Difficulty, type HypothesisCategory, type ScenarioMode } from "@/lib/sim-engine/arena/faultTypes";
+import { CATEGORY_TO_HYPOTHESIS, type ArenaDeviceId, type ArenaState, type Difficulty, type HypothesisCategory, type ScenarioMode } from "@/lib/sim-engine/arena/faultTypes";
 import { runTest, type TestId, type TestResult } from "./evidence";
 
 export interface Finding {
@@ -58,6 +58,8 @@ export interface ArenaSession {
   snapshots: Snapshot[];
   startedAtMs: number;
   replayIndex?: number;
+  /** Frozen ArenaState from the instant BEFORE the first correct repair was applied (brief §13/§37: "broken vs repaired comparison" needs two genuinely distinct, frozen snapshots — never a recomputation against live state, which would silently show the already-healed value for the "before" side once a repair lands). Undefined until a correct repair has actually been applied. */
+  stateBeforeFix?: ArenaState;
 }
 
 type Action =
@@ -163,9 +165,11 @@ function reducer(session: ArenaSession, action: Action): ArenaSession {
       const correct = repair.correct;
       const nextState = correct ? installDerived(repair.apply(session.scenario.state)) : session.scenario.state;
       const log: RepairAttemptLog = { repairId: repair.id, label: repair.label, correct, timeLabel: t };
+      const stateBeforeFix = correct && !session.stateBeforeFix ? session.scenario.state : session.stateBeforeFix;
       return {
         ...session,
         scenario: { ...session.scenario, state: nextState },
+        stateBeforeFix,
         repairAttempts: [...session.repairAttempts, log],
         correctRepairApplied: session.correctRepairApplied || correct,
         timeline: [...session.timeline, { id: crypto.randomUUID(), timeLabel: t, text: correct ? `Repair applied: ${repair.label}` : `Repair attempted (no effect): ${repair.label}` }],

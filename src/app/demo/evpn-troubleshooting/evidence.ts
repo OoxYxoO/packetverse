@@ -48,6 +48,8 @@ export interface TestResult {
   title: string;
   lines: string[];
   success?: boolean;
+  /** Structured, frozen-at-run-time hop data — populated only for packet-trace results (brief §17/§18: Follow Packet / FloodCopy3D need the same facts the text lines already carry, not a re-derivation from live state). */
+  hops?: TraceHop[];
 }
 
 type NamedHost = "HOST-A" | "HOST-B" | "SERVER-A" | "ROAMER";
@@ -303,9 +305,20 @@ export function runTest(state: ArenaState, testId: TestId, params: Record<string
 // failure, never auto-labels the cause.
 // ---------------------------------------------------------------------------
 
+/** Which conceptual pipeline stage (see deviceTrace.ts's PIPELINE_STAGES) a hop belongs to at its device — purely a presentation grouping, never a new domain fact. */
+export type HopStage = "ingress" | "fwd-decision" | "encap-decap" | "replicate" | "egress";
+
 export interface TraceHop {
   label: string;
   ok: boolean;
+  /** The device this hop's activity happened at — undefined for an end-host marker (no Device Explorer surface to enter). */
+  deviceId?: ArenaLeafId | "SPINE1";
+  stage?: HopStage;
+  lookupType?: string;
+  lookupKey?: string;
+  lookupResult?: string;
+  /** Why the lookup/check came out this way — only set for a hop the learner could plausibly want explained (the same fact the label's ✓/✕ already displays as text). */
+  reason?: string;
 }
 
 export function runPacketTrace(state: ArenaState, from: string, to: string): TestResult {
@@ -314,12 +327,21 @@ export function runPacketTrace(state: ArenaState, from: string, to: string): Tes
   if (to === "broadcast") {
     hops.push({ label: `${from} ✓`, ok: true });
     if (!fromInfo) return traceResult(hops);
-    hops.push({ label: `${fromInfo.leaf} ingress ✓`, ok: true });
-    hops.push({ label: "SPINE1 replication ✓", ok: true });
+    hops.push({ label: `${fromInfo.leaf} ingress ✓`, ok: true, deviceId: fromInfo.leaf, stage: "ingress" });
+    hops.push({ label: "SPINE1 replication ✓", ok: true, deviceId: "SPINE1", stage: "replicate", lookupType: "Flood List (VNI IMET Membership)", lookupResult: "replicating to all IMET members" });
     (["LEAF1", "LEAF2", "LEAF3"] as ArenaLeafId[]).forEach((l) => {
       if (l === fromInfo.leaf) return;
       const ok = imetOk(state, l, fromInfo.vni);
-      hops.push({ label: `${l} flood-list delivery ${ok ? "✓" : "✕"}`, ok });
+      hops.push({
+        label: `${l} flood-list delivery ${ok ? "✓" : "✕"}`,
+        ok,
+        deviceId: l,
+        stage: "egress",
+        lookupType: `IMET (Type-3) Membership, VNI ${fromInfo.vni}`,
+        lookupKey: l,
+        lookupResult: ok ? "member" : "NOT a member",
+        reason: ok ? undefined : `${l} is not in VNI ${fromInfo.vni}'s flood list, so replicated BUM traffic is never delivered here.`,
+      });
     });
     return traceResult(hops);
   }
@@ -327,26 +349,53 @@ export function runPacketTrace(state: ArenaState, from: string, to: string): Tes
   if (!fromInfo || !toInfo) return traceResult([{ label: "Unknown endpoint ✕", ok: false }]);
 
   hops.push({ label: `${from} ✓`, ok: true });
-  hops.push({ label: `${fromInfo.leaf} ingress ✓`, ok: true });
+  hops.push({ label: `${fromInfo.leaf} ingress ✓`, ok: true, deviceId: fromInfo.leaf, stage: "ingress" });
 
   if (to === "ROAMER" || toInfo.mac === ROAMER_MAC) {
     const believed = state.roamer.remoteBelievedLeaf;
-    hops.push({ label: `${fromInfo.leaf} remote location lookup → ${believed} ${believed === state.roamer.actualLeaf ? "✓" : "(stale)"}`, ok: believed === state.roamer.actualLeaf });
-    if (believed !== state.roamer.actualLeaf) {
-      hops.push({ label: `VXLAN toward ${believed} ✓ (wrong destination)`, ok: true });
-      hops.push({ label: `${believed} decap — host not actually present here ✕`, ok: false });
+    const current = believed === state.roamer.actualLeaf;
+    hops.push({
+      label: `${fromInfo.leaf} remote location lookup → ${believed} ${current ? "✓" : "(stale)"}`,
+      ok: current,
+      deviceId: fromInfo.leaf,
+      stage: "fwd-decision",
+      lookupType: "EVPN Type-2 Route (MAC Mobility)",
+      lookupKey: toInfo.mac,
+      lookupResult: `believed location: ${believed}`,
+      reason: current ? undefined : `${fromInfo.leaf} never accepted a newer mobility sequence for this host — it still forwards toward ${believed}.`,
+    });
+    if (!current) {
+      hops.push({ label: `VXLAN toward ${believed} ✓ (wrong destination)`, ok: true, deviceId: "SPINE1", stage: "replicate" });
+      hops.push({ label: `${believed} decap — host not actually present here ✕`, ok: false, deviceId: believed, stage: "encap-decap", lookupType: "Local MAC Table", lookupKey: toInfo.mac, lookupResult: "not present at this leaf", reason: "The host physically moved away from this leaf." });
       return traceResult(hops);
     }
-    hops.push({ label: "VXLAN encapsulation ✓", ok: true });
-    hops.push({ label: "SPINE1 ✓", ok: true });
-    hops.push({ label: `${believed} VXLAN decap ✓`, ok: true });
+    hops.push({ label: "VXLAN encapsulation ✓", ok: true, deviceId: fromInfo.leaf, stage: "encap-decap" });
+    hops.push({ label: "SPINE1 ✓", ok: true, deviceId: "SPINE1", stage: "replicate" });
+    hops.push({ label: `${believed} VXLAN decap ✓`, ok: true, deviceId: believed, stage: "encap-decap" });
     return traceResult(hops);
   }
 
   const route = type2Route(state, toInfo.mac);
-  hops.push({ label: `Remote route lookup (${toInfo.ip}) ${route ? "✓" : "✕"}`, ok: !!route });
+  hops.push({
+    label: `Remote route lookup (${toInfo.ip}) ${route ? "✓" : "✕"}`,
+    ok: !!route,
+    deviceId: fromInfo.leaf,
+    stage: "fwd-decision",
+    lookupType: "EVPN RIB (Type-2 MAC/IP)",
+    lookupKey: toInfo.mac,
+    lookupResult: route ? `found, origin ${route.originLeaf}` : "no route",
+  });
   if (!route) return traceResult(hops);
-  hops.push({ label: `Route import (RT) ${route.rtMatchesLocally ? "✓" : "✕"}`, ok: route.rtMatchesLocally });
+  hops.push({
+    label: `Route import (RT) ${route.rtMatchesLocally ? "✓" : "✕"}`,
+    ok: route.rtMatchesLocally,
+    deviceId: fromInfo.leaf,
+    stage: "fwd-decision",
+    lookupType: "RT Import Policy",
+    lookupKey: route.rt,
+    lookupResult: route.rtMatchesLocally ? "matched, imported" : "NOT matched",
+    reason: route.rtMatchesLocally ? undefined : `The Route Target carried by ${toInfo.ip}'s Type-2 route doesn't match this VNI's import policy.`,
+  });
   if (!route.rtMatchesLocally) return traceResult(hops);
 
   let targetLeaf = toInfo.leaf;
@@ -354,21 +403,39 @@ export function runPacketTrace(state: ArenaState, from: string, to: string): Tes
     const sorted = [...state.aliasing.eligiblePEs].sort();
     targetLeaf = sorted[0] ?? "LEAF1";
     const usable = aliasingUsable(state, targetLeaf);
-    hops.push({ label: `Aliasing next-hop selection → ${targetLeaf} ${usable ? "✓" : "✕"}`, ok: usable });
+    hops.push({
+      label: `Aliasing next-hop selection → ${targetLeaf} ${usable ? "✓" : "✕"}`,
+      ok: usable,
+      deviceId: fromInfo.leaf,
+      stage: "fwd-decision",
+      lookupType: "Aliasing Eligible Next-Hop Set",
+      lookupKey: "SERVER-A",
+      lookupResult: `selected ${targetLeaf}`,
+      reason: usable ? undefined : `${targetLeaf} is no longer a usable next hop for this ES, but the eligible set hasn't been recomputed.`,
+    });
     if (!usable) return traceResult(hops);
   }
 
-  hops.push({ label: "VXLAN encapsulation ✓", ok: true });
-  hops.push({ label: "SPINE1 ✓", ok: true });
+  hops.push({ label: "VXLAN encapsulation ✓", ok: true, deviceId: fromInfo.leaf, stage: "encap-decap" });
+  hops.push({ label: "SPINE1 ✓", ok: true, deviceId: "SPINE1", stage: "replicate" });
   const underlay = underlayOk(state, fromInfo.leaf, targetLeaf);
-  hops.push({ label: `${targetLeaf} VXLAN decap ${underlay ? "✓" : "✕ (underlay unreachable)"}`, ok: underlay });
+  hops.push({
+    label: `${targetLeaf} VXLAN decap ${underlay ? "✓" : "✕ (underlay unreachable)"}`,
+    ok: underlay,
+    deviceId: targetLeaf,
+    stage: "encap-decap",
+    lookupType: "Underlay Reachability + VXLAN Decap",
+    lookupKey: `${fromInfo.leaf} → ${targetLeaf}`,
+    lookupResult: underlay ? "reachable, decapsulated" : "UNREACHABLE",
+    reason: underlay ? undefined : `${fromInfo.leaf} and ${targetLeaf}'s VTEP loopbacks have no underlay path to each other.`,
+  });
   if (!underlay) return traceResult(hops);
-  hops.push({ label: `Delivered to ${to} ✓`, ok: true });
+  hops.push({ label: `Delivered to ${to} ✓`, ok: true, deviceId: targetLeaf, stage: "egress" });
   return traceResult(hops);
 }
 
 function traceResult(hops: TraceHop[]): TestResult {
-  return { title: "Packet Trace", lines: hops.map((h) => h.label), success: hops.every((h) => h.ok) };
+  return { title: "Packet Trace", lines: hops.map((h) => h.label), success: hops.every((h) => h.ok), hops };
 }
 
 // ---------------------------------------------------------------------------

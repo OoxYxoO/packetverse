@@ -28,38 +28,53 @@ import {
   CLI_SUGGESTIONS_CISCO,
   CLI_SUGGESTIONS_JUNIPER,
   hostInfo,
-  isLeaf,
   runCapture,
   runCliCommand,
   runTest,
   type TestId,
   type TestResult,
+  type TraceHop,
 } from "./evidence";
 import type { ArenaState } from "@/lib/sim-engine/arena/faultTypes";
-import { esTabRowsFor, evpnRibRowsFor, interfacesFor, suppressionTabRowsFor, vpwsTabRowsFor, vrfTabRowsFor } from "./deviceTrace";
+import {
+  ARENA_EDGES,
+  ARENA_NODES,
+  esTabRowsFor,
+  evpnRibRowsFor,
+  idleTraceFor,
+  interfacesFor,
+  linkDetailFor,
+  linksFor,
+  nodesFor,
+  packetFramesForHop,
+  pipelineTitleFor,
+  regionsFor,
+  suppressionTabRowsFor,
+  traceForHop,
+  vpwsTabRowsFor,
+  vrfTabRowsFor,
+} from "./deviceTrace";
+import { NetworkScene3D, type FloodCopy3D } from "@/components/network3d/NetworkScene3D";
+import { TopologyFrame } from "@/components/network3d/TopologyFrame";
+import { TopologyFocusMode } from "@/components/network3d/TopologyFocusMode";
+import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
+import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@/components/network3d/DeviceExplorerPanel";
+import { HopInspectorPanel } from "@/components/network3d/HopInspectorPanel";
+import { HopTimeline } from "@/components/network3d/HopTimeline";
+import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
+import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
+import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
+import type { CameraMode, FocusTarget3D, InspectorSurface, Link3DData, NodeExplanation } from "@/components/network3d/types";
 
 // ---------------------------------------------------------------------------
-// Fixed fabric layout (brief §4)
+// Fixed fabric layout (brief §4) — canonical node/edge data now lives in
+// deviceTrace.ts (ARENA_NODES/ARENA_EDGES) so the 2D and 3D topologies are
+// guaranteed to describe the exact same fabric; this just adapts it to
+// <GraphTopologyViewer>'s 2D prop shape.
 // ---------------------------------------------------------------------------
 
-const GRAPH_NODES = [
-  { id: "SPINE1", label: "SPINE1", x: 50, y: 12, subLabel: "Underlay only", kind: "switch" as const },
-  { id: "LEAF1", label: "LEAF1", x: 20, y: 45, subLabel: `VTEP ${VTEP_LOOPBACK.LEAF1}`, kind: "switch" as const },
-  { id: "LEAF2", label: "LEAF2", x: 50, y: 45, subLabel: `VTEP ${VTEP_LOOPBACK.LEAF2}`, kind: "switch" as const },
-  { id: "LEAF3", label: "LEAF3", x: 80, y: 45, subLabel: `VTEP ${VTEP_LOOPBACK.LEAF3}`, kind: "switch" as const },
-  { id: "HOST-A", label: "HOST-A", x: 10, y: 80, kind: "server" as const },
-  { id: "SERVER-A", label: "SERVER-A", x: 35, y: 80, subLabel: "Dual-Homed", kind: "server" as const },
-  { id: "HOST-B", label: "HOST-B", x: 80, y: 80, kind: "server" as const },
-];
-const GRAPH_EDGES = [
-  { id: "spine-leaf1", a: "SPINE1", b: "LEAF1" },
-  { id: "spine-leaf2", a: "SPINE1", b: "LEAF2" },
-  { id: "spine-leaf3", a: "SPINE1", b: "LEAF3" },
-  { id: "leaf1-hosta", a: "LEAF1", b: "HOST-A" },
-  { id: "leaf1-servera", a: "LEAF1", b: "SERVER-A", label: "ESI" },
-  { id: "leaf2-servera", a: "LEAF2", b: "SERVER-A", label: "ESI" },
-  { id: "leaf3-hostb", a: "LEAF3", b: "HOST-B" },
-].map((e) => ({ ...e, state: "full" as const }));
+const GRAPH_NODES = ARENA_NODES;
+const GRAPH_EDGES = ARENA_EDGES.map((e) => ({ ...e, state: "full" as const }));
 
 const LEAF_OPTIONS: ArenaDeviceId[] = ["LEAF1", "LEAF2", "LEAF3"];
 const DEVICE_OPTIONS: ArenaDeviceId[] = ["SPINE1", "LEAF1", "LEAF2", "LEAF3"];
@@ -220,14 +235,25 @@ function IncidentView({ config, onExit }: { config: { seed?: string; difficulty:
   const arenaResults = useProgressStore((s) => s.arenaResults);
   const recordedRef = useRef(false);
 
+  // --- Shared-3D Focus Mode state (brief §33/§34) — page-local only; opening
+  // or closing Focus Mode never touches any of the investigation state above. ---
+  const [focusModeOpen, setFocusModeOpen] = useState(false);
+  const [cameraMode, setCameraMode] = useState<CameraMode>("overview");
+  const [deviceXray, setDeviceXray] = useState(false);
+  const [selectedLinkId, setSelectedLinkId] = useState<string | undefined>(undefined);
+  const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
+  const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("device");
+  const [selectedInterfaceId, setSelectedInterfaceId] = useState<string | undefined>(undefined);
+  const [focusPanelTab, setFocusPanelTab] = useState<"diagnose" | "investigate">("diagnose");
+  const [activeFlow, setActiveFlow] = useState<{ from: string; to: string; hops: TraceHop[] } | undefined>(undefined);
+  const [hopIndex, setHopIndex] = useState(0);
+
   const nodes = GRAPH_NODES;
   const edges = GRAPH_EDGES;
 
-  const subLabelFor = (id: string, fallback?: string) => {
-    if (id === "LEAF1" && session.scenario.state.es.esAttachmentDown === "LEAF1") return "ES attachment: DOWN";
-    if (id === "SERVER-A") return "Dual-Homed (ESI)";
-    return fallback;
-  };
+  // No live-fault-state badge here on purpose (brief §4/§7/§38): the topology
+  // is an evidence tool, not an answer-reveal tool, in either the 2D or 3D view.
+  const subLabelFor = (id: string, fallback?: string) => (id === "SERVER-A" ? "Dual-Homed (ESI)" : fallback);
 
   const score = engine.score;
   // Records the result exactly once per resolved incident — a Zustand
@@ -248,6 +274,251 @@ function IncidentView({ config, onExit }: { config: { seed?: string; difficulty:
   // (e.g. the pre-anti-farming-discount award from a prior play).
   const xpAwarded = [...arenaResults].reverse().find((r) => r.seed === session.scenario.seed)?.xpAwarded ?? null;
 
+  // -------------------------------------------------------------------------
+  // Shared-3D derivations — pure functions of ArenaState + the learner's own
+  // Toolbox runs, exactly like every other lesson's page.tsx (brief §5/§18).
+  // -------------------------------------------------------------------------
+  const state3D = session.scenario.state;
+  const nodes3D = nodesFor();
+  const regions3D = regionsFor();
+  const links3D: Link3DData[] = linksFor(activeFlow, hopIndex);
+  const deviceExplorerDevice: ArenaExplorerDevice | undefined = enteredDevice && isLeafOrSpine(enteredDevice) ? enteredDevice : undefined;
+  const inDeviceMode = cameraMode === "device" && !!deviceExplorerDevice;
+  const selectedNode3D = nodes3D.find((n) => n.id === (deviceExplorerDevice ?? selectedNodeId));
+  const currentHop = activeFlow?.hops[hopIndex];
+  const hopAtEnteredDevice = currentHop && deviceExplorerDevice && currentHop.deviceId === deviceExplorerDevice ? currentHop : undefined;
+
+  const focusPosition3D: [number, number, number] | undefined = focusedObject
+    ? focusedObject.position
+    : cameraMode === "freeOrbit"
+      ? undefined
+      : inDeviceMode
+        ? [0, 0, deviceXray ? -0.2 : 0]
+        : selectedNode3D?.position;
+  const eyeOffset3D: [number, number, number] | undefined = inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
+
+  // Broadcast/BUM flows render as simultaneous FloodCopy3D copies (brief §19)
+  // instead of one linear Follow Packet path — reusing the exact per-leaf
+  // ok/fail facts `runPacketTrace`'s broadcast branch already computed.
+  const floodCopies3D: FloodCopy3D[] | undefined =
+    activeFlow?.to === "broadcast" ? activeFlow.hops.filter((h) => h.stage === "egress" && h.deviceId).map((h, i) => ({ id: `flood-${i}-${h.deviceId}`, fromId: "SPINE1", toId: h.deviceId as string })) : undefined;
+
+  const deviceInterfaces = deviceExplorerDevice ? interfacesFor(state3D, deviceExplorerDevice) : [];
+  const deviceTraceForInterior = deviceExplorerDevice ? (hopAtEnteredDevice && activeFlow ? traceForHop(activeFlow.hops, hopIndex) : idleTraceFor(deviceExplorerDevice)) : undefined;
+  const devicePacketFramesRaw = hopAtEnteredDevice ? packetFramesForHop(hopAtEnteredDevice) : undefined;
+
+  const hopTrace = currentHop && activeFlow ? traceForHop(activeFlow.hops, hopIndex) : undefined;
+  const hopDeviceInterfaces = currentHop?.deviceId ? interfacesFor(state3D, currentHop.deviceId) : undefined;
+  const hopPacketDiff = currentHop ? packetFramesForHop(currentHop) : undefined;
+
+  const selectedLinkDetail = selectedLinkId ? linkDetailFor(selectedLinkId, state3D) : undefined;
+  const pastTraces = session.testLog.filter((t) => t.result.hops && t.result.hops.length > 0);
+
+  function focusFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
+    if (target.kind === "stage" && deviceTraceForInterior) {
+      const stage = deviceTraceForInterior.stages.find((s) => s.id === target.id);
+      const fields: { label: string; value: string }[] = [];
+      if (stage?.detail) fields.push({ label: "Detail", value: stage.detail });
+      if (deviceTraceForInterior.activeStageId === target.id) {
+        if (deviceTraceForInterior.lookupType) fields.push({ label: "Lookup", value: deviceTraceForInterior.lookupType });
+        if (deviceTraceForInterior.lookupKey) fields.push({ label: "Match", value: deviceTraceForInterior.lookupKey });
+        if (deviceTraceForInterior.lookupResult) fields.push({ label: "Result", value: deviceTraceForInterior.lookupResult });
+        if (deviceTraceForInterior.reason) fields.push({ label: "Why", value: deviceTraceForInterior.reason });
+      }
+      return { title: stage?.label ?? target.id, fields };
+    }
+    if (target.kind === "interface") {
+      const iface = deviceInterfaces.find((i) => i.id === target.id);
+      const fields: { label: string; value: string }[] = [];
+      if (iface) {
+        fields.push({ label: "Status", value: iface.status.toUpperCase() });
+        if (iface.neighborLabel) fields.push({ label: "Neighbor", value: iface.neighborLabel });
+        if (iface.linkType) fields.push({ label: "Link Type", value: iface.linkType });
+        if (iface.mtu) fields.push({ label: "MTU", value: String(iface.mtu) });
+        iface.extra?.forEach((e) => fields.push(e));
+      }
+      return { title: iface?.name ?? target.id, fields };
+    }
+    if (target.kind === "packetLayer") {
+      const frame = [...(devicePacketFramesRaw?.before ?? []), ...(devicePacketFramesRaw?.after ?? [])].find((f) => f.id === target.id);
+      return { title: frame?.text ?? target.id, fields: frame ? [{ label: "Layer", value: frame.tone }] : [] };
+    }
+    return { title: target.id, fields: [] };
+  }
+
+  const handleSelectNode = (id: string) => {
+    setSelectedNodeId(id as ArenaDeviceId);
+    setEnteredDevice(undefined);
+    setCameraMode("overview");
+    setSelectedLinkId(undefined);
+    setFocusedObject(undefined);
+    setInspectorSurface("device");
+  };
+  const handleEnterDevice = (id: ArenaDeviceId) => {
+    setEnteredDevice(id);
+    setCameraMode("device");
+    setInspectorSurface("device");
+    setSelectedInterfaceId(undefined);
+    engine.inspectDevice(id);
+  };
+  const handleExitDevice = () => {
+    setEnteredDevice(undefined);
+    setCameraMode("overview");
+    setDeviceXray(false);
+    setSelectedInterfaceId(undefined);
+  };
+  const handleSelectHop = (i: number) => {
+    if (!activeFlow) return;
+    const clamped = Math.max(0, Math.min(activeFlow.hops.length - 1, i));
+    setHopIndex(clamped);
+    setInspectorSurface("hop");
+    setFocusedObject(undefined);
+    setSelectedLinkId(undefined);
+    const dev = activeFlow.hops[clamped]?.deviceId;
+    if (dev) {
+      setEnteredDevice(dev);
+      setCameraMode("device");
+    }
+  };
+  const handleRunTest = (testId: TestId, params: Record<string, string>, device?: ArenaDeviceId) => {
+    engine.runTest(testId, params, device);
+    if ((testId === "ping" || testId === "packet-trace") && params.from && params.to) {
+      const traced = runTest(session.scenario.state, "packet-trace", { from: params.from, to: params.to });
+      if (traced.hops && traced.hops.length > 0) {
+        setActiveFlow({ from: params.from, to: params.to, hops: traced.hops });
+        setHopIndex(traced.hops.length - 1);
+        setInspectorSurface("hop");
+      }
+    }
+  };
+  const handleSelectPastTrace = (entryId: string) => {
+    const entry = pastTraces.find((t) => t.id === entryId);
+    if (!entry?.result.hops) return;
+    setActiveFlow({ from: entry.params.from ?? "", to: entry.params.to ?? "", hops: entry.result.hops });
+    setHopIndex(entry.result.hops.length - 1);
+    setInspectorSurface("hop");
+  };
+
+  const sceneJsx = (
+    <NetworkScene3D
+      nodes={nodes3D}
+      links={links3D}
+      regions={regions3D}
+      onSelectNode={handleSelectNode}
+      onSelectLink={(id) => { setSelectedLinkId(id); setFocusedObject(undefined); }}
+      selectedLinkId={selectedLinkId}
+      floodCopies={inDeviceMode ? undefined : floodCopies3D}
+      onSelectFloodCopy={(id) => {
+        const idx = activeFlow?.hops.findIndex((h) => h.deviceId && id.endsWith(String(h.deviceId)));
+        if (idx !== undefined && idx >= 0) handleSelectHop(idx);
+      }}
+      focusPosition={focusPosition3D}
+      eyeOffset={eyeOffset3D}
+      mode={inDeviceMode ? "device" : "overview"}
+      deviceView={
+        inDeviceMode && deviceExplorerDevice
+          ? {
+              deviceLabel: deviceExplorerDevice,
+              interfaces: deviceInterfaces,
+              xray: deviceXray,
+              trace: deviceTraceForInterior,
+              packetFrames: devicePacketFramesRaw ? (deviceXray ? devicePacketFramesRaw.after : devicePacketFramesRaw.before) : undefined,
+              onSelectInterface: setSelectedInterfaceId,
+              selectedInterfaceId,
+              pipelineTitle: pipelineTitleFor(deviceExplorerDevice),
+              onFocusObject: (target) => setFocusedObject(target),
+              focusedObjectId: focusedObject?.id,
+            }
+          : undefined
+      }
+      onFocusLink={(target) => setFocusedObject(target)}
+    />
+  );
+
+  const cameraOptions: { value: CameraMode; label: string }[] = [{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "freeOrbit", label: "Free Orbit" }];
+
+  const investigateTools = (
+    <div className="space-y-4">
+      <InvestigationNotebook
+        session={session}
+        findingText={findingText}
+        onFindingTextChange={setFindingText}
+        onAddFinding={(kind) => { if (findingText.trim()) { engine.addFinding(findingText.trim(), kind); setFindingText(""); } }}
+        onSetHypothesis={engine.setHypothesis}
+        onRevealHint={engine.revealHint}
+        faultHints={session.scenario.faults[0]?.hints}
+      />
+      <Toolbox state={session.scenario.state} onRun={handleRunTest} />
+      <CliTerminal state={session.scenario.state} />
+      {session.mode === "investigate" && <Button onClick={engine.enterRepairMode} className="w-full">Enter Repair Mode →</Button>}
+      {session.mode === "repair" && <RepairPanel session={session} onApply={engine.applyRepair} onVerify={engine.verify} />}
+      <TestLog session={session} />
+    </div>
+  );
+
+  const focusInspector = (
+    <div className="space-y-3">
+      <TopologyModeSwitcher options={[{ value: "diagnose", label: "Diagnose" }, { value: "investigate", label: "Investigate" }]} value={focusPanelTab} onChange={setFocusPanelTab} tone="violet" />
+      {focusPanelTab === "investigate" ? (
+        investigateTools
+      ) : selectedLinkId && selectedLinkDetail ? (
+        <LinkDetailPanel detail={selectedLinkDetail} onClose={() => setSelectedLinkId(undefined)} />
+      ) : focusedObject ? (
+        (() => {
+          const { title, fields } = focusFieldsFor(focusedObject);
+          return <ObjectFocusPanel kind={focusedObject.kind} title={title} fields={fields} onBack={() => setFocusedObject(undefined)} onOverview={() => { setFocusedObject(undefined); handleExitDevice(); }} />;
+        })()
+      ) : inspectorSurface === "device" && deviceExplorerDevice ? (
+        <div className="space-y-2">
+          {hopAtEnteredDevice && <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} />}
+          <DeviceExplorerPanel
+            explanation={explanationFor(deviceExplorerDevice)}
+            tabs={buildDeviceExplorerTabs(deviceExplorerDevice, state3D, { selectedInterfaceId, onSelectInterface: setSelectedInterfaceId })}
+            xrayEnabled={deviceXray}
+            onToggleXray={() => setDeviceXray((v) => !v)}
+            onExit={handleExitDevice}
+            xrayOnLabel="Interior"
+          />
+        </div>
+      ) : currentHop && hopTrace ? (
+        <div className="space-y-3">
+          {deviceExplorerDevice && hopAtEnteredDevice && <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} />}
+          <HopInspectorPanel
+            trace={hopTrace}
+            deviceName={currentHop.deviceId ?? "(end host)"}
+            interfaces={hopDeviceInterfaces}
+            onFocusNextHop={activeFlow && hopIndex < activeFlow.hops.length - 1 ? () => handleSelectHop(hopIndex + 1) : undefined}
+          />
+          {hopPacketDiff && <PacketDiffViewer before={hopPacketDiff.before} after={hopPacketDiff.after} />}
+        </div>
+      ) : (
+        <GlassPanel className="p-4 text-xs text-pv-text-faint">Click a device to open its Device Explorer, click a link for link detail, or switch to the Investigate tab and run a Ping / Packet Trace to inspect a hop.</GlassPanel>
+      )}
+    </div>
+  );
+
+  const focusTimeline = (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {activeFlow ? (
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="secondary" onClick={() => handleSelectHop(hopIndex - 1)} disabled={hopIndex <= 0}>⏮ Prev Hop</Button>
+            <Button size="sm" variant="secondary" onClick={() => handleSelectHop(hopIndex + 1)} disabled={hopIndex >= activeFlow.hops.length - 1}>Next Hop ⏭</Button>
+          </div>
+        ) : (
+          <p className="text-[11px] text-pv-text-faint">Run a Ping or Packet Trace (Investigate tab) to populate Follow Packet.</p>
+        )}
+        {pastTraces.length > 1 && (
+          <select defaultValue="" onChange={(e) => e.target.value && handleSelectPastTrace(e.target.value)} className="rounded-lg border border-pv-border bg-transparent px-2 py-1 text-[11px] text-pv-text">
+            <option value="" className="bg-black">Inspect a past trace…</option>
+            {pastTraces.map((t) => (<option key={t.id} value={t.id} className="bg-black">{t.timeLabel} — {t.params.from ?? "?"} → {t.params.to ?? "?"}</option>))}
+          </select>
+        )}
+      </div>
+      {activeFlow && <HopTimeline hops={activeFlow.hops.map((h, i) => ({ id: String(i), label: h.label }))} currentIndex={hopIndex} onSelectHop={handleSelectHop} />}
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
       <div className="mb-4 flex items-center justify-between">
@@ -261,16 +532,35 @@ function IncidentView({ config, onExit }: { config: { seed?: string; difficulty:
 
       {session.instructorMode && <InstructorPanel faults={session.scenario.faults} />}
 
+      {focusModeOpen && (
+        <TopologyFocusMode
+          onClose={() => setFocusModeOpen(false)}
+          toolbar={<><span className="pv-mono text-[11px] uppercase tracking-wide text-pv-text-faint">EVPN Troubleshooting — Focus Mode</span><TopologyModeSwitcher options={cameraOptions} value={cameraMode} onChange={setCameraMode} /></>}
+          header={
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-pv-text-faint">
+              <span>{session.scenario.incident.site} — {session.mode === "repair" ? "Repair Mode" : "Investigation"}</span>
+              {activeFlow && <span className="pv-mono">{activeFlow.from} → {activeFlow.to}</span>}
+            </div>
+          }
+          canvas={sceneJsx}
+          inspector={focusInspector}
+          timeline={focusTimeline}
+        />
+      )}
+
       {!session.resolved ? (
         <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_420px]">
           <div className="space-y-6">
-            <GraphTopologyViewer
-              nodes={nodes.map((n) => ({ ...n, subLabel: subLabelFor(n.id, n.subLabel) }))}
-              edges={edges}
-              activeNodeIds={[]}
-              regions={[]}
-              onNodeClick={(id) => { setSelectedNodeId(id as ArenaDeviceId); setEnteredDevice(undefined); }}
-            />
+            <TopologyFrame questionActive={false} onExpand={() => setFocusModeOpen(true)}>
+              <GraphTopologyViewer
+                nodes={nodes.map((n) => ({ ...n, subLabel: subLabelFor(n.id, n.subLabel) }))}
+                edges={edges}
+                activeNodeIds={[]}
+                regions={[]}
+                onNodeClick={handleSelectNode}
+                onEdgeClick={(id) => { setSelectedLinkId(id); setFocusModeOpen(true); }}
+              />
+            </TopologyFrame>
             {selectedNodeId && !enteredDevice && (
               <GlassPanel strong className="p-5">
                 <div className="mb-2 flex items-center justify-between">
@@ -278,15 +568,15 @@ function IncidentView({ config, onExit }: { config: { seed?: string; difficulty:
                   <button type="button" onClick={() => setSelectedNodeId(undefined)} className="text-xs text-pv-text-faint hover:text-pv-text">✕</button>
                 </div>
                 {isLeafOrSpine(selectedNodeId) ? (
-                  <Button size="sm" onClick={() => { setEnteredDevice(selectedNodeId); engine.inspectDevice(selectedNodeId); }}>Open Device Explorer →</Button>
+                  <Button size="sm" onClick={() => handleEnterDevice(selectedNodeId)}>Open Device Explorer →</Button>
                 ) : (
                   <p className="text-xs text-pv-text-muted">End host — no configuration surface to inspect directly. Use the toolbox to test its reachability.</p>
                 )}
               </GlassPanel>
             )}
-            {enteredDevice && isLeafOrSpine(enteredDevice) && <DeviceExplorer device={enteredDevice} state={session.scenario.state} onExit={() => setEnteredDevice(undefined)} />}
+            {enteredDevice && isLeafOrSpine(enteredDevice) && <DeviceExplorer device={enteredDevice} state={session.scenario.state} onExit={handleExitDevice} />}
 
-            <Toolbox state={session.scenario.state} onRun={(testId, params, device) => engine.runTest(testId, params, device)} />
+            <Toolbox state={session.scenario.state} onRun={handleRunTest} />
             <CliTerminal state={session.scenario.state} />
             <PacketCaptureAndTrace state={session.scenario.state} />
 
@@ -310,7 +600,7 @@ function IncidentView({ config, onExit }: { config: { seed?: string; difficulty:
           </div>
         </div>
       ) : (
-        <PostIncidentReport session={session} score={score} xpAwarded={xpAwarded} onNewIncident={onExit} />
+        <PostIncidentReport session={session} score={score} xpAwarded={xpAwarded} stateBeforeFix={session.stateBeforeFix} onNewIncident={onExit} />
       )}
     </div>
   );
@@ -362,20 +652,54 @@ function InstructorPanel({ faults }: { faults: ReturnType<typeof useArenaEngine>
 // Device Explorer (brief: reuse Device Explorer)
 // ---------------------------------------------------------------------------
 
-function DeviceExplorer({ device, state, onExit }: { device: "SPINE1" | "LEAF1" | "LEAF2" | "LEAF3"; state: ReturnType<typeof useArenaEngine>["session"]["scenario"]["state"]; onExit: () => void }) {
-  const [tab, setTab] = useState("overview");
+type ArenaExplorerDevice = "SPINE1" | "LEAF1" | "LEAF2" | "LEAF3";
+
+/**
+ * Single source of truth for Device Explorer tab content — shared verbatim
+ * between the legacy inline panel below and Focus Mode's <DeviceExplorerPanel>
+ * (brief §10/§33: reuse, never a second competing implementation).
+ */
+function buildDeviceExplorerTabs(device: ArenaExplorerDevice, state: ArenaState, ifaceSel: { selectedInterfaceId?: string; onSelectInterface: (id: string) => void }): DeviceExplorerTab[] {
   const ifaces = interfacesFor(state, device);
-  const tabs = device === "SPINE1"
-    ? [{ id: "overview", label: "Overview" }, { id: "interfaces", label: "Interfaces" }]
-    : [
-        { id: "overview", label: "Overview" },
-        { id: "interfaces", label: "Interfaces" },
-        { id: "evpn-routes", label: "EVPN Routes" },
-        { id: "vrf", label: "VRF / IRB" },
-        ...(state.es.leafs.includes(device) ? [{ id: "es", label: "Ethernet Segment" }] : []),
-        ...(device === "LEAF1" || device === "LEAF2" ? [{ id: "vpws", label: "VPWS Services" }] : []),
-        ...(device === "LEAF1" ? [{ id: "suppression", label: "Suppression" }] : []),
-      ];
+  const tabs: DeviceExplorerTab[] = [
+    {
+      id: "overview",
+      label: "Overview",
+      content: (
+        <div className="space-y-1 pv-mono text-[11px]">
+          <p className="text-pv-text-faint">Device status: <span className="text-pv-text">up</span></p>
+          <p className="text-pv-text-faint">BGP EVPN: <span className="text-pv-text">{device === "SPINE1" ? "n/a (underlay only)" : state.bgpEvpnUp[device] ? "Established" : "Down"}</span></p>
+          <p className="text-pv-text-faint">Type-2 routes visible: <span className="text-pv-text">{state.type2Routes.length}</span></p>
+        </div>
+      ),
+    },
+    { id: "interfaces", label: "Interfaces", content: <InterfaceListTab interfaces={ifaces} selectedInterfaceId={ifaceSel.selectedInterfaceId} onSelectInterface={ifaceSel.onSelectInterface} /> },
+  ];
+  if (device !== "SPINE1") {
+    tabs.push({ id: "evpn-routes", label: "EVPN Routes", content: <EvpnRibViewer title={device} rows={evpnRibRowsFor(state, device)} /> });
+    tabs.push({ id: "vrf", label: "VRF / IRB", content: <KeyValueList rows={vrfTabRowsFor(state, device)} /> });
+    if (state.es.leafs.includes(device)) tabs.push({ id: "es", label: "Ethernet Segment", content: <KeyValueList rows={esTabRowsFor(state, device)} /> });
+    if (device === "LEAF1" || device === "LEAF2") tabs.push({ id: "vpws", label: "VPWS Services", content: <ServiceInstanceViewer title={`VPWS-${state.vpws.serviceId}`} status={state.vpws.status} fields={vpwsTabRowsFor(state, device)} /> });
+    if (device === "LEAF1") tabs.push({ id: "suppression", label: "Suppression", content: <KeyValueList rows={suppressionTabRowsFor(state, device)} /> });
+  }
+  return tabs;
+}
+
+function explanationFor(device: ArenaExplorerDevice): NodeExplanation {
+  return {
+    id: device,
+    name: device,
+    deviceType: device === "SPINE1" ? "Underlay Spine" : "VTEP Leaf Switch",
+    role: device === "SPINE1" ? "SPINE" : "LEAF",
+    currentAction: device === "SPINE1" ? "Underlay IP forwarding / BUM replication" : "VXLAN VTEP — bridging + EVPN control plane",
+  };
+}
+
+function DeviceExplorer({ device, state, onExit }: { device: ArenaExplorerDevice; state: ArenaState; onExit: () => void }) {
+  const [tab, setTab] = useState("overview");
+  const [selectedInterfaceId, setSelectedInterfaceId] = useState<string | undefined>(undefined);
+  const tabs = buildDeviceExplorerTabs(device, state, { selectedInterfaceId, onSelectInterface: setSelectedInterfaceId });
+  const active = tabs.find((t) => t.id === tab) ?? tabs[0];
 
   return (
     <GlassPanel strong className="space-y-4 p-5">
@@ -385,33 +709,10 @@ function DeviceExplorer({ device, state, onExit }: { device: "SPINE1" | "LEAF1" 
       </div>
       <div className="flex flex-wrap gap-1 rounded-full border border-pv-border p-0.5 w-fit">
         {tabs.map((t) => (
-          <button key={t.id} type="button" onClick={() => setTab(t.id)} className={clsx("rounded-full px-2.5 py-1 text-[11px] font-semibold transition-colors", tab === t.id ? "bg-pv-cyan/15 text-pv-cyan-soft" : "text-pv-text-faint hover:text-pv-text")}>{t.label}</button>
+          <button key={t.id} type="button" onClick={() => setTab(t.id)} className={clsx("rounded-full px-2.5 py-1 text-[11px] font-semibold transition-colors", (tab || tabs[0]?.id) === t.id ? "bg-pv-cyan/15 text-pv-cyan-soft" : "text-pv-text-faint hover:text-pv-text")}>{t.label}</button>
         ))}
       </div>
-      <div>
-        {tab === "overview" && (
-          <div className="space-y-1 pv-mono text-[11px]">
-            <p className="text-pv-text-faint">Device status: <span className="text-pv-text">up</span></p>
-            <p className="text-pv-text-faint">BGP EVPN: <span className="text-pv-text">{device === "SPINE1" ? "n/a (underlay only)" : state.bgpEvpnUp[device] ? "Established" : "Down"}</span></p>
-            <p className="text-pv-text-faint">Type-2 routes visible: <span className="text-pv-text">{state.type2Routes.length}</span></p>
-          </div>
-        )}
-        {tab === "interfaces" && (
-          <div className="space-y-1.5">
-            {ifaces.map((i) => (
-              <div key={i.id} className="flex items-center justify-between rounded-lg border border-pv-border px-3 py-1.5 pv-mono text-[11px]">
-                <span className={i.status === "down" ? "text-pv-danger" : "text-pv-text"}>{i.name} → {i.neighborLabel}</span>
-                <span className={i.status === "down" ? "text-pv-danger" : "text-pv-success"}>{i.status.toUpperCase()}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {tab === "evpn-routes" && <EvpnRibViewer title={device} rows={evpnRibRowsFor(state, device)} />}
-        {tab === "vrf" && isLeaf(device) && <KeyValueList rows={vrfTabRowsFor(state, device)} />}
-        {tab === "es" && isLeaf(device) && <KeyValueList rows={esTabRowsFor(state, device)} />}
-        {tab === "vpws" && <ServiceInstanceViewer title={`VPWS-${state.vpws.serviceId}`} status={state.vpws.status} fields={vpwsTabRowsFor(state, device)} />}
-        {tab === "suppression" && isLeaf(device) && <KeyValueList rows={suppressionTabRowsFor(state, device)} />}
-      </div>
+      <div>{active?.content}</div>
     </GlassPanel>
   );
 }
@@ -822,11 +1123,13 @@ function PostIncidentReport({
   session,
   score,
   xpAwarded,
+  stateBeforeFix,
   onNewIncident,
 }: {
   session: ReturnType<typeof useArenaEngine>["session"];
   score?: ScoreBreakdown;
   xpAwarded: number | null;
+  stateBeforeFix?: ArenaState;
   onNewIncident: () => void;
 }) {
   const [replayIndex, setReplayIndex] = useState(session.timeline.length - 1);
@@ -834,6 +1137,18 @@ function PostIncidentReport({
   const idealPath = session.scenario.faults[0]?.evidenceSummary ?? [];
   const yourPath = session.testLog.map((t) => t.result.title);
   const finalLayers: DiagnosticLayer[] = ["Layer 1", "Underlay", "Control Plane", "Overlay", "Service", "Forwarding"].map((label) => ({ label, status: "healthy" as const }));
+  // Broken vs. Repaired (brief §13/§37) — two genuinely distinct, frozen
+  // ArenaState snapshots (the instant before the first correct repair, and
+  // the current/live state), re-read through the SAME verificationTest each
+  // fault already declares — never a recomputation that could show the
+  // "before" side as already healed.
+  const comparisons = stateBeforeFix
+    ? session.scenario.faults.map((f) => ({
+        fault: f,
+        before: runTest(stateBeforeFix, f.verificationTest.testId as TestId, f.verificationTest.params),
+        after: runTest(session.scenario.state, f.verificationTest.testId as TestId, f.verificationTest.params),
+      }))
+    : [];
 
   return (
     <div className="mt-6 space-y-6">
@@ -888,6 +1203,24 @@ function PostIncidentReport({
           <ul className="space-y-1 pv-mono text-[11px] text-pv-text-muted">{yourPath.length ? yourPath.map((p, i) => (<li key={i}>• {p}</li>)) : <li>No tests were run.</li>}</ul>
         </div>
       </GlassPanel>
+
+      {comparisons.length > 0 && (
+        <GlassPanel className="space-y-4 p-6">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-pv-cyan-soft">Broken vs. Repaired — {comparisons[0].fault.verificationTest.description}</h4>
+          {comparisons.map(({ fault, before, after }) => (
+            <div key={fault.id} className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-pv-danger/30 bg-pv-danger/5 p-3">
+                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-pv-danger">Before Repair</p>
+                <div className="space-y-0.5 pv-mono text-[11px] text-pv-text-muted">{before.lines.map((l, i) => (<p key={i}>{l}</p>))}</div>
+              </div>
+              <div className="rounded-lg border border-pv-success/30 bg-pv-success/5 p-3">
+                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-pv-success">After Repair</p>
+                <div className="space-y-0.5 pv-mono text-[11px] text-pv-text-muted">{after.lines.map((l, i) => (<p key={i}>{l}</p>))}</div>
+              </div>
+            </div>
+          ))}
+        </GlassPanel>
+      )}
 
       <GlassPanel className="space-y-3 p-6">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-pv-cyan-soft">Replay Investigation</h4>
