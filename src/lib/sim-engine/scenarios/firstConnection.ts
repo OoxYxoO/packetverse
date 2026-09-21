@@ -1,4 +1,4 @@
-import type { NetNode, PacketVisual, ScenarioStep } from "../types";
+import type { DeviceKind, NetNode, PacketVisual, ScenarioStep } from "../types";
 
 /**
  * THE FLAGSHIP DEMO (project brief §45/46)
@@ -58,6 +58,48 @@ export function createFirstConnectionState(): FirstConnectionState {
     tcp: { state: "CLOSED" },
     deliveredToServer: false,
   };
+}
+
+export type FirstConnectionDeviceId = "laptop" | "switch" | "router" | "server";
+
+/** Linear physical chain, left to right — the same order the original `track` values implied. */
+export const DEVICE_ORDER: FirstConnectionDeviceId[] = ["laptop", "switch", "router", "server"];
+
+interface GNode {
+  id: FirstConnectionDeviceId;
+  label: string;
+  x: number;
+  y: number;
+  subLabel?: string;
+  kind: DeviceKind;
+}
+interface GLink {
+  id: string;
+  a: FirstConnectionDeviceId;
+  b: FirstConnectionDeviceId;
+  label?: string;
+}
+
+/** Percent-space {x,y} layout for `layoutTo3D` — one straight LAN→WAN chain, no branching. */
+export const GRAPH_NODES: GNode[] = [
+  { id: "laptop", label: "Laptop", x: 8, y: 50, subLabel: ADDR.laptop.ip, kind: "laptop" },
+  { id: "switch", label: "Access Switch", x: 37, y: 50, kind: "switch" },
+  { id: "router", label: "Router", x: 63, y: 50, subLabel: ADDR.gateway.ip, kind: "router" },
+  { id: "server", label: "Server", x: 92, y: 50, subLabel: ADDR.server.ip, kind: "server" },
+];
+export const GRAPH_LINKS: GLink[] = [
+  { id: "laptop-switch", a: "laptop", b: "switch", label: "LAN Access" },
+  { id: "switch-router", a: "switch", b: "router", label: "LAN Access" },
+  { id: "router-server", a: "router", b: "server", label: "Server Segment" },
+];
+
+/** Every physical link id the path from `from` to `to` actually traverses (linear topology → a contiguous slice of GRAPH_LINKS). */
+export function linksOnPath(from: string, to: string): string[] {
+  const i = DEVICE_ORDER.indexOf(from as FirstConnectionDeviceId);
+  const j = DEVICE_ORDER.indexOf(to as FirstConnectionDeviceId);
+  if (i === -1 || j === -1) return [];
+  const [lo, hi] = i < j ? [i, j] : [j, i];
+  return GRAPH_LINKS.slice(lo, hi).map((l) => l.id);
 }
 
 const eth = (src: string, dst: string) => ({

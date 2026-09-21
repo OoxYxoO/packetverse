@@ -2,7 +2,19 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import type { PacketVisual } from "@/lib/sim-engine/types";
-import { PROTOCOL_META } from "./AnimatedPacket";
+
+export const PROTOCOL_META: Record<PacketVisual["protocol"], { glyph: string; color: string }> = {
+  ARP: { glyph: "ARP", color: "var(--pv-proto-arp)" },
+  ETHERNET: { glyph: "ETH", color: "var(--pv-proto-ethernet)" },
+  IP: { glyph: "IP", color: "var(--pv-proto-ip)" },
+  IPV6: { glyph: "IPv6", color: "var(--pv-proto-ipv6)" },
+  TCP: { glyph: "TCP", color: "var(--pv-proto-tcp)" },
+  HTTPS: { glyph: "TLS", color: "var(--pv-proto-udp)" },
+  OSPF: { glyph: "OSPF", color: "var(--pv-proto-ospf)" },
+  BGP: { glyph: "BGP", color: "var(--pv-proto-bgp)" },
+  MPLS: { glyph: "MPLS", color: "var(--pv-proto-mpls)" },
+  VXLAN: { glyph: "VXLAN", color: "var(--pv-proto-vxlan)" },
+};
 
 interface GraphPacketProps {
   packet: PacketVisual;
