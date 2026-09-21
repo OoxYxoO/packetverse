@@ -652,7 +652,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     id: "pe1-push-pw",
     label: "PE1: Push PW Label",
     narrative: `PW state is UP. PE1 pushes the label PE2 advertised (${allocatePwReceiveLabel("PE2")}) — this is the inner label, identifying the service at PE2.`,
-    packet: (state) => (state.packet ? vpwsPacket("push-pw", "PE1", "PE1", "PUSH PW label", "PUSH", pushLabel(state.packet, allocatePwReceiveLabel("PE2"), "service")) : undefined),
+    packet: (state) => (state.packet ? vpwsPacket("push-pw", "PE1", "PE1", "PUSH PW label", "PUSH", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const packet = pushLabel(state.packet, allocatePwReceiveLabel("PE2"), "service");
@@ -664,7 +664,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     id: "pe1-push-transport",
     label: "PE1: Push Transport Label",
     narrative: `PE1 resolves the transport LSP to PE2 and pushes the outer transport label (${transportLabelFor("P1")}) — the label that actually gets this packet across the core.`,
-    packet: (state) => (state.packet ? vpwsPacket("push-t", "PE1", "P1", "PUSH transport label", "PUSH", pushLabel(state.packet, transportLabelFor("P1") as number, "transport")) : undefined),
+    packet: (state) => (state.packet ? vpwsPacket("push-t", "PE1", "P1", "PUSH transport label", "PUSH", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const packet = pushLabel(state.packet, transportLabelFor("P1") as number, "transport");
@@ -681,7 +681,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     id: "p1-transport-forward",
     label: "P1: Transport Forward",
     narrative: `MPLS packet arrives at P1. Top-label lookup → transport forwarding → swap outer label to ${transportLabelFor("P2")}. The inner PW label is never inspected — it passes through untouched.`,
-    packet: (state) => (state.packet ? vpwsPacket("p1-swap", "P1", "P2", "SWAP transport label", "SWAP", processCoreTransportLabel(state.packet, transportLabelFor("P2"))) : undefined),
+    packet: (state) => (state.packet ? vpwsPacket("p1-swap", "P1", "P2", "SWAP transport label", "SWAP", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const packet = processCoreTransportLabel(state.packet, transportLabelFor("P2"));
@@ -693,7 +693,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     id: "p2-transport-forward-php",
     label: "P2: Transport Forward (PHP)",
     narrative: "P2 is the penultimate hop — PE2 signaled implicit-null, so P2 pops the transport label entirely (PHP) rather than swapping it. Only the PW label remains for PE2.",
-    packet: (state) => (state.packet ? vpwsPacket("p2-pop", "P2", "PE2", "POP transport label (PHP)", "POP", processCoreTransportLabel(state.packet, "IMPLICIT_NULL")) : undefined),
+    packet: (state) => (state.packet ? vpwsPacket("p2-pop", "P2", "PE2", "POP transport label (PHP)", "POP", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const packet = processCoreTransportLabel(state.packet, "IMPLICIT_NULL");
@@ -767,7 +767,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     id: "pe2-push-reverse",
     label: "PE2: Push PW + Transport (Reverse)",
     narrative: `PE2 pushes the label PE1 advertised (${allocatePwReceiveLabel("PE1")}) — NOT PE2's own local receive label (${allocatePwReceiveLabel("PE2")}) — then pushes the transport label toward PE1.`,
-    packet: (state) => (state.packet ? vpwsPacket("push-rev", "PE2", "P2", "PUSH PW + transport", "PUSH", pushLabel(pushLabel(state.packet, allocatePwReceiveLabel("PE1"), "service"), 100, "transport")) : undefined),
+    packet: (state) => (state.packet ? vpwsPacket("push-rev", "PE2", "P2", "PUSH PW + transport", "PUSH", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const withPw = pushLabel(state.packet, allocatePwReceiveLabel("PE1"), "service");
@@ -780,7 +780,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     id: "core-reverse-forward",
     label: "P2 → P1: Transport Forward (Reverse)",
     narrative: "The core forwards using only the outer transport label, exactly as before — direction doesn't change what P routers need to know.",
-    packet: (state) => (state.packet ? vpwsPacket("p2-p1-rev", "P2", "P1", "SWAP transport label", "SWAP", swapTopLabel(state.packet, 10)) : undefined),
+    packet: (state) => (state.packet ? vpwsPacket("p2-p1-rev", "P2", "P1", "SWAP transport label", "SWAP", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const packet = swapTopLabel(state.packet, 10);
@@ -792,7 +792,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     id: "core-reverse-php",
     label: "P1 → PE1: PHP (Reverse)",
     narrative: "P1 is the penultimate hop toward PE1 — pops the transport label (PHP), leaving only the PW label for PE1.",
-    packet: (state) => (state.packet ? vpwsPacket("p1-pe1-rev", "P1", "PE1", "POP transport label (PHP)", "POP", popTopLabel(state.packet)) : undefined),
+    packet: (state) => (state.packet ? vpwsPacket("p1-pe1-rev", "P1", "PE1", "POP transport label (PHP)", "POP", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const packet = popTopLabel(state.packet);
@@ -945,7 +945,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     id: "verify-push",
     label: "PE1: Push Two Labels (Verification)",
     narrative: "PE1 imposes the PW label and transport label exactly as before.",
-    packet: (state) => (state.packet ? vpwsPacket("verify-push", "PE1", "P1", "PUSH PW + transport", "PUSH", pushLabel(pushLabel(state.packet, allocatePwReceiveLabel("PE2"), "service"), transportLabelFor("P1") as number, "transport")) : undefined),
+    packet: (state) => (state.packet ? vpwsPacket("verify-push", "PE1", "P1", "PUSH PW + transport", "PUSH", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const withPw = pushLabel(state.packet, allocatePwReceiveLabel("PE2"), "service");
@@ -958,7 +958,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     id: "verify-core",
     label: "P1 → P2 → PE2: Transport Forward (Verification)",
     narrative: "The core forwards using only the outer label, PHP at P2, exactly as before.",
-    packet: (state) => (state.packet ? vpwsPacket("verify-core", "P1", "PE2", "Transport forward + PHP", "SWAP/POP", processCoreTransportLabel(processCoreTransportLabel(state.packet, transportLabelFor("P2")), "IMPLICIT_NULL")) : undefined),
+    packet: (state) => (state.packet ? vpwsPacket("verify-core", "P1", "PE2", "Transport forward + PHP", "SWAP/POP", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const afterP1 = processCoreTransportLabel(state.packet, transportLabelFor("P2"));

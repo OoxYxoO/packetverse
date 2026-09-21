@@ -21,7 +21,7 @@ export function LabelFlowView({ nodes }: { nodes: LabelFlowNode[] }) {
     <GlassPanel className="overflow-x-auto p-6">
       <div className="flex min-w-max items-center gap-1">
         {nodes.map((n, i) => (
-          <div key={n.router} className="flex items-center gap-1">
+          <div key={i} className="flex items-center gap-1">
             <div className="flex flex-col items-center gap-2">
               <span className="pv-mono text-xs font-semibold text-pv-text">{n.router}</span>
               <span
