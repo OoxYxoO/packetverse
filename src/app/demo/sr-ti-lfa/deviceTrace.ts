@@ -1,10 +1,22 @@
 import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
-import { BASE_LINKS, GRAPH_EDGES, type LinkDef, type RouterId, type SrTiLfaState } from "@/lib/sim-engine/scenarios/srTiLfa";
+import type { PacketVisual } from "@/lib/sim-engine/types";
+import { ALL_ROUTERS, BASE_LINKS, GRAPH_EDGES, type JourneyHop, type LinkDef, type RouterId, type SrTiLfaState } from "@/lib/sim-engine/scenarios/srTiLfa";
 
 /**
  * Scene Adapter for the SR-MPLS TI-LFA lesson's device-interior 3D
  * view. Every stage list and interface/link value below is derived
  * FROM SrTiLfaState — this file makes no TI-LFA computation itself.
+ *
+ * Like RSVP-TE FRR and SR Policy, this lesson has no separate control-
+ * plane packet phase — every inspectable hop already lives in the
+ * single, immutable `state.journey`, and `traceFor` takes no step id.
+ * The additive Hop Inspector fields (lookupType/lookupKey/lookupResult/
+ * nextHopId/reason — "Hop Inspection Contract") are populated straight
+ * off each `JourneyHop`; structured before/after packet-stack frames
+ * are deliberately left unpopulated (falling back to the existing
+ * plain-text packetBefore/packetAfter), matching FRR/sr-policy's
+ * precedent, since this domain's hop text doesn't reliably carry a
+ * single parseable label value either.
  */
 
 const HEADEND_PIPELINE: ProcessingStage[] = [
@@ -46,10 +58,55 @@ const DESTINATION_PIPELINE: ProcessingStage[] = [
   { id: "deliver", label: "Deliver" },
 ];
 
+const LOOKUP_TYPE_BY_ACTION: Record<string, string> = {
+  PUSH: "SR Forwarding State",
+  FORWARD: "Active SID Lookup — Node SID",
+  DELIVER: "IP Delivery",
+  PUSH_REPAIR: "TI-LFA Backup Lookup",
+  PUSH_REPAIR_STALE: "TI-LFA Backup Lookup (Stale)",
+  POP_REPAIR: "Active SID Lookup — Repair Segment Target",
+};
+
 const allIds = (s: ProcessingStage[]) => s.map((x) => x.id);
 
 function neighborLinks(router: RouterId, links: LinkDef[]): { neighbor: RouterId; link: LinkDef }[] {
   return links.filter((l) => l.a === router || l.b === router).map((l) => ({ neighbor: l.a === router ? l.b : l.a, link: l }));
+}
+
+/** Next/previous router along the ACTUAL recorded journey (brief: reuse real state, never recompute a path) — mirrors mpls-rsvp-frr's/sr-policy's `nextHopFor`/`prevRouterFor`. Needed because R2 (the PLR) has THREE neighbors — R1, R4 (primary), R3 (repair) — so a fixed neighbor-declaration-order guess is only reliably correct for one of the two exercised paths and silently wrong for the other. */
+function nextHopFor(hop: JourneyHop, state: SrTiLfaState): { id?: RouterId; label?: string } {
+  if (hop.action === "DELIVER") return {};
+  const idx = state.journey.indexOf(hop);
+  const isLast = idx === state.journey.length - 1;
+  const nextRouter = !isLast ? state.journey[idx + 1]?.router : state.packetAt;
+  if (!nextRouter || nextRouter === hop.router) return {};
+  return { id: nextRouter, label: nextRouter };
+}
+/** Walks backward past any of the router's OWN earlier entries (the `verify-deliver` step pushes R3's Node-SID-target POP_REPAIR immediately followed by its own ordinary FORWARD hop in one batch) to find the true previous, DIFFERENT router — a naive `journey[idx-1]` would otherwise report the router as its own predecessor. */
+function prevRouterFor(hop: JourneyHop, state: SrTiLfaState): RouterId | undefined {
+  const idx = state.journey.indexOf(hop);
+  for (let i = idx - 1; i >= 0; i--) {
+    if (state.journey[i].router !== hop.router) return state.journey[i].router;
+  }
+  return undefined;
+}
+
+/** Additive Hop Inspector fields derived straight off a real `JourneyHop` — never fabricated per-field text beyond what the step's own `run()` already recorded. Also overrides the base trace's generic ingress/egress interface ids (computed from `neighborLinks`' fixed declaration order) with the interface the packet actually used. */
+function enrichFromHop(hop: JourneyHop, state: SrTiLfaState): Partial<DeviceProcessingTrace> {
+  const nextHop = nextHopFor(hop, state);
+  const prevRouter = prevRouterFor(hop, state);
+  return {
+    ingressInterfaceId: prevRouter ? `${hop.router}-${prevRouter}` : undefined,
+    egressInterfaceId: nextHop.id ? `${hop.router}-${nextHop.id}` : undefined,
+    lookupType: LOOKUP_TYPE_BY_ACTION[hop.action],
+    lookupKey: hop.input,
+    lookupResult: `${hop.action} → ${hop.output}`,
+    reason: hop.lookup,
+    nextHopId: nextHop.id,
+    nextHopLabel: nextHop.label,
+    packetBefore: hop.input,
+    packetAfter: hop.output,
+  };
 }
 
 export function traceFor(router: RouterId, state: SrTiLfaState): DeviceProcessingTrace | undefined {
@@ -63,8 +120,9 @@ export function traceFor(router: RouterId, state: SrTiLfaState): DeviceProcessin
   if (router === "R1") {
     const base: DeviceProcessingTrace = { deviceId: router, egressInterfaceId: egressIfaceId, stages: HEADEND_PIPELINE, completedStageIds: [] };
     if (!hop) return base;
-    if (isCurrent) return { ...base, activeStageId: "forward", completedStageIds: ["arrive", "impose"], packetBefore: hop.input, packetAfter: hop.output };
-    return { ...base, completedStageIds: allIds(HEADEND_PIPELINE), packetBefore: hop.input, packetAfter: hop.output };
+    const enrich = enrichFromHop(hop, state);
+    if (isCurrent) return { ...base, activeStageId: "forward", completedStageIds: ["arrive", "impose"], ...enrich };
+    return { ...base, completedStageIds: allIds(HEADEND_PIPELINE), ...enrich };
   }
 
   if (router === "R2") {
@@ -72,23 +130,24 @@ export function traceFor(router: RouterId, state: SrTiLfaState): DeviceProcessin
     const stages = isRepair ? PLR_REPAIR_PIPELINE : PLR_NORMAL_PIPELINE;
     const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, egressInterfaceId: egressIfaceId, stages, completedStageIds: [] };
     if (!hop) return base;
+    const enrich = enrichFromHop(hop, state);
     if (isCurrent) {
       return {
         ...base,
         activeStageId: isRepair ? "push-repair" : "forward",
         completedStageIds: isRepair ? ["ingress", "primary-lookup", "resource-down", "backup-lookup", "ready-check", "obtain-list"] : ["ingress", "primary-lookup"],
-        packetBefore: hop.input,
-        packetAfter: hop.output,
+        ...enrich,
       };
     }
-    return { ...base, completedStageIds: allIds(stages), packetBefore: hop.input, packetAfter: hop.output };
+    return { ...base, completedStageIds: allIds(stages), ...enrich };
   }
 
   if (router === "R6") {
     const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, stages: DESTINATION_PIPELINE, completedStageIds: [] };
     if (!hop) return base;
-    if (isCurrent) return { ...base, activeStageId: hop.action === "DELIVER" ? "deliver" : "target-check", completedStageIds: ["label-lookup"], packetBefore: hop.input, packetAfter: hop.output };
-    return { ...base, completedStageIds: allIds(DESTINATION_PIPELINE), packetBefore: hop.input, packetAfter: hop.output };
+    const enrich = enrichFromHop(hop, state);
+    if (isCurrent) return { ...base, activeStageId: hop.action === "DELIVER" ? "deliver" : "target-check", completedStageIds: ["label-lookup"], ...enrich };
+    return { ...base, completedStageIds: allIds(DESTINATION_PIPELINE), ...enrich };
   }
 
   // R3, R4, R5 — ordinary transit, except whichever one is currently
@@ -97,16 +156,30 @@ export function traceFor(router: RouterId, state: SrTiLfaState): DeviceProcessin
   const stages = isRepairEndpoint ? REPAIR_ENDPOINT_PIPELINE : TRANSIT_PIPELINE;
   const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, egressInterfaceId: egressIfaceId, stages, completedStageIds: [] };
   if (!hop) return base;
+  const enrich = enrichFromHop(hop, state);
   if (isCurrent) {
     return {
       ...base,
       activeStageId: isRepairEndpoint ? "expose-original" : "forward",
       completedStageIds: isRepairEndpoint ? ["label-lookup", "target-check", "pop-repair"] : ["ingress", "label-lookup", "spf-nexthop"],
-      packetBefore: hop.input,
-      packetAfter: hop.output,
+      ...enrich,
     };
   }
-  return { ...base, completedStageIds: allIds(stages), packetBefore: hop.input, packetAfter: hop.output };
+  return { ...base, completedStageIds: allIds(stages), ...enrich };
+}
+
+/** Which router is the primary inspection subject of a given historical step — the router `traceFor` currently shows as actively mid-stage, falling back to the packet's endpoints (mirrors mpls-rsvp-frr's/sr-policy's `deviceForStep`). `traceFor` here takes no step id, so this needs no step id either. */
+export function deviceForStep(state: SrTiLfaState, packet: PacketVisual | undefined): RouterId | undefined {
+  const active = ALL_ROUTERS.find((r) => traceFor(r, state)?.activeStageId !== undefined);
+  if (active) return active;
+  if (packet) {
+    const to = packet.to as RouterId;
+    if (ALL_ROUTERS.includes(to) && traceFor(to, state)) return to;
+    const from = packet.from as RouterId;
+    if (ALL_ROUTERS.includes(from) && traceFor(from, state)) return from;
+    if (ALL_ROUTERS.includes(to)) return to;
+  }
+  return undefined;
 }
 
 export function packetFramesFor(state: SrTiLfaState): PacketStackFrame[] | undefined {
