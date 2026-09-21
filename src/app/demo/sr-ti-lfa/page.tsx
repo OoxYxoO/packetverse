@@ -1077,6 +1077,15 @@ export default function SrTiLfaDemo() {
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
                 <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
               </>
+            ) : currentStep?.id === "repair-challenge" ? (
+              // Same priority as a question — this step gates advancement via
+              // `requiresState`, not `.question`, but the learner still needs
+              // this interactive challenge surfaced here or they're stuck in
+              // Focus Mode with Next Hop disabled and no way to satisfy it.
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
+                <RepairChallenge options={REPAIR_OPTIONS} attempt={state.troubleshooting.repairAttempt} onTry={(choice) => engine.act({ choice })} />
+              </>
             ) : selectedLinkDetail ? (
               <LinkDetailPanel
                 detail={selectedLinkDetail}
