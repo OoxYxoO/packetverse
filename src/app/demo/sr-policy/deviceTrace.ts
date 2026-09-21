@@ -1,11 +1,26 @@
 import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
-import { GRAPH_EDGES, LINKS, activeCandidateEvaluation, fmtLabel, type RouterId, type SrPolicyState } from "@/lib/sim-engine/scenarios/srPolicy";
+import type { PacketVisual } from "@/lib/sim-engine/types";
+import { GRAPH_EDGES, LINKS, activeCandidateEvaluation, fmtLabel, type FwdAction, type JourneyHop, type RouterId, type SrPolicyState } from "@/lib/sim-engine/scenarios/srPolicy";
 
 /**
  * Scene Adapter for SR Policy's device-interior 3D view. Every stage
  * list and interface/link value below is derived FROM SrPolicyState —
  * this file makes no policy/candidate/steering decision itself.
+ *
+ * Like RSVP-TE FRR, this lesson has no separate control-plane packet
+ * phase — every inspectable hop already lives in the single, immutable
+ * `state.journey`, and `traceFor` takes no step id (the domain has no
+ * step-phase gating). The additive Hop Inspector fields (lookupType/
+ * lookupKey/lookupResult/nextHopId/reason — "Hop Inspection Contract")
+ * are populated straight off each `JourneyHop`; structured before/after
+ * packet-stack frames are deliberately left unpopulated (falling back
+ * to the existing plain-text packetBefore/packetAfter) because this
+ * domain's hop text ("policy-resolved", "GOLD-EXPLICIT selected",
+ * multi-segment strings joined by " / ") does not reliably carry a
+ * single parseable label value.
  */
+
+export const ALL_ROUTERS: RouterId[] = ["R1", "R2", "R3", "R4", "R5", "R6"];
 
 const HEADEND_PIPELINE: ProcessingStage[] = [
   { id: "arrive", label: "Packet Arrives" },
@@ -44,10 +59,56 @@ const UNAVAILABLE_PIPELINE: ProcessingStage[] = [
   { id: "fail", label: "Steering Fails — No IGP Fallback (Strict)" },
 ];
 
+const LOOKUP_TYPE_BY_ACTION: Partial<Record<FwdAction, string>> = {
+  PUSH: "SR-TE Forwarding State",
+  CONTINUE: "Active SID Lookup — Node SID",
+  POP: "Active SID Lookup — Segment Target",
+  POP_AND_FORWARD_ADJ: "Active SID Lookup — Adjacency SID",
+  IP_FORWARD: "IP Delivery",
+  POLICY_SELECT: "SR Policy Steering / Resolution",
+  POLICY_UNAVAILABLE: "SR Policy Steering — No Valid Candidate",
+};
+
 const allIds = (s: ProcessingStage[]) => s.map((x) => x.id);
 
 function neighborLinks(router: RouterId): { neighbor: RouterId; link: (typeof LINKS)[number] }[] {
   return LINKS.filter((l) => l.a === router || l.b === router).map((l) => ({ neighbor: l.a === router ? l.b : l.a, link: l }));
+}
+
+/** Next/previous router along the ACTUAL recorded journey (brief: reuse real state, never recompute a path) — mirrors mpls-rsvp-frr's `nextHopFor`/`prevRouterFor`. Needed because R1 and R3 each have more than two neighbors here (R1: R2 baseline vs. R3 GOLD; R3: R1/R5/R4), so a fixed neighbor-declaration-order guess is only reliably correct for one of the exercised paths and silently wrong for the other. */
+function nextHopFor(hop: JourneyHop, state: SrPolicyState): { id?: RouterId; label?: string } {
+  if (hop.action === "IP_FORWARD" || hop.action === "POLICY_UNAVAILABLE") return {};
+  const idx = state.journey.indexOf(hop);
+  const isLast = idx === state.journey.length - 1;
+  const nextRouter = !isLast ? state.journey[idx + 1]?.router : state.packetAt;
+  if (!nextRouter || nextRouter === hop.router) return {};
+  return { id: nextRouter, label: nextRouter };
+}
+/** Walks backward past any of the router's OWN earlier entries (several steps here push more than one hop for the same router in a single batch — e.g. R3's Node-SID POP immediately followed by its own Adj-SID POP_AND_FORWARD_ADJ, or R6's final-segment POP immediately followed by its own IP_FORWARD delivery) to find the true previous, DIFFERENT router — a naive `journey[idx-1]` would otherwise report the router as its own predecessor. */
+function prevRouterFor(hop: JourneyHop, state: SrPolicyState): RouterId | undefined {
+  const idx = state.journey.indexOf(hop);
+  for (let i = idx - 1; i >= 0; i--) {
+    if (state.journey[i].router !== hop.router) return state.journey[i].router;
+  }
+  return undefined;
+}
+
+/** Additive Hop Inspector fields derived straight off a real `JourneyHop` — never fabricated per-field text beyond what the step's own `run()` already recorded. Also overrides the base trace's generic ingress/egress interface ids (computed from `neighborLinks`' fixed declaration order) with the interface the packet actually used. */
+function enrichFromHop(hop: JourneyHop, state: SrPolicyState): Partial<DeviceProcessingTrace> {
+  const nextHop = nextHopFor(hop, state);
+  const prevRouter = prevRouterFor(hop, state);
+  return {
+    ingressInterfaceId: prevRouter ? `${hop.router}-${prevRouter}` : undefined,
+    egressInterfaceId: nextHop.id ? `${hop.router}-${nextHop.id}` : undefined,
+    lookupType: LOOKUP_TYPE_BY_ACTION[hop.action],
+    lookupKey: hop.input,
+    lookupResult: `${hop.action} → ${hop.output}`,
+    reason: hop.lookup,
+    nextHopId: nextHop.id,
+    nextHopLabel: nextHop.label,
+    packetBefore: hop.input,
+    packetAfter: hop.output,
+  };
 }
 
 export function traceFor(router: RouterId, state: SrPolicyState): DeviceProcessingTrace | undefined {
@@ -63,31 +124,47 @@ export function traceFor(router: RouterId, state: SrPolicyState): DeviceProcessi
     const stages = unavailable ? UNAVAILABLE_PIPELINE : HEADEND_PIPELINE;
     const base: DeviceProcessingTrace = { deviceId: router, egressInterfaceId: egressIfaceId, stages, completedStageIds: [] };
     if (!hop) return base;
-    if (unavailable) return { ...base, activeStageId: isCurrent ? "fail" : undefined, completedStageIds: allIds(UNAVAILABLE_PIPELINE), packetBefore: hop.input, packetAfter: hop.output };
-    if (isCurrent) return { ...base, activeStageId: hop.action === "POLICY_SELECT" ? "candidate-select" : "impose", completedStageIds: hop.action === "POLICY_SELECT" ? ["arrive", "classify", "policy-key", "state-check"] : allIds(HEADEND_PIPELINE).slice(0, 6), packetBefore: hop.input, packetAfter: hop.output };
-    return { ...base, completedStageIds: allIds(HEADEND_PIPELINE), packetBefore: hop.input, packetAfter: hop.output };
+    const enrich = enrichFromHop(hop, state);
+    if (unavailable) return { ...base, activeStageId: isCurrent ? "fail" : undefined, completedStageIds: allIds(UNAVAILABLE_PIPELINE), ...enrich };
+    if (isCurrent) return { ...base, activeStageId: hop.action === "POLICY_SELECT" ? "candidate-select" : "impose", completedStageIds: hop.action === "POLICY_SELECT" ? ["arrive", "classify", "policy-key", "state-check"] : allIds(HEADEND_PIPELINE).slice(0, 6), ...enrich };
+    return { ...base, completedStageIds: allIds(HEADEND_PIPELINE), ...enrich };
   }
   if (router === "R6") {
     const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, stages: TAILEND_PIPELINE, completedStageIds: [] };
     if (!hop) return base;
-    if (isCurrent) return { ...base, activeStageId: hop.action === "IP_FORWARD" ? "deliver" : "target-check", completedStageIds: ["label-lookup"], packetBefore: hop.input, packetAfter: hop.output };
-    return { ...base, completedStageIds: allIds(TAILEND_PIPELINE), packetBefore: hop.input, packetAfter: hop.output };
+    const enrich = enrichFromHop(hop, state);
+    if (isCurrent) return { ...base, activeStageId: hop.action === "IP_FORWARD" ? "deliver" : "target-check", completedStageIds: ["label-lookup"], ...enrich };
+    return { ...base, completedStageIds: allIds(TAILEND_PIPELINE), ...enrich };
   }
 
   const isAdjExec = hop?.action === "POP_AND_FORWARD_ADJ";
   const stages = isAdjExec ? ADJ_SID_PIPELINE : NODE_SID_PIPELINE;
   const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, egressInterfaceId: egressIfaceId, stages, completedStageIds: [] };
   if (!hop) return base;
+  const enrich = enrichFromHop(hop, state);
   if (isCurrent) {
     return {
       ...base,
       activeStageId: isAdjExec ? "send-adjacency" : hop.action === "POP" ? "label-action" : "forward",
       completedStageIds: isAdjExec ? ["active-lookup", "owner-check", "resolve-adjacency"] : ["ingress", "label-lookup", "identify-instruction", "spt-nexthop"],
-      packetBefore: hop.input,
-      packetAfter: hop.output,
+      ...enrich,
     };
   }
-  return { ...base, completedStageIds: allIds(stages), packetBefore: hop.input, packetAfter: hop.output };
+  return { ...base, completedStageIds: allIds(stages), ...enrich };
+}
+
+/** Which router is the primary inspection subject of a given historical step — the router `traceFor` currently shows as actively mid-stage, falling back to the packet's endpoints (mirrors mpls-rsvp-frr's `deviceForStep`). `traceFor` here takes no step id, so this needs no step id either — unlike RSVP-TE, this domain has no separate control-plane phase to disambiguate. */
+export function deviceForStep(state: SrPolicyState, packet: PacketVisual | undefined): RouterId | undefined {
+  const active = ALL_ROUTERS.find((r) => traceFor(r, state)?.activeStageId !== undefined);
+  if (active) return active;
+  if (packet) {
+    const to = packet.to as RouterId;
+    if (ALL_ROUTERS.includes(to) && traceFor(to, state)) return to;
+    const from = packet.from as RouterId;
+    if (ALL_ROUTERS.includes(from) && traceFor(from, state)) return from;
+    if (ALL_ROUTERS.includes(to)) return to;
+  }
+  return undefined;
 }
 
 export function packetFramesFor(state: SrPolicyState): PacketStackFrame[] | undefined {
