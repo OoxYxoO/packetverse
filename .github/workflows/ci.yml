@@ -36,6 +36,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate Next.js route types
+        run: npx next typegen
+
       - name: TypeScript
         run: npx tsc --noEmit
 
