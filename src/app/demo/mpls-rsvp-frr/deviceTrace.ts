@@ -1,5 +1,7 @@
 import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
+import type { PacketVisual } from "@/lib/sim-engine/types";
 import {
+  ALL_ROUTERS,
   GRAPH_EDGES,
   LINKS,
   STEP_IDX,
@@ -8,6 +10,7 @@ import {
   fmtLabel,
   rsvpFrrSteps,
   type Bypass,
+  type JourneyHop,
   type LinkId,
   type RouterId,
   type RsvpFrrState,
@@ -20,6 +23,20 @@ import {
  * decision itself (brief: "no CSPF, RSVP, bandwidth, or label
  * allocation logic belongs in network3d/*"), it only re-describes
  * decisions the domain layer already made.
+ *
+ * Unlike RSVP-TE, this lesson never models separate PATH/RESV control
+ * packets — bypass establishment is narrated as lifecycle-state
+ * transitions, and every hop that IS individually inspectable already
+ * lives in the single, immutable `state.journey`. The additive Hop
+ * Inspector fields (lookupType/lookupKey/lookupResult/nextHopId/reason —
+ * brief "Hop Inspection Contract") are populated straight off each
+ * `JourneyHop`; structured before/after packet-STACK frames are
+ * deliberately left unpopulated here (falling back to the existing
+ * plain-text packetBefore/packetAfter) because this domain's hop text
+ * (`"label"`, `"primary label"`, `"outer bypass label"`, …) does not
+ * reliably carry a parseable numeric label the way RSVP-TE's does —
+ * synthesizing a stack frame from it would risk fabricating a value
+ * the domain never actually computed for that field.
  */
 
 const stepIndex = (id: string) => rsvpFrrSteps.findIndex((s) => s.id === id);
@@ -80,6 +97,59 @@ function activeBypassFor(state: RsvpFrrState): Bypass | undefined {
   return undefined;
 }
 
+const LOOKUP_TYPE_BY_ACTION: Partial<Record<JourneyHop["action"], string>> = {
+  PUSH: "RSVP-TE Forwarding State",
+  SWAP: "Primary LFIB",
+  POP: "Primary LFIB (PHP)",
+  SWAP_AND_PUSH_BYPASS: "FRR Backup Forwarding (PLR)",
+  POP_BYPASS: "Bypass LFIB (outer label only)",
+  IP_FORWARD: "IP Delivery",
+};
+
+/** Next/previous router along the ACTUAL recorded journey (brief: reuse real state, never recompute a path) — the next journey entry if one already exists (an earlier, already-passed hop), or `state.packetAt` when this IS the most-recently-recorded hop, mirrors mpls-ldp's `nextHopFor`. */
+function nextHopFor(hop: JourneyHop, state: RsvpFrrState): { id?: RouterId; label?: string } {
+  if (hop.action === "IP_FORWARD") return {};
+  const idx = state.journey.indexOf(hop);
+  const isLast = idx === state.journey.length - 1;
+  const nextRouter = !isLast ? state.journey[idx + 1]?.router : state.packetAt;
+  if (!nextRouter || nextRouter === hop.router) return {};
+  return { id: nextRouter, label: nextRouter };
+}
+function prevRouterFor(hop: JourneyHop, state: RsvpFrrState): RouterId | undefined {
+  const idx = state.journey.indexOf(hop);
+  return idx > 0 ? state.journey[idx - 1].router : undefined;
+}
+
+/**
+ * Additive Hop Inspector fields derived straight off a real `JourneyHop` —
+ * never fabricated per-field text beyond what the step's own `run()`
+ * already recorded. This also OVERRIDES the base trace's generic
+ * `ingressInterfaceId`/`egressInterfaceId` (computed from `neighborLinks`'
+ * fixed declaration order) with the interface the packet actually used —
+ * important here specifically because R4, R5, and R7 each have more than
+ * two neighbors (a primary-path one plus one or two bypass-only ones), so
+ * the generic guess is only reliably correct for ordinary primary transit
+ * and silently wrong the moment R4 carries bypass traffic toward R7
+ * instead of R5, or R5/R7 receive traffic as a Merge Point via the bypass
+ * (from R4) instead of their normal primary-path predecessor.
+ */
+function enrichFromHop(hop: JourneyHop, state: RsvpFrrState): Partial<DeviceProcessingTrace> {
+  const nextHop = nextHopFor(hop, state);
+  const prevRouter = prevRouterFor(hop, state);
+  return {
+    ingressInterfaceId: prevRouter ? `${hop.router}-${prevRouter}` : undefined,
+    egressInterfaceId: nextHop.id ? `${hop.router}-${nextHop.id}` : undefined,
+    lookupType: LOOKUP_TYPE_BY_ACTION[hop.action],
+    lookupKey: hop.input,
+    lookupResult: `${hop.action} → ${hop.output}`,
+    reason: hop.lookup,
+    nextHopId: nextHop.id,
+    nextHopLabel: nextHop.label,
+    packetBefore: hop.input,
+    packetAfter: hop.output,
+  };
+}
+
 export function traceFor(router: RouterId, state: RsvpFrrState, currentStepId: string): DeviceProcessingTrace | undefined {
   const i = stepIndex(currentStepId);
   const nbrs = neighborLinks(router);
@@ -93,58 +163,78 @@ export function traceFor(router: RouterId, state: RsvpFrrState, currentStepId: s
   // Headend R1
   if (router === "R1") {
     const base: DeviceProcessingTrace = { deviceId: router, egressInterfaceId: egressIfaceId, stages: HEADEND_PIPELINE, completedStageIds: [] };
-    if (journeyIdx === -1) return base;
-    if (isCurrent) return { ...base, activeStageId: "push", completedStageIds: ["classify"], packetBefore: hop!.input, packetAfter: hop!.output };
-    return { ...base, completedStageIds: allIds(HEADEND_PIPELINE), packetBefore: hop!.input, packetAfter: hop!.output };
+    if (!hop) return base;
+    const enrich = enrichFromHop(hop, state);
+    if (isCurrent) return { ...base, activeStageId: "push", completedStageIds: ["classify"], ...enrich };
+    return { ...base, completedStageIds: allIds(HEADEND_PIPELINE), ...enrich };
   }
   // Tailend R6
   if (router === "R6") {
     const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, stages: TAILEND_PIPELINE, completedStageIds: [] };
-    if (journeyIdx === -1) return base;
-    return { ...base, completedStageIds: allIds(TAILEND_PIPELINE), packetBefore: hop!.input, packetAfter: hop!.output };
+    if (!hop) return base;
+    return { ...base, completedStageIds: allIds(TAILEND_PIPELINE), ...enrichFromHop(hop, state) };
   }
 
   // R3 — PLR during FRR activation
   if (router === "R3" && active && i >= 0) {
     const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, egressInterfaceId: egressIfaceId, stages: PLR_PIPELINE, completedStageIds: [] };
-    if (journeyIdx === -1) {
+    if (!hop) {
       if (i >= STEP_IDX.triggerFailure && i < STEP_IDX.r3PushBypass) return { ...base, activeStageId: "resource-check", completedStageIds: ["mpls-arrive", "primary-entry"] };
       return base;
     }
-    if (isCurrent) return { ...base, activeStageId: "push-bypass", completedStageIds: ["mpls-arrive", "primary-entry", "resource-check", "backup-lookup", "backup-ready", "context-prepared"], packetBefore: hop!.input, packetAfter: hop!.output };
-    return { ...base, completedStageIds: allIds(PLR_PIPELINE), packetBefore: hop!.input, packetAfter: hop!.output };
+    const enrich = enrichFromHop(hop, state);
+    if (isCurrent) return { ...base, activeStageId: "push-bypass", completedStageIds: ["mpls-arrive", "primary-entry", "resource-check", "backup-lookup", "backup-ready", "context-prepared"], ...enrich };
+    return { ...base, completedStageIds: allIds(PLR_PIPELINE), ...enrich };
   }
   // R4 — bypass-only transit
   if (router === "R4") {
     const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, egressInterfaceId: egressIfaceId, stages: BYPASS_TRANSIT_PIPELINE, completedStageIds: [] };
-    if (journeyIdx === -1) return base;
-    if (isCurrent) return { ...base, activeStageId: "bypass-forward", completedStageIds: ["bypass-ingress", "outer-lookup"], packetBefore: hop!.input, packetAfter: hop!.output };
-    return { ...base, completedStageIds: allIds(BYPASS_TRANSIT_PIPELINE), packetBefore: hop!.input, packetAfter: hop!.output };
+    if (!hop) return base;
+    const enrich = enrichFromHop(hop, state);
+    if (isCurrent) return { ...base, activeStageId: "bypass-forward", completedStageIds: ["bypass-ingress", "outer-lookup"], ...enrich };
+    return { ...base, completedStageIds: allIds(BYPASS_TRANSIT_PIPELINE), ...enrich };
   }
   // R5 — Merge Point for link protection (or ordinary transit before failure)
   if (router === "R5") {
     const isMp = active?.mergePoint === "R5";
     const stages = isMp ? MP_PIPELINE : NORMAL_TRANSIT_PIPELINE;
     const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, egressInterfaceId: egressIfaceId, stages, completedStageIds: [] };
-    if (journeyIdx === -1) return base;
-    if (isCurrent) return { ...base, activeStageId: isMp ? "context-restored" : "action", completedStageIds: isMp ? ["bypass-terminates"] : ["ingress", "label-lookup", "lfib"], packetBefore: hop!.input, packetAfter: hop!.output };
-    return { ...base, completedStageIds: allIds(stages), packetBefore: hop!.input, packetAfter: hop!.output };
+    if (!hop) return base;
+    const enrich = enrichFromHop(hop, state);
+    if (isCurrent) return { ...base, activeStageId: isMp ? "context-restored" : "action", completedStageIds: isMp ? ["bypass-terminates"] : ["ingress", "label-lookup", "lfib"], ...enrich };
+    return { ...base, completedStageIds: allIds(stages), ...enrich };
   }
   // R7 — Merge Point for node protection (or ordinary transit)
   if (router === "R7") {
     const isMp = active?.mergePoint === "R7";
     const stages = isMp ? MP_PIPELINE : NORMAL_TRANSIT_PIPELINE;
     const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, egressInterfaceId: egressIfaceId, stages, completedStageIds: [] };
-    if (journeyIdx === -1) return base;
-    if (isCurrent) return { ...base, activeStageId: isMp ? "context-restored" : "action", completedStageIds: isMp ? ["bypass-terminates"] : ["ingress", "label-lookup", "lfib"], packetBefore: hop!.input, packetAfter: hop!.output };
-    return { ...base, completedStageIds: allIds(stages), packetBefore: hop!.input, packetAfter: hop!.output };
+    if (!hop) return base;
+    const enrich = enrichFromHop(hop, state);
+    if (isCurrent) return { ...base, activeStageId: isMp ? "context-restored" : "action", completedStageIds: isMp ? ["bypass-terminates"] : ["ingress", "label-lookup", "lfib"], ...enrich };
+    return { ...base, completedStageIds: allIds(stages), ...enrich };
   }
 
   // R3 outside FRR (ordinary transit)
   const base: DeviceProcessingTrace = { deviceId: router, ingressInterfaceId: ingressIfaceId, egressInterfaceId: egressIfaceId, stages: NORMAL_TRANSIT_PIPELINE, completedStageIds: [] };
-  if (journeyIdx === -1) return base;
-  if (isCurrent) return { ...base, activeStageId: "action", completedStageIds: ["ingress", "label-lookup", "lfib"], packetBefore: hop!.input, packetAfter: hop!.output };
-  return { ...base, completedStageIds: allIds(NORMAL_TRANSIT_PIPELINE), packetBefore: hop!.input, packetAfter: hop!.output };
+  if (!hop) return base;
+  const enrich = enrichFromHop(hop, state);
+  if (isCurrent) return { ...base, activeStageId: "action", completedStageIds: ["ingress", "label-lookup", "lfib"], ...enrich };
+  return { ...base, completedStageIds: allIds(NORMAL_TRANSIT_PIPELINE), ...enrich };
+}
+
+/** Which router is the primary inspection subject of a given historical step — the router `traceFor` currently shows as actively mid-stage, falling back to the packet's endpoints (mirrors mpls-rsvp-te's `deviceForStep`). Every packet-carrying step in this lesson already yields real per-router trace data, so no separate narrative-step fallback map is needed here (unlike RSVP-TE's PATH/RESV pipeline-inspection steps — this lesson has no non-journey signaling phase). */
+export function deviceForStep(stepId: string, state: RsvpFrrState, packet: PacketVisual | undefined): RouterId | undefined {
+  const active = ALL_ROUTERS.find((r) => traceFor(r, state, stepId)?.activeStageId !== undefined);
+  if (active) return active;
+  if (packet) {
+    const to = packet.to as RouterId;
+    if (ALL_ROUTERS.includes(to) && traceFor(to, state, stepId)) return to;
+    const from = packet.from as RouterId;
+    if (ALL_ROUTERS.includes(from) && traceFor(from, state, stepId)) return from;
+    if (ALL_ROUTERS.includes(to)) return to;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
