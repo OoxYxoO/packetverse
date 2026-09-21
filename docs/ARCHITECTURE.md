@@ -2,6 +2,8 @@
 
 This document describes the architecture actually implemented in this repository, as of the EVPN + VXLAN Foundations lesson. It is a reference for anyone (human or model) building the next lesson — it should stay in sync with the code; when the two disagree, the code wins and this file should be updated.
 
+**Shared-3D migration complete.** As of First Connection's migration onto `NetworkScene3D`, all 34 demo lessons render through the shared 3D presentation architecture described below — there is no remaining bespoke/2D-only lesson renderer. This is a separate milestone from Level-3 adoption (§18): 25 of the 34 lessons currently expose the full Processing Inspection tier: 34 shared-3D and 25 Level-3 are two different numbers and should not be conflated.
+
 The one rule everything below serves: **networking/protocol logic lives in exactly two places — a scenario file (`src/lib/sim-engine/scenarios/*.ts`) and that lesson's own Scene Adapter (`src/app/demo/<lesson>/deviceTrace.ts` + `explain.ts`).** Every component under `src/components/network3d/` and the shared 2D components under `src/components/network/` and `src/components/protocol/` are generic renderers. They accept plain data shapes and know nothing about VRFs, VNIs, labels, or BGP attributes. A new lesson should almost never need to touch `network3d/*`.
 
 ## 1. ScenarioEngine
