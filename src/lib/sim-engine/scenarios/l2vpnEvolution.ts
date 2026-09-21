@@ -65,6 +65,7 @@ import {
   type AttachmentCircuit,
   type Fdb,
   type FdbPort,
+  type FloodCopyState,
   learnSourceMac,
   lookupDestinationMac,
   computeVplsEgressSet,
@@ -77,7 +78,6 @@ import {
   pwPeersOf,
   PW_PAIRS,
   type PwLinkState,
-  SERVICE_GRAPH_NODES as VPLS_SERVICE_GRAPH_NODES,
   SERVICE_GRAPH_EDGES as VPLS_SERVICE_GRAPH_EDGES,
 } from "./mplsVpls";
 
@@ -92,9 +92,13 @@ import {
   formatLabelBlockResult,
   BGP_CONTROL_NODES,
   BGP_CONTROL_EDGES,
+  ROUTER_LOOPBACK as BGP_VPLS_ROUTER_LOOPBACK,
+  PE1_INTERFACE,
+  PE2_INTERFACE,
+  PE3_INTERFACE,
 } from "./bgpVpls";
 
-import { calculateFullMeshPwCount, calculateHierarchicalPwCount, applyHierarchicalSplitHorizon, classifyHvplsForwardingDecision, type HvplsPort, SERVICE_NAME as HVPLS_SERVICE_NAME, HIERARCHY_GRAPH_NODES, HIERARCHY_GRAPH_EDGES } from "./hVpls";
+import { calculateFullMeshPwCount, calculateHierarchicalPwCount, applyHierarchicalSplitHorizon, classifyHvplsForwardingDecision, type HvplsPort, SERVICE_NAME as HVPLS_SERVICE_NAME } from "./hVpls";
 
 import { compareMobilityRoutes, selectEndpointLocation, type Type2Route as MobilityType2Route, type LeafId as MobilityLeafId } from "./evpnMacMobility";
 
@@ -261,28 +265,82 @@ export function evaluateRequirements(architecture: Architecture, requirements: R
 }
 
 // ---------------------------------------------------------------------------
+// H-VPLS topology — CUST-A's OWN three sites mapped onto a hierarchy,
+// NOT a reuse of hVpls.ts's generic 4-customer/3-MTU demo graph (that
+// graph's CE4/MTU3 aren't part of this capstone's customer at all, and
+// would silently break the "same customer, every time" comparison this
+// lesson exists to make). CE1 and CE2 sit behind access-tier MTU-s
+// bridges (spoke PWs into the core); CE3 stays directly attached to a
+// core PE-rs, showing hierarchy as an access-design CHOICE, not a
+// requirement — matching RouterId's own MTU1/MTU2 (no MTU3/CE4).
+// ---------------------------------------------------------------------------
+// Every node below gets a DISTINCT x (never two nodes sharing an x with
+// only y differing) — `layoutTo3D` derives 3D world-X from x alone, so
+// same-x nodes land at the same on-screen horizontal position and
+// visually overlap (the bug fixed above for VPLS_EVPN_CUSTA_NODES).
+export const HVPLS_CUSTA_NODES = [
+  { id: "CE1", label: "CE1", x: 2, y: 6, subLabel: CE_IP.CE1 },
+  { id: "MTU1", label: "MTU1", x: 18, y: 22, subLabel: "ACCESS TIER" },
+  { id: "PE1", label: "PE1", x: 36, y: 6, subLabel: "CORE TIER" },
+  { id: "CE2", label: "CE2", x: 6, y: 66, subLabel: CE_IP.CE2 },
+  { id: "MTU2", label: "MTU2", x: 22, y: 82, subLabel: "ACCESS TIER" },
+  { id: "PE2", label: "PE2", x: 40, y: 66, subLabel: "CORE TIER" },
+  { id: "PE3", label: "PE3", x: 64, y: 38, subLabel: "CORE TIER" },
+  { id: "CE3", label: "CE3", x: 90, y: 38, subLabel: CE_IP.CE3 },
+];
+export const HVPLS_CUSTA_EDGES: { id: string; a: RouterId; b: RouterId; label?: string }[] = [
+  { id: "CE1-MTU1", a: "CE1", b: "MTU1" },
+  { id: "MTU1-PE1", a: "MTU1", b: "PE1", label: "SPOKE" },
+  { id: "CE2-MTU2", a: "CE2", b: "MTU2" },
+  { id: "MTU2-PE2", a: "MTU2", b: "PE2", label: "SPOKE" },
+  { id: "PE1-PE2", a: "PE1", b: "PE2", label: "MESH" },
+  { id: "PE1-PE3", a: "PE1", b: "PE3", label: "MESH" },
+  { id: "PE2-PE3", a: "PE2", b: "PE3", label: "MESH" },
+  { id: "CE3-PE3", a: "CE3", b: "PE3" },
+];
+
+// ---------------------------------------------------------------------------
 // Topology per architecture — reusing each source lesson's OWN graph data
 // verbatim (percent-space {id,label,x,y,subLabel} nodes / {id,a,b,label}
-// edges). This file adds no new topology facts, only picks which existing
-// one is shown for a given architecture.
+// edges) wherever that source lesson's own CUST-A-scale topology already
+// matches this capstone's device set; H-VPLS is the one exception (see
+// HVPLS_CUSTA_NODES above). This file adds no new topology FACTS beyond
+// that one hierarchy mapping, only picks which existing graph is shown
+// for a given architecture.
 // ---------------------------------------------------------------------------
+// mplsVpls.ts's own SERVICE_GRAPH_NODES gives CE1/PE1 (and CE2/PE3) the
+// SAME x with only y differing — fine for that lesson's 2D layout, but
+// `layoutTo3D` derives world-X from x alone, so CE1/PE1 land at the same
+// on-screen horizontal position in 3D and visually overlap. This capstone
+// reuses the identical six devices/edges (no new topology FACT), just with
+// x/y spread so every device gets a distinct 3D position.
+export const VPLS_EVPN_CUSTA_NODES = [
+  { id: "CE1", label: "CE1", x: 4, y: 14, subLabel: CE_IP.CE1 },
+  { id: "PE1", label: "PE1", x: 24, y: 30, subLabel: "AC: " + PE1_INTERFACE },
+  { id: "PE2", label: "PE2", x: 58, y: 8, subLabel: "AC: " + PE2_INTERFACE },
+  { id: "CE2", label: "CE2", x: 84, y: 8, subLabel: CE_IP.CE2 },
+  { id: "PE3", label: "PE3", x: 66, y: 90, subLabel: "AC: " + PE3_INTERFACE },
+  { id: "CE3", label: "CE3", x: 92, y: 90, subLabel: CE_IP.CE3 },
+];
+export const VPLS_EVPN_CUSTA_EDGES = VPLS_SERVICE_GRAPH_EDGES;
+
 export function topologyFor(architecture: Architecture) {
   switch (architecture) {
     case "VPWS":
       return { nodes: VPWS_SERVICE_GRAPH_NODES, edges: VPWS_SERVICE_GRAPH_EDGES };
     case "H_VPLS":
-      return { nodes: HIERARCHY_GRAPH_NODES, edges: HIERARCHY_GRAPH_EDGES };
+      return { nodes: HVPLS_CUSTA_NODES, edges: HVPLS_CUSTA_EDGES };
     case "BGP_VPLS":
       return { nodes: BGP_CONTROL_NODES, edges: BGP_CONTROL_EDGES };
     case "VPLS":
     case "EVPN":
     default:
-      return { nodes: VPLS_SERVICE_GRAPH_NODES, edges: VPLS_SERVICE_GRAPH_EDGES };
+      return { nodes: VPLS_EVPN_CUSTA_NODES, edges: VPLS_EVPN_CUSTA_EDGES };
   }
 }
 /** The SERVICE topology (PE-to-PE mesh) independent of which control plane signals it — used to show BGP-VPLS's/EVPN's service view alongside its control view. */
 export function serviceTopology() {
-  return { nodes: VPLS_SERVICE_GRAPH_NODES, edges: VPLS_SERVICE_GRAPH_EDGES };
+  return { nodes: VPLS_EVPN_CUSTA_NODES, edges: VPLS_EVPN_CUSTA_EDGES };
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +501,9 @@ export interface L2vpnEvolutionState {
 
   fdb: Record<PeId, Fdb>;
 
+  /** Simultaneous PW flood replicas from one original customer frame — rendered via FloodCopy3D, never a single sequential "journey" (brief §21). Reuses mplsVpls.ts's own FloodCopyState shape. */
+  floodCopies?: FloodCopyState[];
+
   type2Routes: Type2RouteRow[];
 
   incident: TroubleshootingIncidentState;
@@ -561,7 +622,8 @@ export const l2vpnEvolutionSteps: ScenarioStep<L2vpnEvolutionState>[] = [
     run: (state) => {
       const result = runFrameThroughPe(state.fdb.PE1, "PE1", CE_MAC.CE1, CE_MAC.CE2);
       const journey: JourneyHop[] = [{ device: "PE1", input: "Ethernet frame from CE1", lookup: `Lookup ${CE_MAC.CE2} in FDB — ${result.lookup.kind}`, action: result.decision, output: `Flood to: ${result.egress.map(vplsPortLabel).join(", ") || "(none)"}` }];
-      return { state: { ...state, fdb: { ...state.fdb, PE1: result.fdb }, journey, packetAt: "PE2" }, events: [{ type: "MAC_LEARNED", stepId: "vpls-first-frame-unknown", timestamp: Date.now(), message: `PE1 learns CE1 → ${CE_MAC.CE1}` }] };
+      const floodCopies: FloodCopyState[] = pwPeersOf("PE1").map((peer) => ({ id: `fc-${peer}`, fromPe: "PE1", toPe: peer }));
+      return { state: { ...state, fdb: { ...state.fdb, PE1: result.fdb }, journey, packetAt: "PE2", floodCopies }, events: [{ type: "MAC_LEARNED", stepId: "vpls-first-frame-unknown", timestamp: Date.now(), message: `PE1 learns CE1 → ${CE_MAC.CE1}` }] };
     },
     whatChanged: () => ["PE1 FDB: learned CE1 on its AC", "Decision: UNKNOWN_UNICAST → flooded to both mesh PWs"],
   },
@@ -574,7 +636,7 @@ export const l2vpnEvolutionSteps: ScenarioStep<L2vpnEvolutionState>[] = [
       const pe2Learn = learnSourceMac(state.fdb.PE2, CE_MAC.CE2, { kind: "AC", peer: "CE2" });
       const pe1Learn = learnSourceMac(state.fdb.PE1, CE_MAC.CE2, { kind: "PW", peer: "PE2" });
       const journey: JourneyHop[] = [...state.journey, { device: "PE1", input: "Reply frame arriving on PW from PE2", lookup: "Source-MAC learning", action: "MAC_LEARNED", output: `CE2 → PW to PE2` }];
-      return { state: { ...state, fdb: { ...state.fdb, PE1: pe1Learn.fdb, PE2: pe2Learn.fdb }, journey }, events: [{ type: "MAC_LEARNED", stepId: "vpls-source-learn", timestamp: Date.now(), message: "PE1 learns CE2 behind PE2" }] };
+      return { state: { ...state, fdb: { ...state.fdb, PE1: pe1Learn.fdb, PE2: pe2Learn.fdb }, journey, floodCopies: undefined }, events: [{ type: "MAC_LEARNED", stepId: "vpls-source-learn", timestamp: Date.now(), message: "PE1 learns CE2 behind PE2" }] };
     },
     whatChanged: () => ["PE1 FDB: CE2 → PW to PE2 (learned from the data plane, not from any control-plane advertisement)"],
   },
@@ -586,7 +648,7 @@ export const l2vpnEvolutionSteps: ScenarioStep<L2vpnEvolutionState>[] = [
     run: (state) => {
       const result = runFrameThroughPe(state.fdb.PE1, "PE1", CE_MAC.CE1, CE_MAC.CE2);
       const journey: JourneyHop[] = [...state.journey, { device: "PE1", input: "Ethernet frame from CE1", lookup: `Lookup ${CE_MAC.CE2} in FDB — ${result.lookup.kind}`, action: result.decision, output: `Forward to: ${result.egress.map(vplsPortLabel).join(", ") || "(none)"}` }];
-      return { state: { ...state, fdb: { ...state.fdb, PE1: result.fdb }, journey }, events: [] };
+      return { state: { ...state, fdb: { ...state.fdb, PE1: result.fdb }, journey, floodCopies: undefined }, events: [] };
     },
     whatChanged: () => ["Decision: REMOTE_UNICAST → PE2 only, not flooded"],
   },
@@ -677,7 +739,15 @@ export const l2vpnEvolutionSteps: ScenarioStep<L2vpnEvolutionState>[] = [
   {
     id: "incident-symptoms",
     label: "Symptoms",
-    narrative: "PE1 sees PE3's VPLS NLRI. PE1 has a valid derived service label toward PE3. The VPLS mesh is healthy. The customer FDB entry for CE3 is absent at PE1. The first CE1→CE3 frame will flood. The network is behaving correctly — this is a mental-model troubleshooting incident, not a fault.",
+    narrative: "PE1 sees PE3's VPLS NLRI. PE1 has a valid derived service label toward PE3. The VPLS mesh is healthy. The customer FDB entry for CE3 is absent at PE1. Watch what actually happens when CE1 sends toward CE3 right now: unknown unicast, flooded — exactly the same mechanism you just watched with CE1→CE2, because BGP-VPLS's data plane never stopped being traditional VPLS. The network is behaving correctly — this is a mental-model troubleshooting incident, not a fault.",
+    packet: () => ceCustAPacket("f-incident", "CE1", "PE1", "Unknown unicast — flooded (CE3 not yet learned)", CE_MAC.CE1, CE_MAC.CE3, "destination MAC not yet in PE1's FDB"),
+    run: (state) => {
+      const result = runFrameThroughPe(state.fdb.PE1, "PE1", CE_MAC.CE1, CE_MAC.CE3);
+      const journey: JourneyHop[] = [...state.journey, { device: "PE1", input: "Ethernet frame from CE1 toward CE3", lookup: `Lookup ${CE_MAC.CE3} in FDB — ${result.lookup.kind}`, action: result.decision, output: `Flood to: ${result.egress.map(vplsPortLabel).join(", ") || "(none)"}` }];
+      const floodCopies: FloodCopyState[] = pwPeersOf("PE1").map((peer) => ({ id: `fc-incident-${peer}`, fromPe: "PE1", toPe: peer }));
+      return { state: { ...state, fdb: { ...state.fdb, PE1: result.fdb }, journey, floodCopies }, events: [] };
+    },
+    whatChanged: () => ["Decision: CE1 → CE3 is UNKNOWN_UNICAST → flooded to both mesh PWs, same as any other never-learned destination"],
   },
   {
     id: "incident-diagnostic-ladder",
@@ -705,6 +775,7 @@ export const l2vpnEvolutionSteps: ScenarioStep<L2vpnEvolutionState>[] = [
     id: "repair-challenge",
     label: "Engineer Challenge: Resolve The Incident",
     narrative: "Choose how to proceed.",
+    packet: (state) => (state.incident.resolved ? ceCustAPacket("f-repair", "CE3", "PE1", "Reply — learned via data plane", CE_MAC.CE3, CE_MAC.CE1, "PE1 observes source MAC on the PW from PE3") : undefined),
     action: (state, payload) => {
       const choice = (payload as { choice?: string } | undefined)?.choice ?? "";
       if (choice !== "observe-traffic") {
@@ -712,8 +783,9 @@ export const l2vpnEvolutionSteps: ScenarioStep<L2vpnEvolutionState>[] = [
       }
       const pe3Learn = learnSourceMac(state.fdb.PE3, CE_MAC.CE3, { kind: "AC", peer: "CE3" });
       const pe1Learn = learnSourceMac(state.fdb.PE1, CE_MAC.CE3, { kind: "PW", peer: "PE3" });
+      const journey: JourneyHop[] = [...state.journey, { device: "PE3", input: "Ethernet frame from CE3", lookup: "Source-MAC learning", action: "MAC_LEARNED", output: "CE3 → AC learned; relayed across mesh PW to PE1" }, { device: "PE1", input: "Frame arriving on PW from PE3", lookup: "Source-MAC learning", action: "MAC_LEARNED", output: "CE3 → PW to PE3" }];
       return {
-        state: { ...state, fdb: { ...state.fdb, PE1: pe1Learn.fdb, PE3: pe3Learn.fdb }, incident: { ...state.incident, ce3Sent: true, repairAttempt: { choice, correct: true }, resolved: true } },
+        state: { ...state, fdb: { ...state.fdb, PE1: pe1Learn.fdb, PE3: pe3Learn.fdb }, journey, floodCopies: undefined, incident: { ...state.incident, ce3Sent: true, repairAttempt: { choice, correct: true }, resolved: true } },
         events: [{ type: "MAC_LEARNED", stepId: "repair-challenge", timestamp: Date.now(), message: "PE1 learns CE3 behind PE3 from real customer traffic" }],
       };
     },
@@ -727,7 +799,7 @@ export const l2vpnEvolutionSteps: ScenarioStep<L2vpnEvolutionState>[] = [
     run: (state) => {
       const result = runFrameThroughPe(state.fdb.PE1, "PE1", CE_MAC.CE1, CE_MAC.CE3);
       const journey: JourneyHop[] = [...state.journey, { device: "PE1", input: "Ethernet frame from CE1", lookup: `Lookup ${CE_MAC.CE3} in FDB — ${result.lookup.kind}`, action: result.decision, output: `Forward to: ${result.egress.map(vplsPortLabel).join(", ") || "(none)"}` }];
-      return { state: { ...state, fdb: { ...state.fdb, PE1: result.fdb }, journey, incident: { ...state.incident, verified: result.decision !== "UNKNOWN_UNICAST" } }, events: [] };
+      return { state: { ...state, fdb: { ...state.fdb, PE1: result.fdb }, journey, floodCopies: undefined, incident: { ...state.incident, verified: result.decision !== "UNKNOWN_UNICAST" } }, events: [] };
     },
     whatChanged: (prev, next) => [next.incident.verified ? "Verified: CE1 → CE3 is now REMOTE_UNICAST, forwarded to PE3 only" : "Still flooding — re-check the previous step"],
   },
@@ -817,6 +889,7 @@ export const l2vpnEvolutionSteps: ScenarioStep<L2vpnEvolutionState>[] = [
     id: "evpn-ce3-install",
     label: "CE3 Appears At PE3 — Type 2 Advertised",
     narrative: "CE3 sends a frame. PE3 learns CE3 locally and advertises a Type 2 route. PE1 receives it and installs CE3's reachability — before CE1 has ever sent a frame toward CE3.",
+    packet: () => ({ id: "evpn-t2", protocol: "BGP", from: "PE3", to: "PE1", summary: "EVPN Type 2 route — MAC/IP advertisement (reflected via RR1)", badge: "UPDATE", layers: [{ name: "BGP EVPN Type 2 NLRI", color: "var(--pv-proto-bgp)", fields: [{ label: "MAC", value: CE_MAC.CE3 }, { label: "IP", value: "192.168.100.3" }, { label: "RD", value: RD_BY_PE.PE3 }, { label: "RT", value: CUST_A_RT }, { label: "Next Hop", value: BGP_VPLS_ROUTER_LOOPBACK.PE3 ?? "PE3-loopback" }] }] }),
     run: (state) => {
       const route = advertiseType2("PE3", CE_MAC.CE3, "192.168.100.3");
       return { state: { ...state, type2Routes: [...state.type2Routes.filter((r) => r.mac !== route.mac), route] }, events: [{ type: "BGP_ROUTE_INSTALLED", stepId: "evpn-ce3-install", timestamp: Date.now(), message: "PE1 installs CE3 reachability from EVPN Type 2" }] };
