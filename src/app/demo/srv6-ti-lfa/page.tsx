@@ -39,16 +39,23 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useProgressStore } from "@/lib/state/useProgressStore";
 import { NetworkScene3D } from "@/components/network3d/NetworkScene3D";
-import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { NodeInspectorPanel } from "@/components/network3d/NodeInspectorPanel";
+import { PacketFocusPanel } from "@/components/network3d/PacketFocusPanel";
 import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
 import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@/components/network3d/DeviceExplorerPanel";
 import { PacketDetailPanel } from "@/components/network3d/PacketDetailPanel";
 import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
+import { TopologyFrame } from "@/components/network3d/TopologyFrame";
+import { TopologyFocusMode } from "@/components/network3d/TopologyFocusMode";
+import { HopInspectorPanel } from "@/components/network3d/HopInspectorPanel";
+import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
+import { HopTimeline } from "@/components/network3d/HopTimeline";
+import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
+import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutTo3D } from "@/components/network3d/layout";
-import type { ActivePacket3D, CameraMode, Link3DData, Node3DStatus } from "@/components/network3d/types";
+import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
-import { interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
 
 const DEVICE_ROUTERS: RouterId[] = ["PE1", "P1", "P3", "P4", "P2", "PE2"];
 type TopoView = "physical" | "preConvergence" | "repairSpaces" | "repairProgram" | "recovery";
@@ -72,6 +79,19 @@ const WRONG_FEEDBACK: Record<string, string> = {
   "wait-converge": "Eventual convergence may restore traffic, but that defeats the purpose of local FRR and leaves the precomputed repair permanently incorrect.",
 };
 
+/** Derives a close-but-non-clipping camera eye offset from a focused object's world-space bounding size (see sr-mpls-foundations for the same helper). */
+function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number] {
+  const [sx, sy, sz] = target.size ?? [0.6, 0.3, 0.3];
+  const maxDim = Math.max(sx, sy, sz);
+  const dist = Math.max(0.55, maxDim * 1.8);
+  return [dist * 0.55, dist * 0.5, dist * 0.75];
+}
+
+const PRE_CONVERGENCE_STEPS = new Set(["p3-pre-failure-route", "predict-p3-route", "naive-fail-injected", "naive-forward-p1-p3", "naive-p3-stale-fib", "naive-loop-p3-p1", "predict-naive-loop", "naive-loop-explained"]);
+const REPAIR_SPACES_STEPS = new Set(["p-space-intro", "p-space-compute", "extended-p-space-intro", "extended-p-space-compute", "q-space-intro", "q-space-compute", "select-repair-node", "node-protection-compute"]);
+const REPAIR_PROGRAM_STEPS = new Set(["repair-anatomy-intro", "why-p4-endx", "globally-routed-adjacency", "usd-intro", "predict-usd", "repair-list-derive", "h-encaps-intro", "predict-no-srh", "protection-ready", "node-protection-repair-list"]);
+const RECOVERY_STEPS = new Set(["phases-intro", "precompute-intro", "igp-converging", "plr-converged", "repair-released", "post-convergence-forwarding", "loop-free-recap"]);
+
 export default function Srv6TiLfaDemo() {
   const { engine, snapshot } = useScenarioEngine<Srv6TiLfaState>(createSrv6TiLfaState(), srv6TiLfaSteps);
   const [autoPlay, setAutoPlay] = useState(false);
@@ -83,9 +103,16 @@ export default function Srv6TiLfaDemo() {
   const [cameraMode, setCameraMode] = useState<CameraMode>("overview");
   const [enteredDeviceId, setEnteredDeviceId] = useState<RouterId | undefined>(undefined);
   const [deviceXray, setDeviceXray] = useState(true);
+  const [autoEnterDevices, setAutoEnterDevices] = useState(true);
   const [selectedInterfaceId, setSelectedInterfaceId] = useState<string | undefined>(undefined);
   const [selectedLinkId, setSelectedLinkId] = useState<string | undefined>(undefined);
   const [packetSelected, setPacketSelected] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
+  const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
+  /** Presentation cursor for HopTimeline inspection (ARCHITECTURE.md §18) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
+  const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
+  /** Explicit Hop-vs-Device intent inside Focus Mode — set by the actual gesture, never inferred from whether a trace object happens to exist. */
+  const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -98,6 +125,7 @@ export default function Srv6TiLfaDemo() {
   const showRepairProgram = index >= srv6TiLfaSteps.findIndex((s) => s.id === "repair-anatomy-intro");
   const showTroubleshoot = index >= srv6TiLfaSteps.findIndex((s) => s.id === "break-intro-ti-lfa");
   const showMultiSidLab = currentStep?.id === "multi-sid-example" || currentStep?.id === "no-fake-srh-contrast";
+  const showBehaviorExecution = currentStep?.id === "p4-usd-decap";
   const nodeProtectionLabStart = srv6TiLfaSteps.findIndex((s) => s.id === "node-protection-intro");
   const nodeProtectionLabEnd = srv6TiLfaSteps.findIndex((s) => s.id === "srlg-preview");
   const inNodeProtectionLab = index >= nodeProtectionLabStart && index <= nodeProtectionLabEnd;
@@ -114,44 +142,7 @@ export default function Srv6TiLfaDemo() {
 
   const cliCommands = useMemo(() => buildSrv6TiLfaCliCommands(state, focusRouter), [state, focusRouter]);
   const lastHop = state.journey[state.journey.length - 1];
-
-  // --- 3D derived state ---
-  const nodes3DBase = useMemo(() => layoutTo3D(GRAPH_NODES), []);
-  const visitedRouters = new Set(state.journey.map((h) => h.router));
-  const nodes3D = nodes3DBase.map((n) => {
-    let status: Node3DStatus = "idle";
-    if (n.id === selectedNodeId || n.id === enteredDeviceId) status = "selected";
-    else if (activePacket && (n.id === activePacket.from || n.id === activePacket.to)) status = "active";
-    else if (visitedRouters.has(n.id as RouterId)) status = "onPath";
-    const badges = n.id === "P1" ? ["PLR"] : n.id === "P2" && state.failedLinkIds.includes(PROTECTED_LINK) ? ["LINK DOWN"] : n.id === "P4" ? ["REPAIR NODE"] : undefined;
-    return { ...n, status, badges };
-  });
-  const links3D: Link3DData[] = GRAPH_EDGES.map((e) => ({
-    ...e,
-    active: activePacket ? (e.a === activePacket.from && e.b === activePacket.to) || (e.b === activePacket.from && e.a === activePacket.to) : false,
-    onPath: visitedRouters.has(e.a as RouterId) && visitedRouters.has(e.b as RouterId),
-  }));
-  const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
-  const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
-  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
-
-  const activeDeviceId = DEVICE_ROUTERS.find((r) => traceFor(r, state, currentStep?.id ?? "")?.activeStageId !== undefined);
-  const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : undefined;
-  const inDeviceMode = !!effectiveDeviceId;
-  const deviceTrace = effectiveDeviceId ? traceFor(effectiveDeviceId, state, currentStep?.id ?? "") : undefined;
-
-  const deviceInterfaces = effectiveDeviceId ? interfacesFor(effectiveDeviceId, state, currentStep?.id ?? "") : [];
-  const devicePacketFrames = effectiveDeviceId ? packetFramesFor(state, deviceTrace?.activeStageId) : undefined;
-
-  const focusPosition3D: [number, number, number] | undefined = inDeviceMode ? [0, 0, deviceXray ? -0.2 : 0] : selectedNode3D?.position;
-  const eyeOffset3D: [number, number, number] | undefined = inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
-
-  const explainTargetId = effectiveDeviceId ?? selectedNodeId;
-  const nodeExplanation = explainTargetId ? explainNode(state, explainTargetId) : undefined;
-  const xrayPacket = activePacket && (selectedNodeId === activePacket.from || selectedNodeId === activePacket.to) ? activePacket : undefined;
-  const selectedLinkDetail = selectedLinkId ? linkDetailFor(selectedLinkId, state) : undefined;
-  const packetCurrentDeviceLabel = effectiveDeviceId ?? state.packetAt ?? activePacket?.from ?? "—";
-  const devicePacketForTab = xrayPacket ?? (effectiveDeviceId && state.packetAt === effectiveDeviceId ? activePacket : undefined);
+  const multiSid = useMemo(() => buildMultiSidIllustration(), []);
 
   const repairComputationStages: RepairComputationStage[] = activeRepair
     ? [
@@ -181,6 +172,141 @@ export default function Srv6TiLfaDemo() {
   });
 
   const readiness = activeRepair ? validateRepairPath(activeRepair, state.links) : undefined;
+
+  // --- 3D derived state ---
+  const nodes3DBase = useMemo(() => layoutTo3D(GRAPH_NODES), []);
+  const visitedRouters = new Set(state.journey.map((h) => h.router));
+  const nodes3D = nodes3DBase.map((n) => {
+    let status: Node3DStatus = "idle";
+    if (n.id === selectedNodeId || n.id === enteredDeviceId) status = "selected";
+    else if (activePacket && (n.id === activePacket.from || n.id === activePacket.to)) status = "active";
+    else if (visitedRouters.has(n.id as RouterId)) status = "onPath";
+    const badges = n.id === "P1" ? ["PLR"] : n.id === "P2" && state.failedLinkIds.includes(PROTECTED_LINK) ? ["LINK DOWN"] : n.id === "P4" ? ["REPAIR NODE"] : undefined;
+    return { ...n, status, badges };
+  });
+  const links3D: Link3DData[] = GRAPH_EDGES.map((e) => ({
+    ...e,
+    active: activePacket ? (e.a === activePacket.from && e.b === activePacket.to) || (e.b === activePacket.from && e.a === activePacket.to) : false,
+    onPath: visitedRouters.has(e.a as RouterId) && visitedRouters.has(e.b as RouterId),
+  }));
+  const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
+  const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
+
+  const activeDeviceId = DEVICE_ROUTERS.find((r) => traceFor(r, state, currentStep?.id ?? "")?.activeStageId !== undefined);
+  const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : cameraMode === "packetFollow" && autoEnterDevices ? activeDeviceId : undefined;
+  const inDeviceMode = !!effectiveDeviceId;
+  const deviceTrace = effectiveDeviceId ? traceFor(effectiveDeviceId, state, currentStep?.id ?? "") : undefined;
+
+  const followPacketIntoCurrentDevice = () => {
+    if (!packetSelected || cameraMode !== "device") return;
+    const snap = engine.getSnapshot();
+    const nextDevice = DEVICE_ROUTERS.find((r) => traceFor(r, snap.state, snap.currentStep?.id ?? "")?.activeStageId !== undefined);
+    if (nextDevice) setEnteredDeviceId(nextDevice);
+  };
+
+  const deviceInterfaces = effectiveDeviceId ? interfacesFor(effectiveDeviceId, state, currentStep?.id ?? "") : [];
+  const devicePacketFrames: PacketStackFrame[] | undefined = effectiveDeviceId ? packetFramesFor(state, deviceTrace?.activeStageId) : undefined;
+
+  // --- Generic 3D object-focus sub-state — layered ON TOP of `cameraMode`, never a 5th camera mode.
+  const focusedObjectStillValid =
+    focusedObject &&
+    (focusedObject.kind === "stage"
+      ? deviceTrace?.stages.some((s) => s.id === focusedObject.id)
+      : focusedObject.kind === "packetLayer"
+        ? devicePacketFrames?.some((f) => f.id === focusedObject.id)
+        : focusedObject.kind === "interface"
+          ? deviceInterfaces.some((i) => i.id === focusedObject.id)
+          : true);
+  const activeFocusedObject = focusedObjectStillValid ? focusedObject : undefined;
+
+  const followNode3D = cameraMode === "packetFollow" && activePacket ? nodes3D.find((n) => n.id === (state.packetAt ?? activePacket.to)) : selectedNode3D;
+  const focusPosition3D: [number, number, number] | undefined = activeFocusedObject
+    ? activeFocusedObject.position
+    : cameraMode === "freeOrbit"
+      ? undefined
+      : inDeviceMode
+        ? [0, 0, deviceXray ? -0.2 : 0]
+        : cameraMode === "packetFollow"
+          ? followNode3D?.position
+          : selectedNode3D?.position;
+  const eyeOffset3D: [number, number, number] | undefined = activeFocusedObject ? eyeOffsetForFocusTarget(activeFocusedObject) : inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
+
+  const explainTargetId = effectiveDeviceId ?? selectedNodeId ?? followNode3D?.id;
+  const nodeExplanation = explainTargetId ? explainNode(state, explainTargetId as RouterId) : undefined;
+  const xrayPacket = activePacket && (selectedNodeId === activePacket.from || selectedNodeId === activePacket.to) ? activePacket : undefined;
+  const selectedLinkDetail = selectedLinkId ? linkDetailFor(selectedLinkId, state) : undefined;
+  const packetCurrentDeviceLabel = effectiveDeviceId ?? state.packetAt ?? activePacket?.from ?? "—";
+  const devicePacketForTab = xrayPacket ?? (effectiveDeviceId && state.packetAt === effectiveDeviceId ? activePacket : undefined);
+
+  // --- Hop Inspector target — explicit selection wins outright: selectedNodeId > effectiveDeviceId > activeDeviceId.
+  const focusInspectDeviceId = (selectedNodeId ?? effectiveDeviceId ?? activeDeviceId) as RouterId | undefined;
+  const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state, currentStep?.id ?? "") : undefined;
+  const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state, currentStep?.id ?? "") : undefined;
+
+  // --- HopTimeline data — every step that either carries a packet or is a no-packet control-plane/computation step tracked in PRIMARY_TRANSITION_ROUTER.
+  const journeyStepIndices = srv6TiLfaSteps.map((s, i) => ({ s, i })).filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined));
+  const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
+
+  // --- Historical (timeline) inspection — reuses ScenarioEngine's OWN `stateByIndex` snapshot (exposed via `getStateAt`). Presentation-only — never calls `engine.goTo()`.
+  const historicalState = historicalIndex !== undefined ? engine.getStateAt(historicalIndex) : undefined;
+  const historicalStep = historicalIndex !== undefined ? srv6TiLfaSteps[historicalIndex] : undefined;
+  const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
+  const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
+  const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+  const historicalInterfaces = historicalDeviceId && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+
+  /** Detail shown in <ObjectFocusPanel> for a focused stage/packetLayer/interface. Every field comes straight off `deviceTrace`/`deviceInterfaces`/`devicePacketFrames`; link focus reuses <LinkDetailPanel> instead. */
+  function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
+    if (target.kind === "stage" && deviceTrace) {
+      const stage = deviceTrace.stages.find((s) => s.id === target.id);
+      const fields: { label: string; value: string }[] = [];
+      if (stage?.detail) fields.push({ label: "Detail", value: stage.detail });
+      if (deviceTrace.activeStageId === target.id) {
+        if (deviceTrace.lookupType) fields.push({ label: "Lookup", value: deviceTrace.lookupType });
+        if (deviceTrace.lookupKey) fields.push({ label: "Match", value: deviceTrace.lookupKey });
+        if (deviceTrace.lookupResult) fields.push({ label: "Result", value: deviceTrace.lookupResult });
+        const egressIface = deviceInterfaces.find((i) => i.id === deviceTrace.egressInterfaceId);
+        if (egressIface) fields.push({ label: "Egress", value: egressIface.name });
+        if (deviceTrace.reason) fields.push({ label: "Why", value: deviceTrace.reason });
+      }
+      return { title: stage?.label ?? target.id, fields };
+    }
+    if (target.kind === "packetLayer") {
+      const frame = devicePacketFrames?.find((f) => f.id === target.id);
+      return { title: frame?.text ?? target.id, fields: [] };
+    }
+    if (target.kind === "interface") {
+      const iface = deviceInterfaces.find((i) => i.id === target.id);
+      if (!iface) return { title: target.id, fields: [] };
+      const fields: { label: string; value: string }[] = [];
+      if (iface.neighborLabel) fields.push({ label: "Peer", value: iface.neighborLabel });
+      fields.push({ label: "Current role", value: iface.role === "ingress" ? "Ingress" : iface.role === "egress" ? "Egress" : "Idle" });
+      fields.push({ label: "Status", value: iface.status === "up" ? "Up" : "Down" });
+      if (iface.ip) fields.push({ label: "IP", value: iface.ip });
+      return { title: iface.name, fields };
+    }
+    return { title: target.id, fields: [] };
+  }
+
+  function handleCameraModeChange(v: CameraMode) {
+    setCameraMode(v);
+    if (v === "device" && !enteredDeviceId) setEnteredDeviceId(selectedNodeId ?? activeDeviceId ?? "P1");
+    if (v === "overview") {
+      setEnteredDeviceId(undefined);
+      setSelectedNodeId(undefined);
+    }
+    if (v === "freeOrbit") setEnteredDeviceId(undefined);
+  }
+
+  function handleToggleAutoPlay() {
+    if (!autoPlay) {
+      setFocusedObject(undefined);
+      setHistoricalIndex(undefined);
+      setInspectorSurface("hop");
+    }
+    setAutoPlay((v) => !v);
+  }
 
   const peExplorerTabs = (router: RouterId): DeviceExplorerTab[] =>
     nodeExplanation
@@ -226,6 +352,12 @@ export default function Srv6TiLfaDemo() {
       ]
     : [];
 
+  function explorerTabsFor(router: RouterId): DeviceExplorerTab[] {
+    if (router === "P3") return p3ExplorerTabs;
+    if (router === "P4") return p4ExplorerTabs;
+    return peExplorerTabs(router);
+  }
+
   const diagnosticLayers: DiagnosticLayer[] = [
     { label: "P1-P2 Failure Detected", status: "healthy" },
     { label: "PLR = P1", status: "healthy" },
@@ -270,11 +402,36 @@ export default function Srv6TiLfaDemo() {
     setPacketSelected(false);
     setTopoView("physical");
     setViewMode3D(false);
+    setFocusMode(false);
+    setFocusedObject(undefined);
+    setHistoricalIndex(undefined);
+    setInspectorSurface("hop");
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Apply the correct fix to continue" : "Next Step →";
 
-  const multiSid = useMemo(() => buildMultiSidIllustration(), []);
+  const preConvergencePanel = <RouteEvolutionViewer title="Per-Router FIB Toward PE2 (Stale vs. Converged)" oldLabel="STALE" newLabel="CURRENT" fields={staleFibFields} winnerReason="P3/P4 keep their pre-failure FIB until THEY individually converge — this is the whole reason local repair can't rely on their forwarding." />;
+  const repairSpacesPanel = activeRepair && <RepairSpaceViewer title={`Repair Spaces — ${activeRepair.mode === "LINK" ? PROTECTED_LINK : PROTECTED_NODE}`} nodes={ALL_ROUTERS.map((r) => ({ id: r, label: r }))} pSpace={activeRepair.pSpace} extendedPSpace={activeRepair.extendedPSpace} qSpace={activeRepair.qSpace} pqCandidates={activeRepair.pqCandidates} selectedRepairNode={activeRepair.repairNode} protectedResource={activeRepair.protectedResource} plr="P1" destination="PE2" />;
+  const repairProgramPanel = activeRepair && (
+    <div className="space-y-3">
+      <RepairComputationViewer title="Repair Computation Pipeline" stages={repairComputationStages} />
+      <Srv6RepairListViewer
+        protectedResource={activeRepair.protectedResource}
+        outgoingInterface={activeRepair.outgoingInterface ? `P1 → ${activeRepair.outgoingInterface}` : undefined}
+        sids={activeRepair.repairList.sids.map((s) => ({ sid: s.sidText, owner: s.owner, behavior: s.behavior, adjacency: s.adjacency, flavors: s.flavors, purpose: `Forces the exposed packet to adjacency ${s.adjacency} — never rewrites the packet's own destination.` }))}
+      />
+    </div>
+  );
+  const recoveryPanel = <RecoveryTimelineViewer events={recoveryEvents} />;
+  const multiSidPanel = (
+    <GlassPanel strong className="space-y-2 p-5">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Multi-SID SRH Lab (Separate Illustration)</h3>
+      <p className="pv-mono text-xs text-pv-text-muted">Outer DA = {multiSid.sids[0].sidText}</p>
+      <p className="pv-mono text-xs text-pv-text-muted">Segment List[0] = {multiSid.srh.segmentList[0].sidText} (final)</p>
+      <p className="pv-mono text-xs text-pv-text-muted">Segment List[1] = {multiSid.srh.segmentList[1].sidText}</p>
+      <p className="pv-mono text-xs text-pv-text-muted">Segments Left = {multiSid.srh.segmentsLeft} · Last Entry = {multiSid.srh.lastEntry}</p>
+    </GlassPanel>
+  );
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
@@ -325,25 +482,20 @@ export default function Srv6TiLfaDemo() {
         />
         <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => setViewMode3D(v === "on")} tone="violet" />
         {viewMode3D && (
-          <TopologyModeSwitcher
-            options={[
-              { value: "overview", label: "Overview" },
-              { value: "device", label: "Device" },
-              { value: "freeOrbit", label: "Free Orbit" },
-            ]}
-            value={cameraMode}
-            onChange={(v) => {
-              setCameraMode(v);
-              if (v === "device" && !enteredDeviceId) setEnteredDeviceId(selectedNodeId ?? activeDeviceId ?? "P1");
-              if (v === "overview") {
-                setEnteredDeviceId(undefined);
-                setSelectedNodeId(undefined);
-              }
-              if (v === "freeOrbit") setEnteredDeviceId(undefined);
-            }}
-          />
+          <>
+            <TopologyModeSwitcher
+              options={[
+                { value: "overview", label: "Overview" },
+                { value: "device", label: "Device" },
+                { value: "packetFollow", label: "Packet Follow" },
+                { value: "freeOrbit", label: "Free Orbit" },
+              ]}
+              value={cameraMode}
+              onChange={handleCameraModeChange}
+            />
+            {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+          </>
         )}
-        {viewMode3D && inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
@@ -351,33 +503,75 @@ export default function Srv6TiLfaDemo() {
         <div className="space-y-6">
           {viewMode3D ? (
             <>
-              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D}>
-              <NetworkScene3D
-                nodes={nodes3D}
-                links={links3D}
-                activePacket={inDeviceMode ? undefined : activePacket3D}
-                onSelectNode={(id) => {
-                  setSelectedNodeId(id as RouterId);
-                  setPacketSelected(false);
-                  setSelectedLinkId(undefined);
-                }}
-                onSelectLink={(id) => {
-                  setSelectedLinkId(id);
-                  setSelectedNodeId(undefined);
-                  setPacketSelected(false);
-                }}
-                selectedLinkId={selectedLinkId}
-                onSelectPacket={() => {
-                  setPacketSelected(true);
-                  setAutoPlay(false);
-                }}
-                packetSelected={packetSelected}
-                focusPosition={focusPosition3D}
-                eyeOffset={eyeOffset3D}
-                mode={inDeviceMode ? "device" : "overview"}
-                deviceView={inDeviceMode ? { deviceLabel: effectiveDeviceId!, interfaces: deviceInterfaces, xray: deviceXray, trace: deviceTrace, packetFrames: devicePacketFrames, onSelectInterface: setSelectedInterfaceId, selectedInterfaceId, onSelectPacket: () => { setPacketSelected(true); setAutoPlay(false); }, packetSelected } : undefined}
-              />
-              </TopologyQuickExpand>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                {focusMode ? (
+                  // Focus Mode renders its own full-size <NetworkScene3D> below —
+                  // avoid a second, fully hidden WebGL canvas behind the modal
+                  // (one-canvas invariant, see sr-mpls-foundations).
+                  <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" />
+                ) : (
+                  <NetworkScene3D
+                    nodes={nodes3D}
+                    links={links3D}
+                    activePacket={inDeviceMode ? undefined : activePacket3D}
+                    onSelectNode={(id) => {
+                      setSelectedNodeId(id as RouterId);
+                      setPacketSelected(false);
+                      setSelectedLinkId(undefined);
+                    }}
+                    onSelectLink={(id) => {
+                      setSelectedLinkId(id);
+                      setSelectedNodeId(undefined);
+                      setPacketSelected(false);
+                    }}
+                    selectedLinkId={selectedLinkId}
+                    onFocusLink={setFocusedObject}
+                    onSelectPacket={() => {
+                      setPacketSelected(true);
+                      setAutoPlay(false);
+                    }}
+                    packetSelected={packetSelected}
+                    focusPosition={focusPosition3D}
+                    eyeOffset={eyeOffset3D}
+                    mode={inDeviceMode ? "device" : "overview"}
+                    deviceView={
+                      inDeviceMode
+                        ? {
+                            deviceLabel: effectiveDeviceId!,
+                            interfaces: deviceInterfaces,
+                            xray: deviceXray,
+                            trace: deviceTrace,
+                            packetFrames: devicePacketFrames,
+                            onSelectInterface: setSelectedInterfaceId,
+                            selectedInterfaceId,
+                            onSelectPacket: () => {
+                              setPacketSelected(true);
+                              setAutoPlay(false);
+                            },
+                            packetSelected,
+                            pipelineTitle: "Conceptual TI-LFA Repair Pipeline",
+                            onFocusObject: setFocusedObject,
+                            focusedObjectId: activeFocusedObject?.id,
+                          }
+                        : undefined
+                    }
+                  />
+                )}
+              </TopologyFrame>
+
+              {cameraMode === "packetFollow" && (
+                <PacketFocusPanel
+                  currentHopLabel={lastHop ? `${lastHop.router}: ${lastHop.action} → ${lastHop.output}` : undefined}
+                  hopIndex={state.journey.length}
+                  totalHops={5}
+                  onPrevHop={() => engine.goTo(Math.max(0, index - 1))}
+                  onNextHop={() => engine.advance()}
+                  canPrev={index > 0}
+                  canNext={canAdvance}
+                  cameraFollow={true}
+                  onToggleCameraFollow={() => setAutoEnterDevices((v) => !v)}
+                />
+              )}
 
               {packetSelected && activePacket && (
                 <PacketDetailPanel
@@ -386,8 +580,14 @@ export default function Srv6TiLfaDemo() {
                   direction="PE1 → P1 → P3 → P4 → P2 → PE2"
                   paused={packetSelected}
                   onResume={() => setPacketSelected(false)}
-                  onStepForward={() => engine.advance()}
-                  onStepBack={() => engine.goTo(Math.max(0, index - 1))}
+                  onStepForward={() => {
+                    engine.advance();
+                    followPacketIntoCurrentDevice();
+                  }}
+                  onStepBack={() => {
+                    engine.goTo(Math.max(0, index - 1));
+                    followPacketIntoCurrentDevice();
+                  }}
                   canStepForward={canAdvance}
                   canStepBack={index > 0}
                   onClose={() => setPacketSelected(false)}
@@ -399,7 +599,7 @@ export default function Srv6TiLfaDemo() {
               {inDeviceMode && !packetSelected && !selectedLinkDetail ? (
                 <DeviceExplorerPanel
                   explanation={nodeExplanation!}
-                  tabs={effectiveDeviceId === "P3" ? p3ExplorerTabs : effectiveDeviceId === "P4" ? p4ExplorerTabs : peExplorerTabs(effectiveDeviceId!)}
+                  tabs={explorerTabsFor(effectiveDeviceId!)}
                   xrayEnabled={deviceXray}
                   onToggleXray={() => setDeviceXray((v) => !v)}
                   onExit={() => {
@@ -447,28 +647,10 @@ export default function Srv6TiLfaDemo() {
                 </GlassPanel>
               )}
 
-              {topoView === "preConvergence" && (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <RouteEvolutionViewer title="Per-Router FIB Toward PE2 (Stale vs. Converged)" oldLabel="STALE" newLabel="CURRENT" fields={staleFibFields} winnerReason="P3/P4 keep their pre-failure FIB until THEY individually converge — this is the whole reason local repair can't rely on their forwarding." />
-                </div>
-              )}
-
-              {topoView === "repairSpaces" && activeRepair && (
-                <RepairSpaceViewer title={`Repair Spaces — ${activeRepair.mode === "LINK" ? PROTECTED_LINK : PROTECTED_NODE}`} nodes={ALL_ROUTERS.map((r) => ({ id: r, label: r }))} pSpace={activeRepair.pSpace} extendedPSpace={activeRepair.extendedPSpace} qSpace={activeRepair.qSpace} pqCandidates={activeRepair.pqCandidates} selectedRepairNode={activeRepair.repairNode} protectedResource={activeRepair.protectedResource} plr="P1" destination="PE2" />
-              )}
-
-              {topoView === "repairProgram" && activeRepair && (
-                <div className="space-y-3">
-                  <RepairComputationViewer title="Repair Computation Pipeline" stages={repairComputationStages} />
-                  <Srv6RepairListViewer
-                    protectedResource={activeRepair.protectedResource}
-                    outgoingInterface={activeRepair.outgoingInterface ? `P1 → ${activeRepair.outgoingInterface}` : undefined}
-                    sids={activeRepair.repairList.sids.map((s) => ({ sid: s.sidText, owner: s.owner, behavior: s.behavior, adjacency: s.adjacency, flavors: s.flavors, purpose: `Forces the exposed packet to adjacency ${s.adjacency} — never rewrites the packet's own destination.` }))}
-                  />
-                </div>
-              )}
-
-              {topoView === "recovery" && <RecoveryTimelineViewer events={recoveryEvents} />}
+              {topoView === "preConvergence" && <div className="grid gap-3 sm:grid-cols-2">{preConvergencePanel}</div>}
+              {topoView === "repairSpaces" && repairSpacesPanel}
+              {topoView === "repairProgram" && repairProgramPanel}
+              {topoView === "recovery" && recoveryPanel}
             </>
           )}
 
@@ -517,16 +699,7 @@ export default function Srv6TiLfaDemo() {
             </GlassPanel>
           )}
 
-          {showMultiSidLab && !isComplete && (
-            <GlassPanel strong className="space-y-2 p-5">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Multi-SID SRH Lab (Separate Illustration)</h3>
-              <p className="pv-mono text-xs text-pv-text-muted">Outer DA = {multiSid.sids[0].sidText}</p>
-              <p className="pv-mono text-xs text-pv-text-muted">Segment List[0] = {multiSid.srh.segmentList[0].sidText} (final)</p>
-              <p className="pv-mono text-xs text-pv-text-muted">Segment List[1] = {multiSid.srh.segmentList[1].sidText}</p>
-              <p className="pv-mono text-xs text-pv-text-muted">Segments Left = {multiSid.srh.segmentsLeft} · Last Entry = {multiSid.srh.lastEntry}</p>
-            </GlassPanel>
-          )}
-
+          {showMultiSidLab && !isComplete && multiSidPanel}
           {showTroubleshoot && !isComplete && <TroubleshootingLayers title="Troubleshooting Layers" layers={diagnosticLayers} />}
 
           {isComplete && (
@@ -558,7 +731,7 @@ export default function Srv6TiLfaDemo() {
               <Button size="sm" onClick={() => engine.advance()} disabled={!canAdvance}>
                 {nextLabel}
               </Button>
-              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={() => setAutoPlay((v) => !v)}>
+              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={handleToggleAutoPlay}>
                 {autoPlay ? "⏸ Auto-Playing" : "▶ Auto-Play"}
               </Button>
               <div className="flex gap-1 rounded-full border border-pv-border p-0.5">
@@ -608,6 +781,285 @@ export default function Srv6TiLfaDemo() {
           <CLIOutputPanel commands={cliCommands} />
         </div>
       </div>
+
+      {focusMode && (
+        <TopologyFocusMode
+          onClose={() => setFocusMode(false)}
+          toolbar={
+            <>
+              <TopologyModeSwitcher
+                options={[
+                  { value: "overview", label: "Overview" },
+                  { value: "device", label: "Device" },
+                  { value: "packetFollow", label: "Packet Follow" },
+                  { value: "freeOrbit", label: "Free Orbit" },
+                ]}
+                value={cameraMode}
+                onChange={handleCameraModeChange}
+              />
+              {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+              {cameraMode === "packetFollow" && (
+                <button
+                  type="button"
+                  onClick={() => setAutoEnterDevices((v) => !v)}
+                  className={clsx("rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors", autoEnterDevices ? "border-pv-cyan/50 bg-pv-cyan/15 text-pv-cyan-soft" : "border-pv-border text-pv-text-faint hover:text-pv-text")}
+                >
+                  Auto-Enter Devices
+                </button>
+              )}
+            </>
+          }
+          header={
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <Badge tone="muted">
+                  Step {Math.min(index + 1, totalSteps)} / {totalSteps}
+                </Badge>
+                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label ?? (isComplete ? "Complete" : "")}</span>
+              </div>
+              {questionActive ? (
+                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
+                  Prediction pending — answer in the panel to continue
+                </span>
+              ) : currentStep?.id === "repair-challenge" ? (
+                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
+                  Engineer challenge pending — recompute the correct repair to continue
+                </span>
+              ) : (
+                currentStep?.narrative && (
+                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
+                    {currentStep.narrative}
+                  </p>
+                )
+              )}
+            </div>
+          }
+          canvas={
+            <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
+              <NetworkScene3D
+                nodes={nodes3D}
+                links={links3D}
+                activePacket={inDeviceMode ? undefined : activePacket3D}
+                onSelectNode={(id) => {
+                  setSelectedNodeId(id as RouterId);
+                  setPacketSelected(false);
+                  setSelectedLinkId(undefined);
+                  setInspectorSurface("device");
+                  setHistoricalIndex(undefined);
+                }}
+                onSelectLink={(id) => setSelectedLinkId(id)}
+                selectedLinkId={selectedLinkId}
+                onFocusLink={setFocusedObject}
+                onSelectPacket={() => setPacketSelected(true)}
+                packetSelected={packetSelected}
+                focusPosition={focusPosition3D}
+                eyeOffset={eyeOffset3D}
+                mode={inDeviceMode ? "device" : "overview"}
+                deviceView={
+                  inDeviceMode
+                    ? {
+                        deviceLabel: effectiveDeviceId!,
+                        interfaces: deviceInterfaces,
+                        xray: deviceXray,
+                        trace: deviceTrace,
+                        packetFrames: devicePacketFrames,
+                        onSelectInterface: setSelectedInterfaceId,
+                        selectedInterfaceId,
+                        onSelectPacket: () => setPacketSelected(true),
+                        packetSelected,
+                        pipelineTitle: "Conceptual TI-LFA Repair Pipeline",
+                        onFocusObject: setFocusedObject,
+                        focusedObjectId: activeFocusedObject?.id,
+                      }
+                    : undefined
+                }
+              />
+            </div>
+          }
+          inspector={
+            currentStep?.question ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
+                <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
+              </>
+            ) : currentStep?.id === "repair-challenge" ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
+                <RepairChallenge options={REPAIR_OPTIONS} attempt={state.repairAttempt} onTry={(choice) => engine.act({ choice })} />
+              </>
+            ) : showBehaviorExecution && state.linkRepair?.repairList.sids[0] ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">End.X + USD Execution</p>
+                <Srv6BehaviorExecutionViewer
+                  data={{
+                    activeSid: state.linkRepair.repairList.sids[0].sidText,
+                    matchedLocalSid: state.linkRepair.repairList.sids[0].sidText,
+                    behavior: "End.X + USD",
+                    input: "Repair outer IPv6 + original inner IPv6",
+                    validation: "Segments Left = 0 (single-SID repair, no SRH) — final segment position OK.",
+                    transformation: "Remove repair outer IPv6 header and extensions entirely.",
+                    egressDecision: `Force exposed packet to adjacency ${state.linkRepair.repairList.sids[0].adjacency}`,
+                    resultingPacket: `Original IPv6 → ${state.linkRepair.repairList.sids[0].adjacency}`,
+                  }}
+                />
+              </>
+            ) : showMultiSidLab ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Multi-SID SRH Lab</p>
+                {multiSidPanel}
+              </>
+            ) : currentStep && PRE_CONVERGENCE_STEPS.has(currentStep.id) ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Pre-Convergence FIB</p>
+                {preConvergencePanel}
+              </>
+            ) : currentStep && REPAIR_SPACES_STEPS.has(currentStep.id) && repairSpacesPanel ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Repair Spaces</p>
+                {repairSpacesPanel}
+              </>
+            ) : currentStep && REPAIR_PROGRAM_STEPS.has(currentStep.id) && repairProgramPanel ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Repair Program</p>
+                {repairProgramPanel}
+              </>
+            ) : currentStep && RECOVERY_STEPS.has(currentStep.id) ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Recovery Timeline</p>
+                {recoveryPanel}
+              </>
+            ) : selectedLinkDetail ? (
+              <LinkDetailPanel
+                detail={selectedLinkDetail}
+                onClose={() => {
+                  setSelectedLinkId(undefined);
+                  setFocusedObject(undefined);
+                }}
+              />
+            ) : activeFocusedObject && activeFocusedObject.kind !== "link" ? (
+              <ObjectFocusPanel
+                kind={activeFocusedObject.kind}
+                title={focusPanelFieldsFor(activeFocusedObject).title}
+                fields={focusPanelFieldsFor(activeFocusedObject).fields}
+                onBack={() => setFocusedObject(undefined)}
+                onOverview={() => {
+                  setFocusedObject(undefined);
+                  handleCameraModeChange("overview");
+                }}
+              />
+            ) : inspectorSurface === "device" ? (
+              inDeviceMode ? (
+                <div className="space-y-3">
+                  <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" />
+                  <DeviceExplorerPanel
+                    explanation={nodeExplanation!}
+                    tabs={explorerTabsFor(effectiveDeviceId!)}
+                    xrayEnabled={deviceXray}
+                    onToggleXray={() => setDeviceXray((v) => !v)}
+                    onExit={() => {
+                      setCameraMode("overview");
+                      setEnteredDeviceId(undefined);
+                    }}
+                  />
+                </div>
+              ) : nodeExplanation ? (
+                <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} />
+              ) : (
+                <GlassPanel className="p-4">
+                  <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+                </GlassPanel>
+              )
+            ) : historicalIndex !== undefined && historicalTrace ? (
+              <div className="space-y-3">
+                {inDeviceMode && (
+                  <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" disabledValues={["device"]} />
+                )}
+                <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-pv-violet">Historical — {historicalStep?.label}</span>
+                  </div>
+                  <button type="button" onClick={() => setHistoricalIndex(undefined)} className="text-[11px] font-semibold uppercase tracking-wide text-pv-text-faint transition-colors hover:text-pv-cyan-soft">
+                    Return to Current →
+                  </button>
+                </div>
+                <HopInspectorPanel trace={historicalTrace} deviceName={historicalDeviceId ?? "—"} interfaces={historicalInterfaces} />
+                <PacketDiffViewer before={historicalTrace.packetBeforeFrames} after={historicalTrace.packetAfterFrames} beforeText={historicalTrace.packetBefore} afterText={historicalTrace.packetAfter} mutations={historicalTrace.mutations} />
+              </div>
+            ) : focusTrace ? (
+              <div className="space-y-3">
+                {inDeviceMode && <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" />}
+                <HopInspectorPanel
+                  trace={focusTrace}
+                  deviceName={focusInspectDeviceId ?? "—"}
+                  interfaces={focusInterfaces}
+                  onFocusNextHop={(id) => {
+                    setSelectedNodeId(id as RouterId);
+                    setInspectorSurface("hop");
+                    setHistoricalIndex(undefined);
+                    if (cameraMode === "device" && DEVICE_ROUTERS.includes(id as RouterId)) setEnteredDeviceId(id as RouterId);
+                  }}
+                />
+                <PacketDiffViewer before={focusTrace.packetBeforeFrames} after={focusTrace.packetAfterFrames} beforeText={focusTrace.packetBefore} afterText={focusTrace.packetAfter} mutations={focusTrace.mutations} />
+              </div>
+            ) : (
+              <GlassPanel className="p-4">
+                <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+              </GlassPanel>
+            )
+          }
+          timeline={
+            <div className="space-y-2">
+              <HopTimeline
+                hops={journeyHopEntries}
+                currentIndex={historicalIndex !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalIndex) : journeyHopEntries.length - 1}
+                onSelectHop={(i) => {
+                  const entry = journeyHopEntries[i];
+                  if (!entry) return;
+                  setInspectorSurface("hop");
+                  if (entry.index === index) {
+                    setHistoricalIndex(undefined);
+                    return;
+                  }
+                  setHistoricalIndex(entry.index);
+                  setFocusedObject(undefined);
+                  const histState = engine.getStateAt(entry.index);
+                  const histStep = srv6TiLfaSteps[entry.index];
+                  const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
+                  const router = histState ? deviceForStep(entry.id, histPacket) : undefined;
+                  if (router && DEVICE_ROUTERS.includes(router)) {
+                    setSelectedNodeId(router);
+                    if (cameraMode === "device") setEnteredDeviceId(router);
+                  }
+                }}
+              />
+              <PacketFlowControls
+                playing={autoPlay}
+                onTogglePlay={handleToggleAutoPlay}
+                onPrevHop={() => {
+                  setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
+                  engine.goTo(Math.max(0, index - 1));
+                }}
+                onNextHop={() => {
+                  setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
+                  engine.advance();
+                }}
+                onReset={handleRestart}
+                canPrevHop={index > 0}
+                canNextHop={canAdvance}
+                speed={speed as PlaySpeed}
+                onSpeedChange={setSpeed}
+                followPacket={cameraMode === "packetFollow"}
+                onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
+                view3D={viewMode3D}
+                onToggleView3D={() => setViewMode3D((v) => !v)}
+              />
+            </div>
+          }
+        />
+      )}
     </div>
   );
 }
