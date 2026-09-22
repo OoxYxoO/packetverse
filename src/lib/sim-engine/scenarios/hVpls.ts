@@ -383,6 +383,29 @@ export interface JourneyHop {
   lookup: string;
   action: JourneyAction;
   output: string;
+  /**
+   * The real device this frame physically arrived FROM / is being forwarded
+   * singularly TO at this hop — set only when the `run()` that pushed this
+   * hop already knows it unambiguously (the `ingress` port it read, or a
+   * `final` egress set of exactly one port). Deliberately omitted for a
+   * genuine multi-branch flood/BUM hop (no single "next hop" exists there —
+   * the full egress set is already in `output`/`lookup` text) and for a
+   * terminal AC delivery (nothing meaningful comes "after" it).
+   *
+   * This exists because H-VPLS's journey log is NOT strictly linear the way
+   * mpls-vpls's is: a single flood fans out to two ports in one step, so
+   * both branches get appended to the SAME `journey` array one after
+   * another. A Scene Adapter that infers ingress/egress from "the
+   * previous/next array entry" (correct for mpls-vpls's one-path-at-a-time
+   * journeys) silently picks the WRONG branch here — e.g. PE1's hop would
+   * appear to have arrived from CE2 (the other flood branch, delivered in
+   * the immediately-preceding array entry) instead of MTU1 (its actual
+   * spoke neighbor). Recording the real peer here, once, where the
+   * forwarding decision already knows it, is more accurate than any
+   * adjacency heuristic could be.
+   */
+  ingressPeer?: RouterId;
+  egressPeer?: RouterId;
 }
 export interface TroubleshootingState {
   started: boolean;
@@ -683,7 +706,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const { fdb, change } = learnSourceMac(fdbFor(state, "MTU1"), CE_MAC.CE1, { kind: "AC", peer: "CE1" });
-      const journey: JourneyHop[] = [{ device: "MTU1", input: "Ethernet frame (unlabeled)", lookup: `Learn source ${CE_MAC.CE1} on AC: CE1`, action: "AC_INGRESS", output: `FDB[MTU1]: ${CE_MAC.CE1} → AC: CE1 (${change})` }];
+      const journey: JourneyHop[] = [{ device: "MTU1", input: "Ethernet frame (unlabeled)", lookup: `Learn source ${CE_MAC.CE1} on AC: CE1`, action: "AC_INGRESS", output: `FDB[MTU1]: ${CE_MAC.CE1} → AC: CE1 (${change})`, ingressPeer: "CE1" }];
       return { state: { ...state, packetAt: "MTU1", journey, fdb: { ...state.fdb, MTU1: fdb } }, events: [{ type: "MAC_LEARNED", stepId: "mtu1-learn-ce1", timestamp: Date.now(), message: `MTU1 learns ${CE_MAC.CE1} on AC: CE1` }] };
     },
     whatChanged: () => [`MTU1 FDB: + ${CE_MAC.CE1} → AC: CE1`],
@@ -715,7 +738,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
       const decision = classifyHvplsForwardingDecision(lookup, raw, final);
-      const journey = [...state.journey, { device: "MTU1" as RouterId, input: CE_MAC.CE2, lookup: `Egress set: [${raw.map(portLabel).join(", ")}]`, action: "REPLICATE" as JourneyAction, output: `Flood to: ${final.map(portLabel).join(", ")}` }];
+      const journey = [...state.journey, { device: "MTU1" as RouterId, input: CE_MAC.CE2, lookup: `Egress set: [${raw.map(portLabel).join(", ")}]`, action: "REPLICATE" as JourneyAction, output: `Flood to: ${final.map(portLabel).join(", ")}`, ingressPeer: "CE1" as RouterId }];
       return { state: { ...state, journey, lastDecision: decision, floodCopies: [{ id: "fc-mtu1-ce2", fromId: "MTU1", toId: "CE2" }, { id: "fc-mtu1-pe1", fromId: "MTU1", toId: "PE1" }] }, events: [] };
     },
     whatChanged: () => ["MTU1 floods to AC: CE2 AND SPOKE_PW: PE1 — two independent copies"],
@@ -748,7 +771,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const lookup = lookupDestinationMac(fdb, CE_MAC.CE2);
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
-      const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Spoke label → ${SERVICE_NAME}; learn ${CE_MAC.CE1} on SPOKE_PW: MTU1; lookup ${CE_MAC.CE2}: UNKNOWN_UNICAST`, action: "SPOKE_INGRESS" as JourneyAction, output: `SPOKE → MESH allowed. Flood to: ${final.map(portLabel).join(", ")}` }];
+      const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Spoke label → ${SERVICE_NAME}; learn ${CE_MAC.CE1} on SPOKE_PW: MTU1; lookup ${CE_MAC.CE2}: UNKNOWN_UNICAST`, action: "SPOKE_INGRESS" as JourneyAction, output: `SPOKE → MESH allowed. Flood to: ${final.map(portLabel).join(", ")}`, ingressPeer: "MTU1" as RouterId }];
       return { state: { ...state, packet: afterPop, packetAt: "PE1", journey, fdb: { ...state.fdb, PE1: fdb }, lastDecision: "UNKNOWN_UNICAST", floodCopies: [{ id: "fc-pe1-pe2", fromId: "PE1", toId: "PE2" }, { id: "fc-pe1-pe3", fromId: "PE1", toId: "PE3" }] }, events: [{ type: "MAC_LEARNED", stepId: "pe1-receives-spoke-copy", timestamp: Date.now(), message: `PE1 learns ${CE_MAC.CE1} on SPOKE_PW: MTU1` }] };
     },
     whatChanged: () => [`PE1 FDB: + ${CE_MAC.CE1} → SPOKE_PW: MTU1`, "PE1 floods to MESH_PW: PE2 AND MESH_PW: PE3 — spoke ingress permits mesh egress"],
@@ -783,7 +806,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
       const decision = classifyHvplsForwardingDecision(lookup, raw, final);
-      const journey = [...state.journey, { device: "PE2" as RouterId, input: `label ${allocatePwReceiveLabel("PE2", "PE1")}`, lookup: `Egress set: [${raw.map(portLabel).join(", ")}] → hierarchical split horizon → [${final.map(portLabel).join(", ")}]`, action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: `MESH → SPOKE allowed, MESH → MESH blocked. Deliver to: ${final.map(portLabel).join(", ")}` }];
+      const journey = [...state.journey, { device: "PE2" as RouterId, input: `label ${allocatePwReceiveLabel("PE2", "PE1")}`, lookup: `Egress set: [${raw.map(portLabel).join(", ")}] → hierarchical split horizon → [${final.map(portLabel).join(", ")}]`, action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: `MESH → SPOKE allowed, MESH → MESH blocked. Deliver to: ${final.map(portLabel).join(", ")}`, ingressPeer: "PE1" as RouterId, egressPeer: "MTU2" as RouterId }];
       return { state: { ...state, packetAt: "PE2", journey, fdb: { ...state.fdb, PE2: fdb }, lastDecision: decision }, events: [{ type: "MAC_LEARNED", stepId: "pe2-receives-mesh-delivers-spoke", timestamp: Date.now(), message: `PE2 learns ${CE_MAC.CE1} on MESH_PW: PE1` }] };
     },
     whatChanged: () => [`PE2 FDB: + ${CE_MAC.CE1} → MESH_PW: PE1`, "PE2 does NOT relay to MESH_PW: PE3 — mesh split horizon"],
@@ -799,7 +822,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const lookup = lookupDestinationMac(fdb, CE_MAC.CE2);
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
-      const journey = [...state.journey, { device: "PE3" as RouterId, input: `label ${allocatePwReceiveLabel("PE3", "PE1")}`, lookup: `Egress set: [${raw.map(portLabel).join(", ")}] → [${final.map(portLabel).join(", ")}]`, action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: `Deliver to: ${final.map(portLabel).join(", ")}` }];
+      const journey = [...state.journey, { device: "PE3" as RouterId, input: `label ${allocatePwReceiveLabel("PE3", "PE1")}`, lookup: `Egress set: [${raw.map(portLabel).join(", ")}] → [${final.map(portLabel).join(", ")}]`, action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: `Deliver to: ${final.map(portLabel).join(", ")}`, ingressPeer: "PE1" as RouterId, egressPeer: "MTU3" as RouterId }];
       return { state: { ...state, journey, fdb: { ...state.fdb, PE3: fdb }, floodCopies: [{ id: "fc-pe2-mtu2", fromId: "PE2", toId: "MTU2" }, { id: "fc-pe3-mtu3", fromId: "PE3", toId: "MTU3" }] }, events: [{ type: "MAC_LEARNED", stepId: "pe3-receives-direct-from-pe1", timestamp: Date.now(), message: `PE3 learns ${CE_MAC.CE1} on MESH_PW: PE1` }] };
     },
     whatChanged: () => [`PE3 FDB: + ${CE_MAC.CE1} → MESH_PW: PE1`, "PE3 delivers down its own spoke to MTU3 — never via PE2"],
@@ -847,7 +870,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       if (!state.packet) return { state, events: [] };
       const { fdb } = learnSourceMac(fdbFor(state, "MTU1"), CE_MAC.CE2, { kind: "AC", peer: "CE2" });
       const lookup = lookupDestinationMac(fdb, CE_MAC.CE1);
-      const journey = [{ device: "MTU1" as RouterId, input: "Ethernet frame (unlabeled)", lookup: `Learn ${CE_MAC.CE2} on AC: CE2; look up ${CE_MAC.CE1}: ${lookup.kind} → AC: CE1`, action: "LOCAL_SWITCH" as JourneyAction, output: "Delivered directly to CE1 — spoke PW: MTU1-PE1 UNUSED" }];
+      const journey = [{ device: "MTU1" as RouterId, input: "Ethernet frame (unlabeled)", lookup: `Learn ${CE_MAC.CE2} on AC: CE2; look up ${CE_MAC.CE1}: ${lookup.kind} → AC: CE1`, action: "LOCAL_SWITCH" as JourneyAction, output: "Delivered directly to CE1 — spoke PW: MTU1-PE1 UNUSED", ingressPeer: "CE2" as RouterId, egressPeer: "CE1" as RouterId }];
       return { state: { ...state, packetAt: "CE1", journey, fdb: { ...state.fdb, MTU1: fdb }, lastDecision: lookup.kind === "LOCAL_UNICAST" ? "LOCAL_UNICAST" : undefined }, events: [{ type: "MAC_LEARNED", stepId: "mtu1-local-deliver-ce1", timestamp: Date.now(), message: `MTU1 learns ${CE_MAC.CE2} and delivers locally to CE1` }] };
     },
     whatChanged: () => [`MTU1 FDB: + ${CE_MAC.CE2} → AC: CE2`, "Delivered CE2 → CE1 with zero spoke/core traversal"],
@@ -859,7 +882,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
     packet: () => frameOnly("ce1-frame-2", "CE1", ceFrame("CE1", "CE2", "Second frame — now fully local"), "Ethernet frame toward CE2 (local)"),
     run: (state) => {
       const lookup = lookupDestinationMac(fdbFor(state, "MTU1"), CE_MAC.CE2);
-      const journey: JourneyHop[] = [{ device: "MTU1", input: "Ethernet frame", lookup: `FDB hit: ${lookup.kind}`, action: "LOCAL_SWITCH", output: "Delivered directly to CE2 — spoke PW: MTU1-PE1 UNUSED" }];
+      const journey: JourneyHop[] = [{ device: "MTU1", input: "Ethernet frame", lookup: `FDB hit: ${lookup.kind}`, action: "LOCAL_SWITCH", output: "Delivered directly to CE2 — spoke PW: MTU1-PE1 UNUSED", ingressPeer: "CE1", egressPeer: "CE2" }];
       return { state: { ...state, packet: { frame: ceFrame("CE1", "CE2", "Second frame — now fully local"), labels: [] }, packetAt: "CE2", journey, floodCopies: undefined, lastDecision: "LOCAL_UNICAST" }, events: [{ type: "PACKET_SENT", stepId: "send-ce1-to-ce2-2-local", timestamp: Date.now(), message: "CE1 sends a second frame toward CE2, now local" }] };
     },
     whatChanged: () => ["CE1 → CE2: fully local switching at MTU1 — no provider-core bandwidth required"],
@@ -926,7 +949,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const lookup = lookupDestinationMac(fdbFor(state, "MTU1"), CE_MAC.CE3);
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
-      const journey = [{ device: "MTU1" as RouterId, input: CE_MAC.CE3, lookup: `UNKNOWN_UNICAST — egress [${raw.map(portLabel).join(", ")}]`, action: "REPLICATE" as JourneyAction, output: `Flood to: ${final.map(portLabel).join(", ")}` }];
+      const journey = [{ device: "MTU1" as RouterId, input: CE_MAC.CE3, lookup: `UNKNOWN_UNICAST — egress [${raw.map(portLabel).join(", ")}]`, action: "REPLICATE" as JourneyAction, output: `Flood to: ${final.map(portLabel).join(", ")}`, ingressPeer: "CE1" as RouterId }];
       return { state: { ...state, journey, lastDecision: "UNKNOWN_UNICAST", floodCopies: [{ id: "fc-r-mtu1-ce2", fromId: "MTU1", toId: "CE2" }, { id: "fc-r-mtu1-pe1", fromId: "MTU1", toId: "PE1" }] }, events: [] };
     },
     whatChanged: () => ["MTU1 floods toward CE2 (discards) and into the core via its spoke"],
@@ -948,7 +971,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const lookup = lookupDestinationMac(fdb, CE_MAC.CE3);
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
-      const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Spoke ingress; lookup ${CE_MAC.CE3}: UNKNOWN_UNICAST`, action: "SPOKE_INGRESS" as JourneyAction, output: `Flood to: ${final.map(portLabel).join(", ")}` }];
+      const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Spoke ingress; lookup ${CE_MAC.CE3}: UNKNOWN_UNICAST`, action: "SPOKE_INGRESS" as JourneyAction, output: `Flood to: ${final.map(portLabel).join(", ")}`, ingressPeer: "MTU1" as RouterId }];
       return { state: { ...state, packetAt: "PE1", journey, fdb: { ...state.fdb, PE1: fdb }, floodCopies: [{ id: "fc-r-pe1-pe2", fromId: "PE1", toId: "PE2" }, { id: "fc-r-pe1-pe3", fromId: "PE1", toId: "PE3" }] }, events: [] };
     },
     whatChanged: () => ["PE1 floods spoke-ingress traffic to both mesh peers"],
@@ -967,7 +990,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
       const withSpokeLabels = buildVplsLabelStack(state.packet.frame, allocateSpokeReceiveLabel("MTU2", "PE2"), transportLabelToward("MTU2"));
-      const journey = [...state.journey, { device: "PE2" as RouterId, input: `label ${allocatePwReceiveLabel("PE2", "PE1")}`, lookup: `Mesh ingress; egress [${raw.map(portLabel).join(", ")}] → [${final.map(portLabel).join(", ")}]`, action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: `MESH → SPOKE: forward to MTU2 (not to MESH_PW: PE3)` }];
+      const journey = [...state.journey, { device: "PE2" as RouterId, input: `label ${allocatePwReceiveLabel("PE2", "PE1")}`, lookup: `Mesh ingress; egress [${raw.map(portLabel).join(", ")}] → [${final.map(portLabel).join(", ")}]`, action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: `MESH → SPOKE: forward to MTU2 (not to MESH_PW: PE3)`, ingressPeer: "PE1" as RouterId, egressPeer: "MTU2" as RouterId }];
       return { state: { ...state, packet: withSpokeLabels, packetAt: "PE2", journey, fdb: { ...state.fdb, PE2: fdb } }, events: [] };
     },
     whatChanged: () => [`PE2 FDB: + ${CE_MAC.CE1} → MESH_PW: PE1`, "PE2 forwards to MTU2 only — no relay to PE3"],
@@ -981,7 +1004,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       if (!state.packet) return { state, events: [] };
       const afterPop = processCoreTransportLabel(state.packet, "IMPLICIT_NULL");
       const { fdb } = learnSourceMac(fdbFor(state, "MTU2"), CE_MAC.CE1, { kind: "SPOKE_PW", peer: "PE2" });
-      const journey = [...state.journey, { device: "MTU2" as RouterId, input: `label ${allocateSpokeReceiveLabel("MTU2", "PE2")}`, lookup: `Spoke label → ${SERVICE_NAME}; learn ${CE_MAC.CE1} on SPOKE_PW: PE2; flood to AC: CE3`, action: "AC_EGRESS" as JourneyAction, output: "Delivered to CE3" }];
+      const journey = [...state.journey, { device: "MTU2" as RouterId, input: `label ${allocateSpokeReceiveLabel("MTU2", "PE2")}`, lookup: `Spoke label → ${SERVICE_NAME}; learn ${CE_MAC.CE1} on SPOKE_PW: PE2; flood to AC: CE3`, action: "AC_EGRESS" as JourneyAction, output: "Delivered to CE3", ingressPeer: "PE2" as RouterId }];
       return { state: { ...state, packet: afterPop, packetAt: "CE3", journey, fdb: { ...state.fdb, MTU2: fdb } }, events: [{ type: "VPN_PACKET_DELIVERED", stepId: "mtu2-delivers-ce3", timestamp: Date.now(), message: "MTU2 delivers to CE3" }] };
     },
     whatChanged: () => [`MTU2 FDB: + ${CE_MAC.CE1} → SPOKE_PW: PE2`, "CE3 receives the frame"],
@@ -1017,10 +1040,10 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const { fdb: fdbMtu1 } = learnSourceMac(fdbFor(state, "MTU1"), CE_MAC.CE3, { kind: "SPOKE_PW", peer: "PE1" });
       const delivered = deliverEthernetFrame(state.packet);
       const journey: JourneyHop[] = [
-        { device: "MTU2", input: "Ethernet frame", lookup: `Learn ${CE_MAC.CE3} on AC: CE3; lookup ${CE_MAC.CE1}: REMOTE_UNICAST → SPOKE_PW: PE2`, action: "PUSH_SPOKE", output: "Single copy toward PE2" },
-        { device: "PE2", input: `label ${allocateSpokeReceiveLabel("PE2", "MTU2")}`, lookup: `Learn ${CE_MAC.CE3} on SPOKE_PW: MTU2; lookup ${CE_MAC.CE1}: REMOTE_UNICAST → MESH_PW: PE1`, action: "PUSH_MESH", output: "Single copy directly to PE1 — not via PE3" },
-        { device: "PE1", input: `label ${allocatePwReceiveLabel("PE1", "PE2")}`, lookup: `Learn ${CE_MAC.CE3} on MESH_PW: PE2; lookup ${CE_MAC.CE1}: REMOTE_UNICAST → SPOKE_PW: MTU1`, action: "PUSH_SPOKE", output: "Single copy down its spoke" },
-        { device: "MTU1", input: `label ${allocateSpokeReceiveLabel("MTU1", "PE1")}`, lookup: `Learn ${CE_MAC.CE3} on SPOKE_PW: PE1; lookup ${CE_MAC.CE1}: LOCAL_UNICAST → AC: CE1`, action: "AC_EGRESS", output: "Delivered to CE1" },
+        { device: "MTU2", input: "Ethernet frame", lookup: `Learn ${CE_MAC.CE3} on AC: CE3; lookup ${CE_MAC.CE1}: REMOTE_UNICAST → SPOKE_PW: PE2`, action: "PUSH_SPOKE", output: "Single copy toward PE2", ingressPeer: "CE3" as RouterId, egressPeer: "PE2" as RouterId },
+        { device: "PE2", input: `label ${allocateSpokeReceiveLabel("PE2", "MTU2")}`, lookup: `Learn ${CE_MAC.CE3} on SPOKE_PW: MTU2; lookup ${CE_MAC.CE1}: REMOTE_UNICAST → MESH_PW: PE1`, action: "PUSH_MESH", output: "Single copy directly to PE1 — not via PE3", ingressPeer: "MTU2" as RouterId, egressPeer: "PE1" as RouterId },
+        { device: "PE1", input: `label ${allocatePwReceiveLabel("PE1", "PE2")}`, lookup: `Learn ${CE_MAC.CE3} on MESH_PW: PE2; lookup ${CE_MAC.CE1}: REMOTE_UNICAST → SPOKE_PW: MTU1`, action: "PUSH_SPOKE", output: "Single copy down its spoke", ingressPeer: "PE2" as RouterId, egressPeer: "MTU1" as RouterId },
+        { device: "MTU1", input: `label ${allocateSpokeReceiveLabel("MTU1", "PE1")}`, lookup: `Learn ${CE_MAC.CE3} on SPOKE_PW: PE1; lookup ${CE_MAC.CE1}: LOCAL_UNICAST → AC: CE1`, action: "AC_EGRESS", output: "Delivered to CE1", ingressPeer: "PE1" as RouterId },
       ];
       return { state: { ...state, packet: { frame: delivered, labels: [] }, packetAt: "CE1", journey, fdb: { ...state.fdb, MTU2: fdbMtu2, PE2: fdbPe2, PE1: fdbPe1, MTU1: fdbMtu1 }, lastDecision: "REMOTE_UNICAST" }, events: [{ type: "VPN_PACKET_DELIVERED", stepId: "known-unicast-hierarchy-path", timestamp: Date.now(), message: "Known-unicast hierarchical delivery: MTU2 → PE2 → PE1 → MTU1 → CE1" }] };
     },
@@ -1059,7 +1082,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
     packet: () => frameOnly("ce1-frame-4", "CE1", ceFrame("CE1", "CE4", "CE1 to CE4 — different core leg"), "Ethernet frame toward CE4"),
     run: (state) => {
       const { fdb } = learnSourceMac(fdbFor(state, "MTU1"), CE_MAC.CE1, { kind: "AC", peer: "CE1" });
-      return { state: { ...state, packet: { frame: ceFrame("CE1", "CE4", "CE1 to CE4 — different core leg"), labels: [] }, packetAt: "MTU3", journey: [{ device: "MTU1", input: "Ethernet frame", lookup: "Flood — unknown", action: "REPLICATE", output: "Flood to AC: CE2, SPOKE_PW: PE1" }, { device: "PE1", input: CE_MAC.CE4, lookup: "Spoke ingress, unknown — flood to both mesh peers", action: "SPOKE_INGRESS", output: "Flood to MESH_PW: PE2, MESH_PW: PE3" }, { device: "PE3", input: CE_MAC.CE4, lookup: "Mesh ingress — egress restricted to SPOKE_PW: MTU3 only", action: "MESH_SPLIT_HORIZON_BLOCK", output: "Forward to MTU3" }, { device: "MTU3", input: CE_MAC.CE4, lookup: "Flood to AC: CE4 — genuine destination", action: "AC_EGRESS", output: "Delivered to CE4" }], fdb: { ...state.fdb, MTU1: fdb } }, events: [{ type: "VPN_PACKET_DELIVERED", stepId: "send-ce1-to-ce4", timestamp: Date.now(), message: "CE1 → CE4 delivered via the PE1-PE3 mesh leg and MTU3's spoke" }] };
+      return { state: { ...state, packet: { frame: ceFrame("CE1", "CE4", "CE1 to CE4 — different core leg"), labels: [] }, packetAt: "MTU3", journey: [{ device: "MTU1", input: "Ethernet frame", lookup: "Flood — unknown", action: "REPLICATE", output: "Flood to AC: CE2, SPOKE_PW: PE1", ingressPeer: "CE1" as RouterId }, { device: "PE1", input: CE_MAC.CE4, lookup: "Spoke ingress, unknown — flood to both mesh peers", action: "SPOKE_INGRESS", output: "Flood to MESH_PW: PE2, MESH_PW: PE3", ingressPeer: "MTU1" as RouterId }, { device: "PE3", input: CE_MAC.CE4, lookup: "Mesh ingress — egress restricted to SPOKE_PW: MTU3 only", action: "MESH_SPLIT_HORIZON_BLOCK", output: "Forward to MTU3", ingressPeer: "PE1" as RouterId, egressPeer: "MTU3" as RouterId }, { device: "MTU3", input: CE_MAC.CE4, lookup: "Flood to AC: CE4 — genuine destination", action: "AC_EGRESS", output: "Delivered to CE4", ingressPeer: "PE3" as RouterId }], fdb: { ...state.fdb, MTU1: fdb } }, events: [{ type: "VPN_PACKET_DELIVERED", stepId: "send-ce1-to-ce4", timestamp: Date.now(), message: "CE1 → CE4 delivered via the PE1-PE3 mesh leg and MTU3's spoke" }] };
     },
     whatChanged: () => ["CE1 → CE4 reaches its destination via a completely different core mesh leg than CE1 → CE3 did"],
   },
@@ -1139,7 +1162,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
     packet: () => frameOnly("fault-frame", "CE1", ceFrame("CE1", "CE3", "CE1 to CE3 — during the incident"), "Ethernet frame toward CE3"),
     run: (state) => {
       const { fdb } = learnSourceMac(fdbFor(state, "MTU1"), CE_MAC.CE1, { kind: "AC", peer: "CE1" });
-      const journey: JourneyHop[] = [{ device: "MTU1", input: "Ethernet frame", lookup: "Flood — unknown destination", action: "REPLICATE", output: "Flood to AC: CE2, SPOKE_PW: PE1 — spoke still UP, frame arrives at PE1 fine" }];
+      const journey: JourneyHop[] = [{ device: "MTU1", input: "Ethernet frame", lookup: "Flood — unknown destination", action: "REPLICATE", output: "Flood to AC: CE2, SPOKE_PW: PE1 — spoke still UP, frame arrives at PE1 fine", ingressPeer: "CE1" }];
       return { state: { ...state, packet: { frame: ceFrame("CE1", "CE3", "CE1 to CE3 — during the incident"), labels: [] }, packetAt: "PE1", journey, fdb: { ...state.fdb, MTU1: fdb } }, events: [] };
     },
     whatChanged: () => ["MTU1 → PE1: delivered normally — the spoke pseudowire itself was never the problem"],
@@ -1158,7 +1181,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
       const decision = classifyHvplsForwardingDecision(lookup, raw, final);
-      const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Ingress classified as ${ingress.kind} (should be SPOKE_PW); egress [${raw.map(portLabel).join(", ")}] → [${final.map(portLabel).join(", ") || "(none)"}]`, action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: `${CE_MAC.CE3} unreachable via PE1 — no remote site receives this frame` }];
+      const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Ingress classified as ${ingress.kind} (should be SPOKE_PW); egress [${raw.map(portLabel).join(", ")}] → [${final.map(portLabel).join(", ") || "(none)"}]`, action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: `${CE_MAC.CE3} unreachable via PE1 — no remote site receives this frame`, ingressPeer: "MTU1" as RouterId }];
       return { state: { ...state, packetAt: "PE1", journey, fdb: { ...state.fdb, PE1: fdb }, lastDecision: decision }, events: [{ type: "PACKET_DROPPED", stepId: "signature-fault-visual", timestamp: Date.now(), message: "PE1 cannot relay its own misclassified spoke onto the mesh — every mesh-classified port is excluded, including the spoke itself" }] };
     },
     whatChanged: () => ["Decision: SPLIT_HORIZON_BLOCKED — no remote site receives the frame"],
@@ -1231,7 +1254,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const lookup = lookupDestinationMac(fdb, CE_MAC.CE3);
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
-      const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Ingress correctly classified SPOKE_PW; egress [${raw.map(portLabel).join(", ")}]`, action: "SPOKE_INGRESS" as JourneyAction, output: `Flood to: ${final.map(portLabel).join(", ")}` }];
+      const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Ingress correctly classified SPOKE_PW; egress [${raw.map(portLabel).join(", ")}]`, action: "SPOKE_INGRESS" as JourneyAction, output: `Flood to: ${final.map(portLabel).join(", ")}`, ingressPeer: "MTU1" as RouterId }];
       return { state: { ...state, packetAt: "PE1", journey, fdb: { ...state.fdb, PE1: fdb }, floodCopies: [{ id: "fc-v-pe1-pe2", fromId: "PE1", toId: "PE2" }, { id: "fc-v-pe1-pe3", fromId: "PE1", toId: "PE3" }] }, events: [] };
     },
     whatChanged: () => ["PE1 floods to both mesh peers again — the repair, not a relaxed split-horizon rule, fixed this"],
@@ -1247,8 +1270,8 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const { fdb: fdbMtu2 } = learnSourceMac(fdbFor(state, "MTU2"), CE_MAC.CE1, { kind: "SPOKE_PW", peer: "PE2" });
       const journey = [
         ...state.journey,
-        { device: "PE2" as RouterId, input: `label ${allocatePwReceiveLabel("PE2", "PE1")}`, lookup: "Mesh ingress → spoke egress toward MTU2", action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: "Forward to MTU2" },
-        { device: "MTU2" as RouterId, input: `label ${allocateSpokeReceiveLabel("MTU2", "PE2")}`, lookup: `Learn ${CE_MAC.CE1} on SPOKE_PW: PE2; flood to AC: CE3`, action: "AC_EGRESS" as JourneyAction, output: "Delivered to CE3" },
+        { device: "PE2" as RouterId, input: `label ${allocatePwReceiveLabel("PE2", "PE1")}`, lookup: "Mesh ingress → spoke egress toward MTU2", action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: "Forward to MTU2", ingressPeer: "PE1" as RouterId, egressPeer: "MTU2" as RouterId },
+        { device: "MTU2" as RouterId, input: `label ${allocateSpokeReceiveLabel("MTU2", "PE2")}`, lookup: `Learn ${CE_MAC.CE1} on SPOKE_PW: PE2; flood to AC: CE3`, action: "AC_EGRESS" as JourneyAction, output: "Delivered to CE3", ingressPeer: "PE2" as RouterId },
       ];
       return { state: { ...state, packet: { frame: deliverEthernetFrame(state.packet), labels: [] }, packetAt: "CE3", journey, fdb: { ...state.fdb, PE2: fdbPe2, MTU2: fdbMtu2 }, troubleshooting: { ...state.troubleshooting, verified: true } }, events: [{ type: "VPN_PACKET_DELIVERED", stepId: "verify-delivered-ce3", timestamp: Date.now(), message: "Verified: CE1 → CE3 restored end to end" }] };
     },
