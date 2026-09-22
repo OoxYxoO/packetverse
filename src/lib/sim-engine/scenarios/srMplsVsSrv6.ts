@@ -247,8 +247,8 @@ export interface MplsPacket {
   labels: MplsLabelEntry[];
 }
 export function pushMplsLabel(pkt: MplsPacket, value: LabelValue, purpose: MplsLabelEntry["purpose"] = "transport"): MplsPacket {
-  const rest = pkt.labels.map((l) => ({ ...l, bottomOfStack: false }));
-  return { ...pkt, labels: [{ value, purpose, bottomOfStack: rest.length === 0 }, ...rest] };
+  // RFC 3032: S=1 only on the entry pushed onto an EMPTY stack, and it keeps it — pushing above it must not clear the existing bottom entry's S bit.
+  return { ...pkt, labels: [{ value, purpose, bottomOfStack: pkt.labels.length === 0 }, ...pkt.labels] };
 }
 export function swapTopMplsLabel(pkt: MplsPacket, value: LabelValue): MplsPacket {
   if (pkt.labels.length === 0) return pkt;
@@ -811,6 +811,21 @@ export function evaluateSrv6LocatorIncident(route: VpnRoute, locatorReachable: b
 
 export type MplsFwdAction = "PUSH" | "SWAP" | "PHP_POP" | "VPN_LOOKUP" | "IP_FORWARD" | "REPAIR_PUSH" | "REPAIR_FORWARD_ADJ";
 export type Srv6FwdAction = "SET_DA" | "IPV6_FIB_FORWARD" | "LOCAL_SID_MATCH" | "END_ADVANCE" | "END_DT4_DECAP" | "REPAIR_ENCAPSULATE" | "USD_DECAP_FORWARD";
+
+/**
+ * A native, per-hop packet snapshot — each architecture keeps its OWN
+ * packet shape (an MPLS label stack over untouched IPv4; an outer IPv6
+ * header with an optional SRH; an SRv6 L3VPN outer; a TI-LFA repair
+ * outer). Never normalized into one generic packet with relabelled
+ * fields: the two data planes genuinely differ in what they carry.
+ */
+export type HopPacket =
+  | { kind: "MPLS"; packet: MplsPacket }
+  | { kind: "SRV6"; packet: Srv6Packet }
+  | { kind: "SRV6_L3VPN"; packet: L3vpnPacketState }
+  | { kind: "SRV6_TILFA"; packet: TiLfaPacketState }
+  | { kind: "IPV4"; srcIp: string; dstIp: string };
+
 export interface JourneyHop {
   architecture: Architecture;
   router: RouterId;
@@ -818,6 +833,94 @@ export interface JourneyHop {
   lookup: string;
   action: string;
   output: string;
+  /** The step whose run() recorded this hop — the ONE journey array interleaves both architectures and several independent packets, so array adjacency never implies physical adjacency. */
+  stepId: string;
+  /** Physical neighbor the packet arrived from / leaves toward, recorded only where the modeled path actually establishes it (never inferred from the next logical segment). */
+  ingressPeer?: RouterId;
+  egressPeer?: RouterId;
+  /** Native packet state as it entered / left this router's processing — computed once in run(), only ever read by the UI. */
+  before?: HopPacket;
+  after?: HopPacket;
+}
+
+/** Next physical router after `router` on a real, SPF/TI-LFA-derived path — undefined if `router` is not on it or is its last node. */
+function nextOnPath(path: RouterId[], router: RouterId): RouterId | undefined {
+  const i = path.indexOf(router);
+  return i >= 0 && i < path.length - 1 ? path[i + 1] : undefined;
+}
+/** Narrows a router id from a reused engine (srv6L3vpn.ts's own RouterId includes customer sites this capstone's topology does not have) to a router that physically exists here — undefined otherwise, never cast. */
+function capstoneRouter(id: string | undefined): RouterId | undefined {
+  return ALL_ROUTERS.find((r) => r === id);
+}
+function prevOnPath(path: RouterId[], router: RouterId): RouterId | undefined {
+  const i = path.indexOf(router);
+  return i > 0 ? path[i - 1] : undefined;
+}
+
+/**
+ * Which data plane a step is about. `BOTH` = the step records native
+ * hops for BOTH architectures (the two repair executions at the repair
+ * node — parallel alternatives, never one packet's progression);
+ * `SHARED` = architecture-independent (requirements, shared TI-LFA
+ * computation, comparisons, decision labs, predictions about both).
+ * Used by the UI to keep packet/table/device state from ever mixing
+ * across technologies.
+ */
+export type StepArchitecture = Architecture | "BOTH" | "SHARED";
+const SR_MPLS_STEPS = new Set(["mpls-transport-intro", "mpls-transport-push", "mpls-transport-core", "predict-mpls-label-bytes", "mpls-te-build", "mpls-vpn-build", "mpls-vpn-packet", "mpls-repair-encoding", "header-efficiency-mpls"]);
+const SRV6_STEPS = new Set([
+  "srv6-transport-intro",
+  "srv6-transport-setda",
+  "srv6-transport-core",
+  "srv6-transport-endpoint",
+  "srv6-te-build",
+  "srv6-te-usd-alternative",
+  "srv6-vpn-build",
+  "srv6-vpn-packet",
+  "srv6-repair-encoding",
+  "header-efficiency-srv6",
+  "header-efficiency-csid",
+  "incident-intro",
+  "incident-fault-injected",
+  "incident-ladder",
+  "wrong-repair-1",
+  "wrong-repair-2",
+  "wrong-repair-3",
+  "incident-repair",
+  "incident-resend",
+]);
+const BOTH_STEPS = new Set(["repair-execution"]);
+export function stepArchitecture(stepId: string): StepArchitecture {
+  if (SR_MPLS_STEPS.has(stepId)) return "SR_MPLS";
+  if (SRV6_STEPS.has(stepId)) return "SRV6";
+  if (BOTH_STEPS.has(stepId)) return "BOTH";
+  return "SHARED";
+}
+
+/** Reverse lookup of what a label value MEANS in this capstone's own allocation (Node-SID, local Adj-SID, or per-PE VPN label) — derived from the same label functions that allocated it. */
+export function describeMplsLabel(value: LabelValue): string {
+  for (const r of CORE_ROUTERS) if (nodeSidLabel(r) === value) return `Node-SID(${r})`;
+  for (const l of CORE_LINKS) {
+    if (adjSidLabel(l.a, l.b) === value) return `Adj-SID(${l.a}→${l.b})`;
+    if (adjSidLabel(l.b, l.a) === value) return `Adj-SID(${l.b}→${l.a})`;
+  }
+  for (const pe of ["PE1", "PE2"] as const) if (VPN_LABEL[pe] === value) return `VPN label (${pe} CUST-A)`;
+  return "label";
+}
+
+/**
+ * Owner + behavior of a transport/TE SID, derived from the same SID
+ * builders — never a string guess. Repair and Service SIDs are labeled
+ * by their own packet context (a TI-LFA repair outer / an L3VPN outer),
+ * not here: P4's End.X SID address is shared by the TE program (plain
+ * End.X) and the repair list (End.X+USD flavor) in this model, so the
+ * address alone cannot say which flavor applies.
+ */
+export function describeSrv6Sid(sid: Hextets): string {
+  const text = fmtIpv6(sid);
+  for (const r of CORE_ROUTERS) if (endSidText(r) === text) return `End(${r})`;
+  for (const r of CORE_ROUTERS) if (endXSidText(r) === text) return `End.X(${r})`;
+  return "SID";
 }
 
 export type ViewMode = "REQUIREMENT" | "SR_MPLS" | "SRV6" | "SIDE_BY_SIDE" | "PACKET" | "FAILURE";
@@ -942,6 +1045,9 @@ const CSID_LAB = computeCsidLab();
 const ARCH_COMPARISON = compareArchitectures();
 const MTU_COMPARISON = buildSegmentEncodingComparison();
 
+/** ScenarioEngine.applyStepEffects only evaluates a step's whatChanged() when that step also defines run() — without this, the comparison bullets on these read-only steps were silently never shown. */
+const noopRun = (state: CapstoneState) => ({ state, events: [] });
+
 export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   {
     id: "brief",
@@ -1000,8 +1106,9 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     label: "PE1 Pushes the Node-SID",
     narrative: `PE1 imposes one label toward PE2: Node-SID(PE2) = ${nodeSidLabel("PE2")}.`,
     run: (state) => {
-      const pkt = pushMplsLabel({ srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4, labels: [] }, nodeSidLabel("PE2"));
-      const journey: JourneyHop = { architecture: "SR_MPLS", router: "PE1", input: "Unlabeled IPv4", lookup: `SID database: Node-SID(PE2)=${nodeSidLabel("PE2")}`, action: "PUSH", output: `Label ${nodeSidLabel("PE2")} pushed` };
+      const unlabeled: MplsPacket = { srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4, labels: [] };
+      const pkt = pushMplsLabel(unlabeled, nodeSidLabel("PE2"));
+      const journey: JourneyHop = { architecture: "SR_MPLS", router: "PE1", input: "Unlabeled IPv4", lookup: `SID database: Node-SID(PE2)=${nodeSidLabel("PE2")}`, action: "PUSH", output: `Label ${nodeSidLabel("PE2")} pushed`, stepId: "mpls-transport-push", ingressPeer: CE1_ID, egressPeer: nextOnPath(PRIMARY_PATH, "PE1"), before: { kind: "MPLS", packet: unlabeled }, after: { kind: "MPLS", packet: pkt } };
       return { state: { ...state, mplsTransportPacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "MPLS_LABEL_PUSHED", stepId: "mpls-transport-push", timestamp: Date.now(), message: `PE1 pushes Node-SID(PE2)=${nodeSidLabel("PE2")}` }] };
     },
     packet: (state) => (state.mplsTransportPacket ? mplsPacketVisual("mpls-transport", "PE1", "P1", "PUSH Node-SID(PE2)", state.mplsTransportPacket) : undefined),
@@ -1012,11 +1119,15 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     label: "P1/P2: LFIB Forwarding",
     narrative: "P1 and P2 never inspect the destination IP. Each looks up the incoming label in its own LFIB and either swaps it for the next hop's binding or, at the penultimate hop, pops it (PHP) — pure label-switching.",
     run: (state) => {
-      const j1: JourneyHop = { architecture: "SR_MPLS", router: "P1", input: `Label ${nodeSidLabel("PE2")}`, lookup: "LFIB: incoming label → SWAP", action: "SWAP", output: `Label ${nodeSidLabel("PE2")} unchanged (global SID), forward to P2` };
-      const j2: JourneyHop = { architecture: "SR_MPLS", router: "P2", input: `Label ${nodeSidLabel("PE2")}`, lookup: "LFIB: this label's target is one hop away → PHP", action: "PHP_POP", output: "Label popped, plain IP forwarded to PE2" };
+      const atP1 = state.mplsTransportPacket;
+      const afterSwap = atP1 ? swapTopMplsLabel(atP1, nodeSidLabel("PE2")) : undefined;
+      const afterPhp = afterSwap ? popTopMplsLabel(afterSwap) : undefined;
+      const j1: JourneyHop = { architecture: "SR_MPLS", router: "P1", input: `Label ${nodeSidLabel("PE2")}`, lookup: "LFIB: incoming label → SWAP", action: "SWAP", output: `Label ${nodeSidLabel("PE2")} unchanged (global SID), forward to P2`, stepId: "mpls-transport-core", ingressPeer: prevOnPath(PRIMARY_PATH, "P1"), egressPeer: nextOnPath(PRIMARY_PATH, "P1"), before: atP1 && { kind: "MPLS", packet: atP1 }, after: afterSwap && { kind: "MPLS", packet: afterSwap } };
+      const j2: JourneyHop = { architecture: "SR_MPLS", router: "P2", input: `Label ${nodeSidLabel("PE2")}`, lookup: "LFIB: this label's target is one hop away → PHP", action: "PHP_POP", output: "Label popped, plain IP forwarded to PE2", stepId: "mpls-transport-core", ingressPeer: prevOnPath(PRIMARY_PATH, "P2"), egressPeer: nextOnPath(PRIMARY_PATH, "P2"), before: afterSwap && { kind: "MPLS", packet: afterSwap }, after: afterPhp && { kind: "MPLS", packet: afterPhp } };
       return { state: { ...state, journey: [...state.journey, j1, j2] }, events: [{ type: "MPLS_LABEL_SWAPPED", stepId: "mpls-transport-core", timestamp: Date.now(), message: "P1 swaps (Node-SID unchanged); P2 performs PHP" }] };
     },
-    packet: (state) => (state.mplsTransportPacket ? mplsPacketVisual("mpls-transport-core", "P1", "PE2", "SWAP → PHP", state.mplsTransportPacket) : undefined),
+    // P1→P2 is the physical leg this labeled packet actually crosses; after P2's PHP the packet toward PE2 carries no label at all, so drawing this labeled visual on a P1→PE2 line (no such link) was both a fake adjacency and a wrong packet.
+    packet: (state) => (state.mplsTransportPacket ? mplsPacketVisual("mpls-transport-core", "P1", "P2", "SWAP → PHP", state.mplsTransportPacket) : undefined),
   },
   {
     id: "predict-mpls-label-bytes",
@@ -1045,7 +1156,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     narrative: `PE1 sets the packet's IPv6 Destination Address to PE2's End SID: ${endSidText("PE2")}. No label, no push — the destination address itself IS the segment.`,
     run: (state) => {
       const pkt: Srv6Packet = { srcText: "2001:db8:100:1::c1", daHextets: endSidHextets("PE2"), innerSrcIp: CE1_SRC, innerDstIp: CE2_HOST_IPV4 };
-      const journey: JourneyHop = { architecture: "SRV6", router: "PE1", input: "Plain customer IPv4", lookup: `Local SID / locator database: ${BEHAVIOR_LABEL.END}(PE2)`, action: "SET_DA", output: `Outer IPv6 DA = ${endSidText("PE2")}` };
+      const journey: JourneyHop = { architecture: "SRV6", router: "PE1", input: "Plain customer IPv4", lookup: `Local SID / locator database: ${BEHAVIOR_LABEL.END}(PE2)`, action: "SET_DA", output: `Outer IPv6 DA = ${endSidText("PE2")}`, stepId: "srv6-transport-setda", ingressPeer: CE1_ID, egressPeer: nextOnPath(PRIMARY_PATH, "PE1"), before: { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 }, after: { kind: "SRV6", packet: pkt } };
       return { state: { ...state, srv6TransportPacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-transport-setda", timestamp: Date.now(), message: `PE1 sets DA = ${endSidText("PE2")}` }] };
     },
     packet: (state) => (state.srv6TransportPacket ? srv6PacketVisual("srv6-transport", "PE1", "P1", "DA = PE2 End SID", state.srv6TransportPacket) : undefined),
@@ -1055,18 +1166,22 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     label: "P1/P2: Ordinary IPv6 FIB",
     narrative: "P1 and P2 do NOT consult a Local SID Table at all — the DA doesn't match either of their own locators, so it's an ordinary longest-prefix-match IPv6 FIB lookup, identical in kind to any other IPv6 packet they'd ever forward.",
     run: (state) => {
-      const j1: JourneyHop = { architecture: "SRV6", router: "P1", input: `DA=${endSidText("PE2")}`, lookup: "IPv6 FIB: longest-prefix match on PE2's locator", action: "IPV6_FIB_FORWARD", output: "Forward to P2 — DA untouched" };
-      const j2: JourneyHop = { architecture: "SRV6", router: "P2", input: `DA=${endSidText("PE2")}`, lookup: "IPv6 FIB: longest-prefix match on PE2's locator", action: "IPV6_FIB_FORWARD", output: "Forward to PE2 — DA untouched" };
+      const pkt = state.srv6TransportPacket;
+      const snap: HopPacket | undefined = pkt && { kind: "SRV6", packet: pkt };
+      const j1: JourneyHop = { architecture: "SRV6", router: "P1", input: `DA=${endSidText("PE2")}`, lookup: "IPv6 FIB: longest-prefix match on PE2's locator", action: "IPV6_FIB_FORWARD", output: "Forward to P2 — DA untouched", stepId: "srv6-transport-core", ingressPeer: prevOnPath(PRIMARY_PATH, "P1"), egressPeer: nextOnPath(PRIMARY_PATH, "P1"), before: snap, after: snap };
+      const j2: JourneyHop = { architecture: "SRV6", router: "P2", input: `DA=${endSidText("PE2")}`, lookup: "IPv6 FIB: longest-prefix match on PE2's locator", action: "IPV6_FIB_FORWARD", output: "Forward to PE2 — DA untouched", stepId: "srv6-transport-core", ingressPeer: prevOnPath(PRIMARY_PATH, "P2"), egressPeer: nextOnPath(PRIMARY_PATH, "P2"), before: snap, after: snap };
       return { state: { ...state, journey: [...state.journey, j1, j2] }, events: [] };
     },
-    packet: (state) => (state.srv6TransportPacket ? srv6PacketVisual("srv6-transport-core", "P1", "PE2", "Ordinary IPv6 forwarding", state.srv6TransportPacket) : undefined),
+    // P1→P2 is a real link; P1→PE2 is not (the packet reaches PE2 only via P2).
+    packet: (state) => (state.srv6TransportPacket ? srv6PacketVisual("srv6-transport-core", "P1", "P2", "Ordinary IPv6 forwarding", state.srv6TransportPacket) : undefined),
   },
   {
     id: "srv6-transport-endpoint",
     label: "PE2: Local SID Match",
     narrative: `At PE2, the DA finally matches a Local SID Table entry: ${BEHAVIOR_LABEL.END}. PE2 executes the End behavior and delivers the (already-plain) customer packet.`,
     run: (state) => {
-      const journey: JourneyHop = { architecture: "SRV6", router: "PE2", input: `DA=${endSidText("PE2")}`, lookup: "Local SID Table: match found", action: "LOCAL_SID_MATCH", output: "End behavior executed — deliver toward CE2" };
+      const pkt = state.srv6TransportPacket;
+      const journey: JourneyHop = { architecture: "SRV6", router: "PE2", input: `DA=${endSidText("PE2")}`, lookup: "Local SID Table: match found", action: "LOCAL_SID_MATCH", output: "End behavior executed — deliver toward CE2", stepId: "srv6-transport-endpoint", ingressPeer: prevOnPath(PRIMARY_PATH, "PE2"), egressPeer: CE2_ID, before: pkt && { kind: "SRV6", packet: pkt } };
       return { state: { ...state, journey: [...state.journey, journey] }, events: [] };
     },
   },
@@ -1074,6 +1189,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     id: "compare-transport-encoding",
     label: "SIDE-BY-SIDE: Transport Encoding",
     narrative: "Same requirement, same path, same routers — two different forwarding-instruction encodings: a label stack entry vs. an IPv6 address. Core routers do ordinary label-switching or ordinary IPv6 forwarding either way; neither one consults customer state.",
+    run: noopRun,
     whatChanged: () => compareTransportEncoding().map((r) => `${r.requirement}: SR-MPLS=${r.srMpls} | SRv6=${r.srv6}`),
   },
 
@@ -1105,12 +1221,15 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     narrative: `SR-MPLS SR Policy segment list, derived (not hand-typed) from the real topology: ${MPLS_TE_SEGS.map((s) => (s.type === "NODE" ? `Node-SID(${s.owner})=${nodeSidLabel(s.owner)}` : `Adj-SID(${s.owner}→${s.target})=${adjSidLabel(s.owner, s.target!)}`)).join(" then ")}.`,
     run: (state) => {
       const segments = buildMplsTeSegments();
-      let pkt: MplsPacket = { srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4, labels: [] };
+      const unlabeled: MplsPacket = { srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4, labels: [] };
+      let pkt: MplsPacket = unlabeled;
       for (let i = segments.length - 1; i >= 0; i--) {
         const s = segments[i];
         pkt = pushMplsLabel(pkt, s.type === "NODE" ? nodeSidLabel(s.owner) : adjSidLabel(s.owner, s.target!));
       }
-      return { state: { ...state, activeArchitecture: "SR_MPLS", mplsSegments: segments, mplsTePacket: pkt }, events: [{ type: "MPLS_LABEL_PUSHED", stepId: "mpls-te-build", timestamp: Date.now(), message: `PE1 pushes ${segments.length}-label TE stack` }] };
+      const stack = pkt.labels.map((l) => l.value).join(", ");
+      const journey: JourneyHop = { architecture: "SR_MPLS", router: "PE1", input: "Unlabeled IPv4", lookup: `SR Policy (explicit path ${TE_EXPLICIT_PATH.join("→")}) → ${segments.length}-segment list`, action: "PUSH", output: `Label stack [${stack}] pushed (top first) — transit forwarding along the policy is not simulated in this capstone`, stepId: "mpls-te-build", ingressPeer: CE1_ID, egressPeer: nextOnPath(TE_EXPLICIT_PATH, "PE1"), before: { kind: "MPLS", packet: unlabeled }, after: { kind: "MPLS", packet: pkt } };
+      return { state: { ...state, activeArchitecture: "SR_MPLS", mplsSegments: segments, mplsTePacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "MPLS_LABEL_PUSHED", stepId: "mpls-te-build", timestamp: Date.now(), message: `PE1 pushes ${segments.length}-label TE stack` }] };
     },
     packet: (state) => (state.mplsTePacket ? mplsPacketVisual("mpls-te", "PE1", "P1", `PUSH ${state.mplsSegments.length}-label TE stack`, state.mplsTePacket) : undefined),
   },
@@ -1123,7 +1242,8 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
       const orderedSids = segments.map((s) => (s.type === "NODE" ? { sidHextets: endSidHextets(s.owner), sidText: endSidText(s.owner), owner: s.owner } : { sidHextets: endXSidHextets(s.owner), sidText: endXSidText(s.owner), owner: s.owner }));
       const srh = segments.length > 1 ? buildSrh(orderedSids) : undefined;
       const pkt: Srv6Packet = { srcText: "2001:db8:100:1::c1", daHextets: orderedSids[0].sidHextets, srh, innerSrcIp: CE1_SRC, innerDstIp: CE2_HOST_IPV4 };
-      return { state: { ...state, activeArchitecture: "SRV6", srv6Segments: segments, srv6TePacket: pkt }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-te-build", timestamp: Date.now(), message: `PE1 H.Encaps ${segments.length}-SID TE program` }] };
+      const journey: JourneyHop = { architecture: "SRV6", router: "PE1", input: "Plain customer IPv4", lookup: `SR Policy (explicit path ${TE_EXPLICIT_PATH.join("→")}) → ${segments.length}-SID program`, action: "H_ENCAPS", output: `Outer IPv6 DA = ${orderedSids[0].sidText}${srh ? `, SRH SL=${srh.segmentsLeft}` : ", no SRH"} — transit forwarding along the policy is not simulated in this capstone`, stepId: "srv6-te-build", ingressPeer: CE1_ID, egressPeer: nextOnPath(TE_EXPLICIT_PATH, "PE1"), before: { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 }, after: { kind: "SRV6", packet: pkt } };
+      return { state: { ...state, activeArchitecture: "SRV6", srv6Segments: segments, srv6TePacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-te-build", timestamp: Date.now(), message: `PE1 H.Encaps ${segments.length}-SID TE program` }] };
     },
     packet: (state) => (state.srv6TePacket ? srv6PacketVisual("srv6-te", "PE1", "P1", `H.Encaps ${state.srv6Segments.length}-SID program`, state.srv6TePacket) : undefined),
   },
@@ -1131,6 +1251,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     id: "compare-te-encoding",
     label: "SIDE-BY-SIDE: Same Intent, Different Encoding",
     narrative: `LOGICAL INTENT is identical: ${TE_EXPLICIT_PATH.join(" → ")}. SR-MPLS expresses it as a label stack (Node-SID + a forced-adjacency Adj-SID where ordinary SPF disagrees); SRv6's BASE encoding expresses it as an IPv6 DA plus an SRH segment list (End + a forced-adjacency End.X for the same reason). Same path intent, different forwarding-plane encoding — scoped to these specific base behaviors, not a universal segment-count rule (see the advanced comparison next).`,
+    run: noopRun,
     whatChanged: () => compareTeEncoding().map((r) => `${r.requirement}: SR-MPLS=${r.srMpls} | SRv6=${r.srv6}`),
   },
   {
@@ -1186,14 +1307,19 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     label: "SR-MPLS: VPN Packet",
     narrative: `CE1 (${CE1_HOST_IPV4}) sends to CE2 (${CE2_HOST_IPV4}). PE1 pushes TWO labels: the VPN label ${VPN_LABEL.PE2} (bottom), then the transport Node-SID(PE2)=${nodeSidLabel("PE2")} (top). P1/P2 read only the top (transport) label; the VPN label rides along unread.`,
     run: (state) => {
-      let pkt: MplsPacket = { srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4, labels: [] };
+      const unlabeled: MplsPacket = { srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4, labels: [] };
+      let pkt: MplsPacket = unlabeled;
       pkt = pushMplsLabel(pkt, VPN_LABEL.PE2!, "vpn");
       pkt = pushMplsLabel(pkt, nodeSidLabel("PE2"), "transport");
+      const afterSwap = swapTopMplsLabel(pkt, nodeSidLabel("PE2"));
+      const afterPhp = popTopMplsLabel(afterSwap);
+      const afterVpnPop = popTopMplsLabel(afterPhp);
+      const hop = (router: RouterId, before: MplsPacket, after: MplsPacket, egressPeer: RouterId | undefined): Pick<JourneyHop, "stepId" | "ingressPeer" | "egressPeer" | "before" | "after"> => ({ stepId: "mpls-vpn-packet", ingressPeer: router === "PE1" ? CE1_ID : prevOnPath(PRIMARY_PATH, router), egressPeer, before: { kind: "MPLS", packet: before }, after: { kind: "MPLS", packet: after } });
       const journey: JourneyHop[] = [
-        { architecture: "SR_MPLS", router: "PE1", input: "Customer IPv4", lookup: "VRF CUST-A route lookup → VPN label; transport toward PE2 → Node-SID", action: "PUSH", output: `Labels: [${nodeSidLabel("PE2")}, ${VPN_LABEL.PE2}]` },
-        { architecture: "SR_MPLS", router: "P1", input: `Top label ${nodeSidLabel("PE2")}`, lookup: "LFIB (transport label only)", action: "SWAP", output: "VPN label untouched, unread" },
-        { architecture: "SR_MPLS", router: "P2", input: `Top label ${nodeSidLabel("PE2")}`, lookup: "LFIB (transport label only)", action: "PHP_POP", output: "Transport label popped; VPN label now exposed" },
-        { architecture: "SR_MPLS", router: "PE2", input: `VPN label ${VPN_LABEL.PE2}`, lookup: "Per-label VRF context → CUST-A route table", action: "VPN_LOOKUP", output: `Delivered to CE2 (${CE2_HOST_IPV4})` },
+        { architecture: "SR_MPLS", router: "PE1", input: "Customer IPv4", lookup: "VRF CUST-A route lookup → VPN label; transport toward PE2 → Node-SID", action: "PUSH", output: `Labels: [${nodeSidLabel("PE2")}, ${VPN_LABEL.PE2}]`, ...hop("PE1", unlabeled, pkt, nextOnPath(PRIMARY_PATH, "PE1")) },
+        { architecture: "SR_MPLS", router: "P1", input: `Top label ${nodeSidLabel("PE2")}`, lookup: "LFIB (transport label only)", action: "SWAP", output: "VPN label untouched, unread", ...hop("P1", pkt, afterSwap, nextOnPath(PRIMARY_PATH, "P1")) },
+        { architecture: "SR_MPLS", router: "P2", input: `Top label ${nodeSidLabel("PE2")}`, lookup: "LFIB (transport label only)", action: "PHP_POP", output: "Transport label popped; VPN label now exposed", ...hop("P2", afterSwap, afterPhp, nextOnPath(PRIMARY_PATH, "P2")) },
+        { architecture: "SR_MPLS", router: "PE2", input: `VPN label ${VPN_LABEL.PE2}`, lookup: "Per-label VRF context → CUST-A route table", action: "VPN_LOOKUP", output: `Delivered to CE2 (${CE2_HOST_IPV4})`, ...hop("PE2", afterPhp, afterVpnPop, CE2_ID) },
       ];
       return { state: { ...state, activeArchitecture: "SR_MPLS", mplsVpnPacket: pkt, journey: [...state.journey, ...journey] }, events: [{ type: "TRANSPORT_LABEL_PUSHED", stepId: "mpls-vpn-packet", timestamp: Date.now(), message: "PE1 pushes VPN + transport labels" }, { type: "VPN_PACKET_DELIVERED", stepId: "mpls-vpn-packet", timestamp: Date.now(), message: "Delivered to CE2 via VPN label" }] };
     },
@@ -1221,11 +1347,15 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
       const serviceSid = state.srv6VpnRoute.prefixSid.l3Service.serviceSid;
       const pkt = encapsulateSrv6VpnPacket(serviceSid, { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 }, "2001:db8:100:1::c1");
       const outcome = processEgressServiceSid(serviceSid, pkt, PE2_LOCAL_ROUTES, []);
+      const customer: HopPacket = { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 };
+      const encapsulated: HopPacket = { kind: "SRV6_L3VPN", packet: pkt };
+      const exposed: HopPacket | undefined = !outcome.dropped && outcome.exposedInner?.kind === "IPV4" ? { kind: "IPV4", srcIp: outcome.exposedInner.srcIp, dstIp: outcome.exposedInner.dstIp } : undefined;
+      const peers = (router: RouterId) => ({ stepId: "srv6-vpn-packet", ingressPeer: router === "PE1" ? CE1_ID : prevOnPath(PRIMARY_PATH, router), egressPeer: router === "PE2" ? (outcome.dropped ? undefined : capstoneRouter(outcome.ceTarget)) : nextOnPath(PRIMARY_PATH, router) });
       const journey: JourneyHop[] = [
-        { architecture: "SRV6", router: "PE1", input: "Customer IPv4", lookup: "VRF CUST-A route lookup → Service SID", action: "SET_DA", output: `Outer IPv6 DA = ${serviceSid.sidText}` },
-        { architecture: "SRV6", router: "P1", input: `DA=${serviceSid.sidText}`, lookup: "IPv6 FIB (no VRF state)", action: "IPV6_FIB_FORWARD", output: "Forward toward PE2" },
-        { architecture: "SRV6", router: "P2", input: `DA=${serviceSid.sidText}`, lookup: "IPv6 FIB (no VRF state)", action: "IPV6_FIB_FORWARD", output: "Forward toward PE2" },
-        { architecture: "SRV6", router: "PE2", input: `DA=${serviceSid.sidText}`, lookup: "Local SID Table: End.DT4 → CUST-A VRF", action: "END_DT4_DECAP", output: outcome.dropped ? `DROPPED: ${outcome.reason}` : `Delivered to ${outcome.ceTarget} (${CE2_HOST_IPV4})` },
+        { architecture: "SRV6", router: "PE1", input: "Customer IPv4", lookup: "VRF CUST-A route lookup → Service SID", action: "SET_DA", output: `Outer IPv6 DA = ${serviceSid.sidText}`, ...peers("PE1"), before: customer, after: encapsulated },
+        { architecture: "SRV6", router: "P1", input: `DA=${serviceSid.sidText}`, lookup: "IPv6 FIB (no VRF state)", action: "IPV6_FIB_FORWARD", output: "Forward toward PE2", ...peers("P1"), before: encapsulated, after: encapsulated },
+        { architecture: "SRV6", router: "P2", input: `DA=${serviceSid.sidText}`, lookup: "IPv6 FIB (no VRF state)", action: "IPV6_FIB_FORWARD", output: "Forward toward PE2", ...peers("P2"), before: encapsulated, after: encapsulated },
+        { architecture: "SRV6", router: "PE2", input: `DA=${serviceSid.sidText}`, lookup: "Local SID Table: End.DT4 → CUST-A VRF", action: "END_DT4_DECAP", output: outcome.dropped ? `DROPPED: ${outcome.reason}` : `Delivered to ${outcome.ceTarget} (${CE2_HOST_IPV4})`, ...peers("PE2"), before: encapsulated, after: exposed },
       ];
       return { state: { ...state, activeArchitecture: "SRV6", srv6VpnPacket: pkt, journey: [...state.journey, ...journey] }, events: [{ type: "SRV6_VPN_PACKET_ENCAPSULATED", stepId: "srv6-vpn-packet", timestamp: Date.now(), message: "PE1 encapsulates with Service SID as DA" }, { type: "VPN_PACKET_DELIVERED", stepId: "srv6-vpn-packet", timestamp: Date.now(), message: "Delivered via End.DT4" }] };
     },
@@ -1246,6 +1376,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     id: "compare-vpn-encoding",
     label: "SIDE-BY-SIDE: VPN Control Plane vs. Service Plane",
     narrative: "COMMON: VRF, RD, RT, MP-BGP VPN route — byte-for-byte identical policy on both sides. DIFFERENT: the service identifier attached to that route (an MPLS VPN label vs. a real, globally-routable IPv6 Service SID) and what the egress PE does with it.",
+    run: noopRun,
     whatChanged: () => compareVpnEncoding().map((r) => `${r.requirement}: SR-MPLS=${r.srMpls} | SRv6=${r.srv6}`),
   },
   {
@@ -1301,10 +1432,11 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     narrative: `${CORE_PLR} encodes the SAME chosen repair as an MPLS label stack: Node-SID(${SHARED_REPAIR.repairNode})=${SHARED_REPAIR_NODE_LABEL}, then a locally-significant Adj-SID forcing ${SHARED_REPAIR.repairNode}→${SHARED_REPAIR.mergeTarget}=${SHARED_REPAIR_ADJ_LABEL}.`,
     run: (state) => {
       if (!state.sharedRepair) return { state, events: [] };
-      let pkt: MplsPacket = { srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4, labels: [] };
+      const modeledInput: MplsPacket = { srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4, labels: [] };
+      let pkt: MplsPacket = modeledInput;
       const list = state.mplsRepairList;
       for (let i = list.length - 1; i >= 0; i--) pkt = pushMplsLabel(pkt, list[i].label);
-      const journey: JourneyHop = { architecture: "SR_MPLS", router: CORE_PLR, input: "Primary next hop down", lookup: `Repair OIF ${CORE_PLR}→${state.sharedRepair.outgoingInterface}; repair labels [${list.map((s) => s.label).join(", ")}]`, action: "REPAIR_PUSH", output: "Repair label stack pushed" };
+      const journey: JourneyHop = { architecture: "SR_MPLS", router: CORE_PLR, input: "Primary next hop down", lookup: `Repair OIF ${CORE_PLR}→${state.sharedRepair.outgoingInterface}; repair labels [${list.map((s) => s.label).join(", ")}]`, action: "REPAIR_PUSH", output: "Repair label stack pushed", stepId: "mpls-repair-encoding", ingressPeer: prevOnPath(PRIMARY_PATH, CORE_PLR), egressPeer: state.sharedRepair.outgoingInterface, before: { kind: "MPLS", packet: modeledInput }, after: { kind: "MPLS", packet: pkt } };
       return { state: { ...state, activeArchitecture: "SR_MPLS", mplsRepairPacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "MPLS_LABEL_PUSHED", stepId: "mpls-repair-encoding", timestamp: Date.now(), message: "PLR pushes repair label stack" }] };
     },
     packet: (state) => (state.mplsRepairPacket ? mplsPacketVisual("mpls-repair", CORE_PLR, "P3", "Repair: Node-SID + Adj-SID", state.mplsRepairPacket) : undefined),
@@ -1316,8 +1448,9 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     run: (state) => {
       if (!state.sharedRepair?.repairList.sids[0]) return { state, events: [] };
       const sid = state.sharedRepair.repairList.sids[0];
-      const wrapped = encapsulateRepairSingleSid(sid, { inner: { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 } });
-      const journey: JourneyHop = { architecture: "SRV6", router: CORE_PLR, input: "Primary next hop down", lookup: `Repair OIF ${CORE_PLR}→${state.sharedRepair.outgoingInterface}; repair SID ${sid.sidText}`, action: "REPAIR_ENCAPSULATE", output: "Repair outer added (no SRH — single SID)" };
+      const modeledInput: TiLfaPacketState = { inner: { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 } };
+      const wrapped = encapsulateRepairSingleSid(sid, modeledInput);
+      const journey: JourneyHop = { architecture: "SRV6", router: CORE_PLR, input: "Primary next hop down", lookup: `Repair OIF ${CORE_PLR}→${state.sharedRepair.outgoingInterface}; repair SID ${sid.sidText}`, action: "REPAIR_ENCAPSULATE", output: "Repair outer added (no SRH — single SID)", stepId: "srv6-repair-encoding", ingressPeer: prevOnPath(PRIMARY_PATH, CORE_PLR), egressPeer: state.sharedRepair.outgoingInterface, before: { kind: "SRV6_TILFA", packet: modeledInput }, after: { kind: "SRV6_TILFA", packet: wrapped } };
       return { state: { ...state, activeArchitecture: "SRV6", srv6RepairPacket: wrapped, journey: [...state.journey, journey] }, events: [{ type: "SRV6_VPN_PACKET_ENCAPSULATED", stepId: "srv6-repair-encoding", timestamp: Date.now(), message: "PLR wraps traffic in the repair SID" }] };
     },
     packet: (state) => (state.srv6RepairPacket ? tiLfaPacketVisual("srv6-repair", CORE_PLR, "P3", "Repair: End.X+USD SID", state.srv6RepairPacket) : undefined),
@@ -1328,11 +1461,17 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     narrative: `At ${SHARED_REPAIR.repairNode}: SR-MPLS pops the Node-SID label, reads the Adj-SID, forces the ${SHARED_REPAIR.repairNode}→${SHARED_REPAIR.mergeTarget} adjacency. SRv6's USD flavor removes the entire repair outer header, exposing the original packet, then forces the same adjacency. Both land the packet at ${SHARED_REPAIR.mergeTarget} with the ORIGINAL customer packet (its VPN encapsulation, if any, untouched underneath).`,
     run: (state) => {
       if (!state.sharedRepair?.repairNode || !state.sharedRepair.mergeTarget) return { state, events: [] };
-      const mplsJourney: JourneyHop = { architecture: "SR_MPLS", router: state.sharedRepair.repairNode, input: "Repair label stack", lookup: "LFIB: Node-SID pop, then local Adj-SID", action: "REPAIR_FORWARD_ADJ", output: `Forced onto the ${state.sharedRepair.repairNode}→${state.sharedRepair.mergeTarget} adjacency` };
+      const repairNode = state.sharedRepair.repairNode;
+      // Physical predecessor of the repair node on the real post-convergence path (P1→P3→P4 here) — never the previous logical segment's owner.
+      const repairIngress = state.sharedRepair.postConvergencePath ? prevOnPath(state.sharedRepair.postConvergencePath, repairNode) : undefined;
+      // Node-SID pop, then the local Adj-SID is consumed as the packet is forced onto its adjacency — leaving the modeled, untouched IPv4 packet (see buildMplsTeSegments for the same Adj-SID semantics).
+      const mplsIn = state.mplsRepairPacket;
+      const mplsOut = mplsIn ? popTopMplsLabel(popTopMplsLabel(mplsIn)) : undefined;
+      const mplsJourney: JourneyHop = { architecture: "SR_MPLS", router: repairNode, input: "Repair label stack", lookup: "LFIB: Node-SID pop, then local Adj-SID", action: "REPAIR_FORWARD_ADJ", output: `Forced onto the ${repairNode}→${state.sharedRepair.mergeTarget} adjacency`, stepId: "repair-execution", ingressPeer: repairIngress, egressPeer: state.sharedRepair.mergeTarget, before: mplsIn && { kind: "MPLS", packet: mplsIn }, after: mplsOut && { kind: "MPLS", packet: mplsOut } };
       let srv6Journey: JourneyHop | undefined;
       if (state.srv6RepairPacket) {
         const outcome = executeEndXUsd(state.sharedRepair.repairList.sids[0], state.srv6RepairPacket);
-        srv6Journey = { architecture: "SRV6", router: state.sharedRepair.repairNode, input: "Repair SID (final segment)", lookup: "Local SID Table: End.X, flavor USD", action: outcome.action, output: outcome.reason };
+        srv6Journey = { architecture: "SRV6", router: repairNode, input: "Repair SID (final segment)", lookup: "Local SID Table: End.X, flavor USD", action: outcome.action, output: outcome.reason, stepId: "repair-execution", ingressPeer: repairIngress, egressPeer: outcome.forwardedTo, before: { kind: "SRV6_TILFA", packet: state.srv6RepairPacket }, after: outcome.exposedPacket && { kind: "SRV6_TILFA", packet: outcome.exposedPacket } };
       }
       return { state: { ...state, journey: [...state.journey, mplsJourney, ...(srv6Journey ? [srv6Journey] : [])] }, events: [] };
     },
@@ -1351,6 +1490,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     id: "compare-protection-encoding",
     label: "SIDE-BY-SIDE: Repair Encoding",
     narrative: "SAME failure, SAME PLR, SAME desired repair topology. SR-MPLS: OIF + a two-entry label repair list (Node-SID + Adj-SID). SRv6: OIF + one globally-routed End.X+USD SID. A globally routed End.X can fold what SR-MPLS needed two labels to express into one SID — that's a real difference, not a universal one (see the header-efficiency phase for why it doesn't always work out that way).",
+    run: noopRun,
     whatChanged: (_, next) => (next.sharedRepair ? compareProtectionEncoding(next.sharedRepair).map((r) => `${r.requirement}: SR-MPLS=${r.srMpls} | SRv6=${r.srv6}`) : []),
   },
   {
@@ -1373,6 +1513,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     label: "Endpoint Programmability",
     narrative:
       "One genuine architectural difference: an SR-MPLS segment is primarily a forwarding instruction expressed as a label — the label value itself carries no semantic beyond \"what to do with this stack.\" An SRv6 SID IS an IPv6 address bound to a named endpoint-behavior (End, End.X, End.T, End.DT4, End.DT6, ...), each independently specified by RFC 8986. This capstone already used End (topological) and End.X+USD (protection) and End.DT4 (VPN service) — all from the SAME SID-address space, distinguished by which local behavior a router bound to that address.",
+    run: noopRun,
     whatChanged: () => (["END", "END_X", "END_DT4"] as Srv6EndpointBehavior[]).map((b) => `${BEHAVIOR_LABEL[b]}: ${BEHAVIOR_FAMILY[b]}`),
   },
   {
@@ -1439,6 +1580,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     id: "requirement-matrix",
     label: "Requirement Matrix",
     narrative: "Every requirement from the brief, both implementations, side by side. No winner column — just what each encoding actually is.",
+    run: noopRun,
     whatChanged: () => buildRequirementMatrix().map((r) => `${r.requirement} — SR-MPLS: ${r.srMpls} | SRv6: ${r.srv6}`),
   },
   {
@@ -1582,9 +1724,16 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
       const pkt = encapsulateSrv6VpnPacket(serviceSid, { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 }, "2001:db8:100:1::c1");
       const outcome = processEgressServiceSid(serviceSid, pkt, PE2_LOCAL_ROUTES, []);
       const verified = !outcome.dropped;
-      return { state: { ...state, activeArchitecture: "SRV6", srv6VpnPacket: pkt, troubleshooting: { ...state.troubleshooting, verified } }, events: [{ type: "VPN_PACKET_DELIVERED", stepId: "incident-resend", timestamp: Date.now(), message: verified ? "Delivered to CE2 — incident resolved" : "Still failing" }] };
+      const encapsulated: HopPacket = { kind: "SRV6_L3VPN", packet: pkt };
+      // Only the two endpoints this step actually computes are recorded. The core path between them is not re-simulated here (and P1-P2 is still down from the protection phase), so no transit hop and no PE2 ingress peer is claimed.
+      const journey: JourneyHop[] = [
+        { architecture: "SRV6", router: "PE1", input: "Customer IPv4", lookup: `CUST-A route installed: ${state.srv6ImportProgress?.installed ? "yes" : "no"} → Service SID`, action: "SET_DA", output: `Outer IPv6 DA = ${serviceSid.sidText}`, stepId: "incident-resend", ingressPeer: CE1_ID, egressPeer: nextOnPath(PRIMARY_PATH, "PE1"), before: { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 }, after: encapsulated },
+        { architecture: "SRV6", router: "PE2", input: `DA=${serviceSid.sidText}`, lookup: "Local SID Table: End.DT4 → CUST-A VRF", action: "END_DT4_DECAP", output: outcome.dropped ? `DROPPED: ${outcome.reason}` : `Delivered to ${outcome.ceTarget} (${CE2_HOST_IPV4})`, stepId: "incident-resend", egressPeer: outcome.dropped ? undefined : capstoneRouter(outcome.ceTarget), before: encapsulated, after: !outcome.dropped && outcome.exposedInner?.kind === "IPV4" ? { kind: "IPV4", srcIp: outcome.exposedInner.srcIp, dstIp: outcome.exposedInner.dstIp } : undefined },
+      ];
+      return { state: { ...state, activeArchitecture: "SRV6", srv6VpnPacket: pkt, journey: [...state.journey, ...journey], troubleshooting: { ...state.troubleshooting, verified } }, events: [{ type: "VPN_PACKET_DELIVERED", stepId: "incident-resend", timestamp: Date.now(), message: verified ? "Delivered to CE2 — incident resolved" : "Still failing" }] };
     },
-    packet: (state) => (state.srv6VpnPacket ? srv6L3vpnPacketVisual("incident-resend", "PE1", "PE2", "Resend after repair", state.srv6VpnPacket) : undefined),
+    // The headend's own egress leg (PE1→P1) — a real link. PE1→PE2 has no direct link.
+    packet: (state) => (state.srv6VpnPacket ? srv6L3vpnPacketVisual("incident-resend", "PE1", "P1", "Resend after repair", state.srv6VpnPacket) : undefined),
     requiresState: (state) => state.troubleshooting.verified === true,
   },
   {
@@ -1639,6 +1788,57 @@ export function comparisonPhaseForIndex(index: number): ComparisonPhase {
   return "other";
 }
 
+/**
+ * Anti-spoiler: each phase's side-by-side table directly states the
+ * answer to that phase's own prediction(s) — "4 bytes" (predict-mpls-
+ * label-bytes), "2 labels vs. 3 SIDs" (predict-minimal-segments),
+ * "identical VRF/RD/RT" + "P-router customer state: None" (predict-vrf-
+ * rt-common, predict-p-router-vrf), "shared repair computation"
+ * (predict-tilfa-shared), modeled total overhead (the MTU case the
+ * narrative itself presents first). A phase's table is therefore only
+ * revealed from the first step AFTER those predictions; the requirement
+ * matrix (which restates every phase's result) only from its own step.
+ */
+const COMPARISON_REVEAL_STEP: Record<Exclude<ComparisonPhase, "other">, string> = {
+  transport: "srv6-transport-intro",
+  te: "mpls-te-build",
+  vpn: "compare-vpn-encoding",
+  protection: "link-fails",
+  header: "header-efficiency-mtu-case",
+};
+export function comparisonRevealIndex(phase: ComparisonPhase): number {
+  return phase === "other" ? STEP_IDX["requirement-matrix"] : STEP_IDX[COMPARISON_REVEAL_STEP[phase]];
+}
+export function comparisonRevealed(phase: ComparisonPhase, index: number): boolean {
+  return index >= comparisonRevealIndex(phase);
+}
+
+export interface LocalSidEntry {
+  sid: string;
+  behavior: string;
+  usedBy: string;
+}
+/**
+ * The SRv6 Local SID entries THIS router actually owns in this capstone,
+ * as far as the lesson has built them: its End SID always; an End.X
+ * only where the TE program or the TI-LFA repair list binds one to it;
+ * PE2's End.DT4 Service SID once allocated. Deduplicated by address —
+ * the TE End.X and the repair End.X+USD at the same owner are built from
+ * the same locator + END_X function, so they are shown as one address
+ * used two ways rather than two invented entries.
+ */
+export function localSidEntries(state: CapstoneState, router: CoreRouterId): LocalSidEntry[] {
+  const rows: LocalSidEntry[] = [{ sid: endSidText(router), behavior: BEHAVIOR_LABEL.END, usedBy: "Topological End SID (reachable via this router's locator)" }];
+  const endX = new Map<string, string[]>();
+  const teAdj = state.srv6Segments.find((s) => s.type === "ADJ" && s.owner === router);
+  if (teAdj) endX.set(endXSidText(router), [...(endX.get(endXSidText(router)) ?? []), `SR Policy: plain End.X → ${teAdj.target}`]);
+  for (const s of state.sharedRepair?.repairList.sids ?? []) if (s.owner === router) endX.set(s.sidText, [...(endX.get(s.sidText) ?? []), `TI-LFA repair: End.X+${s.flavors.join("+")} → ${s.adjacency}`]);
+  for (const [sid, uses] of endX) rows.push({ sid, behavior: BEHAVIOR_LABEL.END_X, usedBy: uses.join(" · ") });
+  const svc = state.srv6VpnRoute?.prefixSid?.l3Service.serviceSid;
+  if (svc && svc.owner === router) rows.push({ sid: svc.sidText, behavior: BEHAVIOR_LABEL.END_DT4, usedBy: "CUST-A Service SID (decapsulate + VRF IPv4 lookup)" });
+  return rows;
+}
+
 export interface CliCommandEntry {
   command: string;
   output: string;
@@ -1656,7 +1856,7 @@ export function buildCapstoneCliCommands(state: CapstoneState, architecture: Arc
   return [
     { command: "show ipv6 route", output: `Locator routes (${CORE_ROUTERS.length} entries)` },
     { command: "show srv6 locator", output: `Locator present at ${router}: ${!(router === "PE2" && state.troubleshooting.locatorWithdrawn && !state.troubleshooting.repaired)}` },
-    { command: "show srv6 local-sid", output: "End, End.X, End.DT4 bindings installed" },
+    { command: "show srv6 local-sid", output: router === "CE1" || router === "CE2" ? "Not an SRv6 node" : localSidEntries(state, router).map((e) => `${e.sid} ${e.behavior}`).join(" · ") },
     { command: "show sr policy", output: state.srv6Segments.length > 0 ? `${state.srv6Segments.length}-SID explicit policy up` : "No policy configured" },
     { command: "show vpn route CUST-A", output: state.srv6VpnRoute ? `${state.srv6VpnRoute.prefix} via Service SID ${state.srv6VpnRoute.prefixSid?.l3Service.serviceSid.sidText}` : "No VPN routes" },
   ];

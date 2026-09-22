@@ -3,6 +3,7 @@ import {
   CUST_A_EXPORT_RT,
   INFRA_ADDRESS,
   PROTECTED_LINK,
+  capstoneSteps,
   endSidText,
   nodeSidLabel,
   type Architecture,
@@ -40,7 +41,9 @@ export function explainNode(state: CapstoneState, architecture: Architecture, no
   const isMpls = architecture === "SR_MPLS";
   const hops = state.journey.filter((h) => h.architecture === architecture && h.router === nodeId);
   const hop = hops[hops.length - 1];
-  const currentAction = hop ? `${isMpls ? "SR-MPLS" : "SRv6"}: ${hop.lookup} → ${hop.action} → ${hop.output}` : "Idle — no packet processed yet in this architecture's walkthrough.";
+  // Device Explorer shows LIVE device state, not the current step's hop (that is the Hop Inspector's job) — so this is labeled as the most recent activity and names the step that recorded it, rather than implying it is happening now.
+  const hopStepLabel = hop ? capstoneSteps.find((s) => s.id === hop.stepId)?.label : undefined;
+  const currentAction = hop ? `Most recent ${isMpls ? "SR-MPLS" : "SRv6"} activity (${hopStepLabel ?? hop.stepId}): ${hop.lookup} → ${hop.action} → ${hop.output}` : `Idle — no ${isMpls ? "SR-MPLS" : "SRv6"} packet processed here yet.`;
 
   if (nodeId === "CE1" || nodeId === "CE2") {
     return { id: nodeId, name: nodeId, deviceType: "Customer Edge", role: nodeId === "CE1" ? "Source site" : "Destination site", currentAction: "Customer site — never runs SR-MPLS or SRv6 itself; only originates/receives plain IP traffic." };
