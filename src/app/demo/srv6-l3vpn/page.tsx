@@ -38,6 +38,7 @@ import { GraphTopologyViewer } from "@/components/network/GraphTopologyViewer";
 import { GraphPacket } from "@/components/network/GraphPacket";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { PacketJourneyTimeline } from "@/components/protocol/PacketJourneyTimeline";
+import { PlaneSplitPanel } from "@/components/protocol/PlaneSplitPanel";
 import { Srv6VpnRouteViewer, type Srv6VpnRouteRow } from "@/components/protocol/Srv6VpnRouteViewer";
 import { TroubleshootingLayers, type DiagnosticLayer } from "@/components/protocol/TroubleshootingLayers";
 import { CLIOutputPanel } from "@/components/protocol/CLIOutputPanel";
@@ -47,16 +48,24 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useProgressStore } from "@/lib/state/useProgressStore";
 import { NetworkScene3D } from "@/components/network3d/NetworkScene3D";
-import { TopologyQuickExpand } from "@/components/network3d/TopologyQuickExpand";
 import { NodeInspectorPanel } from "@/components/network3d/NodeInspectorPanel";
+import { PacketFocusPanel } from "@/components/network3d/PacketFocusPanel";
 import { TopologyModeSwitcher } from "@/components/network3d/TopologyModeSwitcher";
+import { PlaneViewSwitcher } from "@/components/network3d/PlaneViewSwitcher";
 import { DeviceExplorerPanel, InterfaceListTab, type DeviceExplorerTab } from "@/components/network3d/DeviceExplorerPanel";
 import { PacketDetailPanel } from "@/components/network3d/PacketDetailPanel";
 import { LinkDetailPanel } from "@/components/network3d/LinkDetailPanel";
+import { TopologyFrame } from "@/components/network3d/TopologyFrame";
+import { TopologyFocusMode } from "@/components/network3d/TopologyFocusMode";
+import { HopInspectorPanel } from "@/components/network3d/HopInspectorPanel";
+import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
+import { HopTimeline } from "@/components/network3d/HopTimeline";
+import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
+import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutTo3D } from "@/components/network3d/layout";
-import type { ActivePacket3D, CameraMode, Link3DData, Node3DStatus } from "@/components/network3d/types";
+import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
-import { interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
 import { RR1_ID, explainRr1, packetFromRr1, packetToRr1, reflectThroughRr1, rr1Interfaces, withRr1 } from "./rrIntegration";
 
 const DEVICE_ROUTERS: RouterId[] = ["PE1", "P1", "P2", "PE2"];
@@ -82,17 +91,27 @@ const WRONG_FEEDBACK: Record<string, string> = {
   "add-mpls-label": "This VPN uses the SRv6 service data plane, not MPLS. The missing dependency is Service SID reachability — an MPLS label has no meaning here.",
 };
 
+/** Derives a close-but-non-clipping camera eye offset from a focused object's world-space bounding size (see sr-mpls-foundations for the same helper). */
+function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number] {
+  const [sx, sy, sz] = target.size ?? [0.6, 0.3, 0.3];
+  const maxDim = Math.max(sx, sy, sz);
+  const dist = Math.max(0.55, maxDim * 1.8);
+  return [dist * 0.55, dist * 0.5, dist * 0.75];
+}
+
 export default function Srv6L3vpnDemo() {
   const { engine, snapshot } = useScenarioEngine<Srv6L3vpnState>(createSrv6L3vpnState(), srv6L3vpnSteps);
   const [autoPlay, setAutoPlay] = useState(false);
   const [speed, setSpeed] = useState<0.5 | 1 | 2>(1);
   const [topoView, setTopoView] = useState<TopoView>("physical");
   const [viewMode3D, setViewMode3D] = useState(false);
+  const [planeView, setPlaneView] = useState<"control" | "data" | "both">("both");
   const [focusRouter, setFocusRouter] = useState<RouterId>("PE1");
   const [selectedNodeId, setSelectedNodeId] = useState<ExtRouterId | undefined>(undefined);
   const [cameraMode, setCameraMode] = useState<CameraMode>("overview");
   const [enteredDeviceId, setEnteredDeviceId] = useState<ExtRouterId | undefined>(undefined);
   const [deviceXray, setDeviceXray] = useState(true);
+  const [autoEnterDevices, setAutoEnterDevices] = useState(true);
   const [selectedInterfaceId, setSelectedInterfaceId] = useState<string | undefined>(undefined);
   const [selectedLinkId, setSelectedLinkId] = useState<string | undefined>(undefined);
   const [packetSelected, setPacketSelected] = useState(false);
@@ -101,6 +120,12 @@ export default function Srv6L3vpnDemo() {
   const [policyPreviewOn, setPolicyPreviewOn] = useState(false);
   const [rrRelayActive, setRrRelayActive] = useState(false);
   const [rrRelayHop, setRrRelayHop] = useState<0 | 1>(0);
+  const [focusMode, setFocusMode] = useState(false);
+  const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
+  /** Presentation cursor for HopTimeline inspection (ARCHITECTURE.md §18) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
+  const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
+  /** Explicit Hop-vs-Device intent inside Focus Mode (ARCHITECTURE.md §18) — set by the actual gesture, never inferred from whether a trace object happens to exist. */
+  const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -115,6 +140,7 @@ export default function Srv6L3vpnDemo() {
   const showMissingTlvLab = currentStep?.id === "missing-service-tlv-lab";
   const showPolicyPreview = currentStep?.id === "sr-policy-integration-preview" || currentStep?.id === "predict-policy-plus-service";
   const showTroubleshoot = index >= srv6L3vpnSteps.findIndex((s) => s.id === "break-intro");
+  const showPlanes = index >= srv6L3vpnSteps.findIndex((s) => s.id === "send-ce1-ce2");
 
   const rrModeActive = showRr;
   const augmented = rrModeActive ? withRr1(GRAPH_NODES, GRAPH_EDGES, "PE1", "PE2") : { nodes: GRAPH_NODES, edges: GRAPH_EDGES };
@@ -132,7 +158,7 @@ export default function Srv6L3vpnDemo() {
   const cliCommands = useMemo(() => buildSrv6L3vpnCliCommands(state, focusRouter), [state, focusRouter]);
   const lastHop = state.journey[state.journey.length - 1];
 
-  // --- RR1 relay (presentational only, mirrors mpls-l3vpn's own pattern) ---
+  // --- RR1 relay (presentational only, mirrors mpls-l3vpn's own pattern) — never a progression gate, so it stays outside Focus Mode's inspector chain, exactly like the mpls-l3vpn precedent. ---
   const pe2ToPe1Route = state.advertisedRoutes.find((r) => r.originPe === "PE2" && r.prefix.startsWith("10.20.1"));
   const rrReflected = pe2ToPe1Route ? reflectThroughRr1(pe2ToPe1Route, INFRA_LOOPBACK.PE2!) : undefined;
   const rrRelayPacket = rrRelayActive && pe2ToPe1Route ? (rrRelayHop === 0 ? packetToRr1(pe2ToPe1Route, "PE2") : rrReflected ? packetFromRr1(pe2ToPe1Route, "PE1", rrReflected) : undefined) : undefined;
@@ -168,18 +194,46 @@ export default function Srv6L3vpnDemo() {
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
   const activeDeviceId = DEVICE_ROUTERS.find((r) => traceFor(r, state, currentStep?.id ?? "")?.activeStageId !== undefined);
-  const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : undefined;
+  const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : cameraMode === "packetFollow" && autoEnterDevices ? activeDeviceId : undefined;
   const inDeviceMode = !!effectiveDeviceId;
   const isRr1Device = effectiveDeviceId === RR1_ID;
   const isPDevice = effectiveDeviceId === "P1" || effectiveDeviceId === "P2";
   const deviceTrace = effectiveDeviceId && !isRr1Device ? traceFor(effectiveDeviceId as RouterId, state, currentStep?.id ?? "") : undefined;
 
-  const deviceInterfaces = isRr1Device ? rr1Interfaces() : effectiveDeviceId ? interfacesFor(effectiveDeviceId as RouterId, state, currentStep?.id ?? "") : [];
-  const devicePacketFrames = effectiveDeviceId ? packetFramesFor(state, deviceTrace?.activeStageId) : undefined;
+  const followPacketIntoCurrentDevice = () => {
+    if (!packetSelected || cameraMode !== "device") return;
+    const snap = engine.getSnapshot();
+    const nextDevice = DEVICE_ROUTERS.find((r) => traceFor(r, snap.state, snap.currentStep?.id ?? "")?.activeStageId !== undefined);
+    if (nextDevice) setEnteredDeviceId(nextDevice);
+  };
 
-  const followNode3D = selectedNode3D;
-  const focusPosition3D: [number, number, number] | undefined = inDeviceMode ? [0, 0, deviceXray ? -0.2 : 0] : selectedNode3D?.position;
-  const eyeOffset3D: [number, number, number] | undefined = inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
+  const deviceInterfaces = isRr1Device ? rr1Interfaces() : effectiveDeviceId ? interfacesFor(effectiveDeviceId as RouterId, state, currentStep?.id ?? "") : [];
+  const devicePacketFrames: PacketStackFrame[] | undefined = effectiveDeviceId ? packetFramesFor(state, deviceTrace?.activeStageId) : undefined;
+
+  // --- Generic 3D object-focus sub-state (ARCHITECTURE.md §18) — layered ON TOP of `cameraMode`, never a 5th camera mode. Never available while RR1 is entered — RR1 has no DeviceProcessingTrace, only its own explorer tabs. ---
+  const focusedObjectStillValid =
+    focusedObject &&
+    !isRr1Device &&
+    (focusedObject.kind === "stage"
+      ? deviceTrace?.stages.some((s) => s.id === focusedObject.id)
+      : focusedObject.kind === "packetLayer"
+        ? devicePacketFrames?.some((f) => f.id === focusedObject.id)
+        : focusedObject.kind === "interface"
+          ? deviceInterfaces.some((i) => i.id === focusedObject.id)
+          : true);
+  const activeFocusedObject = focusedObjectStillValid ? focusedObject : undefined;
+
+  const followNode3D = cameraMode === "packetFollow" && activePacket ? nodes3D.find((n) => n.id === (state.packetAt ?? activePacket.to)) : selectedNode3D;
+  const focusPosition3D: [number, number, number] | undefined = activeFocusedObject
+    ? activeFocusedObject.position
+    : cameraMode === "freeOrbit"
+      ? undefined
+      : inDeviceMode
+        ? [0, 0, deviceXray ? -0.2 : 0]
+        : cameraMode === "packetFollow"
+          ? followNode3D?.position
+          : selectedNode3D?.position;
+  const eyeOffset3D: [number, number, number] | undefined = activeFocusedObject ? eyeOffsetForFocusTarget(activeFocusedObject) : inDeviceMode ? (deviceXray ? [0.6, 2.6, 5.2] : [2.1, 1.5, 3.8]) : undefined;
 
   const explainTargetId = effectiveDeviceId ?? selectedNodeId ?? followNode3D?.id;
   const nodeExplanation = explainTargetId === RR1_ID ? explainRr1(state.advertisedRoutes.length > 0) : explainTargetId ? explainNode(state, explainTargetId as RouterId) : undefined;
@@ -187,6 +241,79 @@ export default function Srv6L3vpnDemo() {
   const selectedLinkDetail = selectedLinkId ? linkDetailFor(selectedLinkId, state) : undefined;
   const packetCurrentDeviceLabel = effectiveDeviceId ?? state.packetAt ?? activePacket?.from ?? "—";
   const devicePacketForTab = xrayPacket ?? (effectiveDeviceId && state.packetAt === effectiveDeviceId ? activePacket : undefined);
+
+  // --- Hop Inspector target (ARCHITECTURE.md §18) — explicit selection wins outright: selectedNodeId > effectiveDeviceId > activeDeviceId, excluding the synthetic RR1 device (which has no DeviceProcessingTrace of its own). ---
+  const nonRr1SelectedId = selectedNodeId !== RR1_ID ? (selectedNodeId as RouterId | undefined) : undefined;
+  const nonRr1EffectiveId = !isRr1Device ? (effectiveDeviceId as RouterId | undefined) : undefined;
+  const focusInspectDeviceId = nonRr1SelectedId ?? nonRr1EffectiveId ?? activeDeviceId;
+  const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state, currentStep?.id ?? "") : undefined;
+  const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state, currentStep?.id ?? "") : undefined;
+
+  // --- HopTimeline data — every step that either carries a packet or is a no-packet control-plane/fault step tracked in PRIMARY_TRANSITION_ROUTER (mirrors MPLS L3VPN/SRv6 Policy). ---
+  const journeyStepIndices = srv6L3vpnSteps.map((s, i) => ({ s, i })).filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined));
+  const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
+
+  // --- Historical (timeline) inspection (ARCHITECTURE.md §18) — reuses ScenarioEngine's OWN `stateByIndex` snapshot (exposed via `getStateAt`). Presentation-only — never calls `engine.goTo()`. The SAME `traceFor` used for live inspection is reused unmodified against a frozen Srv6L3vpnState. ---
+  const historicalState = historicalIndex !== undefined ? engine.getStateAt(historicalIndex) : undefined;
+  const historicalStep = historicalIndex !== undefined ? srv6L3vpnSteps[historicalIndex] : undefined;
+  const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
+  const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
+  const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+  const historicalInterfaces = historicalDeviceId && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+
+  /** Detail shown in <ObjectFocusPanel> for a focused stage/packetLayer/interface. Every field comes straight off `deviceTrace`/`deviceInterfaces`/`devicePacketFrames`; link focus reuses <LinkDetailPanel> instead. */
+  function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
+    if (target.kind === "stage" && deviceTrace) {
+      const stage = deviceTrace.stages.find((s) => s.id === target.id);
+      const fields: { label: string; value: string }[] = [];
+      if (stage?.detail) fields.push({ label: "Detail", value: stage.detail });
+      if (deviceTrace.activeStageId === target.id) {
+        if (deviceTrace.lookupType) fields.push({ label: "Lookup", value: deviceTrace.lookupType });
+        if (deviceTrace.lookupKey) fields.push({ label: "Match", value: deviceTrace.lookupKey });
+        if (deviceTrace.lookupResult) fields.push({ label: "Result", value: deviceTrace.lookupResult });
+        const egressIface = deviceInterfaces.find((i) => i.id === deviceTrace.egressInterfaceId);
+        if (egressIface) fields.push({ label: "Egress", value: egressIface.name });
+        if (deviceTrace.reason) fields.push({ label: "Why", value: deviceTrace.reason });
+      }
+      return { title: stage?.label ?? target.id, fields };
+    }
+    if (target.kind === "packetLayer") {
+      const frame = devicePacketFrames?.find((f) => f.id === target.id);
+      return { title: frame?.text ?? target.id, fields: [] };
+    }
+    if (target.kind === "interface") {
+      const iface = deviceInterfaces.find((i) => i.id === target.id);
+      if (!iface) return { title: target.id, fields: [] };
+      const fields: { label: string; value: string }[] = [];
+      if (iface.neighborLabel) fields.push({ label: "Peer", value: iface.neighborLabel });
+      fields.push({ label: "Current role", value: iface.role === "ingress" ? "Ingress" : iface.role === "egress" ? "Egress" : "Idle" });
+      fields.push({ label: "Status", value: iface.status === "up" ? "Up" : "Down" });
+      if (iface.ip) fields.push({ label: "IP", value: iface.ip });
+      if (iface.extra) fields.push(...iface.extra);
+      return { title: iface.name, fields };
+    }
+    return { title: target.id, fields: [] };
+  }
+
+  function handleCameraModeChange(v: CameraMode) {
+    setCameraMode(v);
+    if (v === "device" && !enteredDeviceId) setEnteredDeviceId(selectedNodeId ?? activeDeviceId ?? "PE1");
+    if (v === "overview") {
+      setEnteredDeviceId(undefined);
+      setSelectedNodeId(undefined);
+    }
+    if (v === "freeOrbit") setEnteredDeviceId(undefined);
+  }
+
+  // --- Manual object focus / historical inspection vs. Play — resuming playback takes priority. ---
+  function handleToggleAutoPlay() {
+    if (!autoPlay) {
+      setFocusedObject(undefined);
+      setHistoricalIndex(undefined);
+      setInspectorSurface("hop");
+    }
+    setAutoPlay((v) => !v);
+  }
 
   const peExplorerTabs: DeviceExplorerTab[] = nodeExplanation
     ? [
@@ -229,6 +356,12 @@ export default function Srv6L3vpnDemo() {
         { id: "cli", label: "CLI", content: <p className="text-xs text-pv-text-faint">RR1 carries no customer VRF, no local Service SID, and never processes a customer packet.</p> },
       ]
     : [];
+
+  function explorerTabsFor(deviceId: ExtRouterId): DeviceExplorerTab[] {
+    if (deviceId === RR1_ID) return rr1ExplorerTabs;
+    if (deviceId === "P1" || deviceId === "P2") return pExplorerTabs;
+    return peExplorerTabs;
+  }
 
   const diagnosticLayers: DiagnosticLayer[] = [
     { label: "PE1 Interfaces", status: "healthy" },
@@ -277,6 +410,10 @@ export default function Srv6L3vpnDemo() {
     setPolicyPreviewOn(false);
     setRrRelayActive(false);
     setRrRelayHop(0);
+    setFocusMode(false);
+    setFocusedObject(undefined);
+    setHistoricalIndex(undefined);
+    setInspectorSurface("hop");
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Apply the correct fix to continue" : "Next Step →";
@@ -304,6 +441,81 @@ export default function Srv6L3vpnDemo() {
   const perVrfResult: PerVrfVsPerCeResult = simulatePerVrfVsPerCe(perCeDst, state.localRoutes.PE2 ?? []);
   const rtMismatchResult = pe2ToPe1Route ? simulateRtMismatch(pe2ToPe1Route, CUST_A_WRONG_RT, CUST_A_IMPORT_RT) : undefined;
   const missingTlv = simulateMissingServiceTlv();
+
+  const perVrfLabPanel = (
+    <GlassPanel strong className="space-y-3 p-5">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Read-Only Lab: Per-VRF (End.DT4) vs. Per-CE (End.DX4)</h3>
+      <div className="flex flex-wrap gap-2">
+        {[CE2_HOST_IPV4, CE3_HOST_IPV4].map((ip) => (
+          <button
+            key={ip}
+            type="button"
+            onClick={() => setPerCeDst(ip)}
+            className={clsx("rounded-full border px-3 py-1 text-[11px] font-semibold pv-mono transition-colors", perCeDst === ip ? "border-pv-cyan/50 bg-pv-cyan/15 text-pv-cyan-soft" : "border-pv-border text-pv-text-faint hover:text-pv-text")}
+          >
+            dst {ip}
+          </button>
+        ))}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 text-xs">
+        <div className="rounded-lg border border-pv-success/40 bg-pv-success/5 p-2.5">
+          <p className="mb-1 font-semibold text-pv-success">End.DT4 (per-VRF)</p>
+          <p className="pv-mono text-pv-text">{perVrfResult.dt4Ce ? `→ ${perVrfResult.dt4Ce}` : "→ no match"}</p>
+        </div>
+        <div className="rounded-lg border border-pv-border p-2.5">
+          <p className="mb-1 font-semibold text-pv-text-muted">End.DX4 (per-CE, fixed to CE2)</p>
+          <p className="pv-mono text-pv-text">→ {perVrfResult.dx4Ce} (always, regardless of destination)</p>
+        </div>
+      </div>
+    </GlassPanel>
+  );
+
+  const rtMismatchLabPanel = rtMismatchResult && (
+    <GlassPanel strong className="space-y-2 p-5">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Read-Only Lab: RT Mismatch</h3>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <Badge tone="cyan">Received</Badge>
+        <Badge tone="danger">RT Import Failed</Badge>
+      </div>
+      <p className="text-xs text-pv-text-muted">{rtMismatchResult.rtImport.reason}</p>
+      <p className="text-xs text-pv-text-faint">Contrast with the incident ahead: there, RT import PASSES and Service SID resolution is what fails instead.</p>
+    </GlassPanel>
+  );
+
+  const missingTlvLabPanel = (
+    <GlassPanel strong className="space-y-2 p-5">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Read-Only Lab: Missing SRv6 L3 Service TLV</h3>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <Badge tone="cyan">Received</Badge>
+        <Badge tone="muted">No Service SID</Badge>
+      </div>
+      <p className="text-xs text-pv-text-muted">{missingTlv.reason}</p>
+    </GlassPanel>
+  );
+
+  const policyPreviewPanel = (
+    <GlassPanel strong className="space-y-3 p-5">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Advanced Preview: Shortest Path vs. SR Policy Service Steering</h3>
+      <div className="flex gap-2">
+        <button type="button" onClick={() => setPolicyPreviewOn(false)} className={clsx("rounded-full border px-3 py-1.5 text-xs font-semibold uppercase transition-colors", !policyPreviewOn ? "border-pv-cyan/50 bg-pv-cyan/15 text-pv-cyan-soft" : "border-pv-border text-pv-text-faint")}>
+          Shortest Path
+        </button>
+        <button type="button" onClick={() => setPolicyPreviewOn(true)} className={clsx("rounded-full border px-3 py-1.5 text-xs font-semibold uppercase transition-colors", policyPreviewOn ? "border-pv-violet/50 bg-pv-violet/15 text-pv-violet" : "border-pv-border text-pv-text-faint")}>
+          SR Policy Steered
+        </button>
+      </div>
+      {!policyPreviewOn ? (
+        <p className="pv-mono text-xs text-pv-text-muted">Outer IPv6 DA = {PE2_DT4_SID.sidText} — no SRH.</p>
+      ) : (
+        <div className="space-y-1 pv-mono text-xs text-pv-text-muted">
+          <p>Outer IPv6 DA = {P1_ENDX_SID_TEXT} (P1 End.X)</p>
+          <p>SRH Segment List[0] = {PE2_DT4_SID.sidText} (final)</p>
+          <p>SRH Segment List[1] = {P1_ENDX_SID_TEXT}</p>
+          <p className="text-pv-text-faint">At P1: End.X advances DA → {PE2_DT4_SID.sidText}. At PE2: Segments Left = 0 → End.DT4 executes as the final instruction, same as shortest path.</p>
+        </div>
+      )}
+    </GlassPanel>
+  );
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
@@ -359,23 +571,26 @@ export default function Srv6L3vpnDemo() {
               options={[
                 { value: "overview", label: "Overview" },
                 { value: "device", label: "Device" },
+                { value: "packetFollow", label: "Packet Follow" },
                 { value: "freeOrbit", label: "Free Orbit" },
               ]}
-              value={cameraMode === "packetFollow" ? "overview" : cameraMode}
-              onChange={(v) => {
-                setCameraMode(v);
-                if (v === "device" && !enteredDeviceId) setEnteredDeviceId(selectedNodeId ?? activeDeviceId ?? "PE1");
-                if (v === "overview") {
-                  setEnteredDeviceId(undefined);
-                  setSelectedNodeId(undefined);
-                }
-                if (v === "freeOrbit") setEnteredDeviceId(undefined);
-              }}
+              value={cameraMode}
+              onChange={handleCameraModeChange}
             />
             {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+            {cameraMode === "packetFollow" && (
+              <button
+                type="button"
+                onClick={() => setAutoEnterDevices((v) => !v)}
+                className={clsx("rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors", autoEnterDevices ? "border-pv-cyan/50 bg-pv-cyan/15 text-pv-cyan-soft" : "border-pv-border text-pv-text-faint hover:text-pv-text")}
+              >
+                Auto-Enter Devices
+              </button>
+            )}
             <TopologyModeSwitcher options={[{ value: "off", label: "Normal View" }, { value: "on", label: "X-Ray Packet View" }]} value={xrayMode ? "on" : "off"} onChange={(v) => setXrayMode(v === "on")} tone="violet" />
           </>
         )}
+        {showPlanes && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
@@ -383,50 +598,75 @@ export default function Srv6L3vpnDemo() {
         <div className="space-y-6">
           {viewMode3D ? (
             <>
-              <TopologyQuickExpand questionActive={questionActive} nodes={nodes3D} links={links3D} activePacket={activePacket3D}>
-              <NetworkScene3D
-                nodes={nodes3D}
-                links={links3D}
-                activePacket={inDeviceMode ? undefined : activePacket3D}
-                onSelectNode={(id) => {
-                  setSelectedNodeId(id as ExtRouterId);
-                  setPacketSelected(false);
-                  setSelectedLinkId(undefined);
-                }}
-                onSelectLink={(id) => {
-                  setSelectedLinkId(id);
-                  setSelectedNodeId(undefined);
-                  setPacketSelected(false);
-                }}
-                selectedLinkId={selectedLinkId}
-                onSelectPacket={() => {
-                  setPacketSelected(true);
-                  setAutoPlay(false);
-                }}
-                packetSelected={packetSelected}
-                focusPosition={focusPosition3D}
-                eyeOffset={eyeOffset3D}
-                mode={inDeviceMode ? "device" : "overview"}
-                deviceView={
-                  inDeviceMode
-                    ? {
-                        deviceLabel: effectiveDeviceId!,
-                        interfaces: deviceInterfaces,
-                        xray: deviceXray,
-                        trace: deviceTrace,
-                        packetFrames: devicePacketFrames,
-                        onSelectInterface: setSelectedInterfaceId,
-                        selectedInterfaceId,
-                        onSelectPacket: () => {
-                          setPacketSelected(true);
-                          setAutoPlay(false);
-                        },
-                        packetSelected,
-                      }
-                    : undefined
-                }
-              />
-              </TopologyQuickExpand>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                {focusMode ? (
+                  // Focus Mode renders its own full-size <NetworkScene3D> below —
+                  // avoid a second, fully hidden WebGL canvas behind the modal
+                  // (one-canvas invariant, see sr-mpls-foundations).
+                  <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" />
+                ) : (
+                  <NetworkScene3D
+                    nodes={nodes3D}
+                    links={links3D}
+                    activePacket={inDeviceMode ? undefined : activePacket3D}
+                    onSelectNode={(id) => {
+                      setSelectedNodeId(id as ExtRouterId);
+                      setPacketSelected(false);
+                      setSelectedLinkId(undefined);
+                    }}
+                    onSelectLink={(id) => {
+                      setSelectedLinkId(id);
+                      setSelectedNodeId(undefined);
+                      setPacketSelected(false);
+                    }}
+                    selectedLinkId={selectedLinkId}
+                    onFocusLink={setFocusedObject}
+                    onSelectPacket={() => {
+                      setPacketSelected(true);
+                      setAutoPlay(false);
+                    }}
+                    packetSelected={packetSelected}
+                    focusPosition={focusPosition3D}
+                    eyeOffset={eyeOffset3D}
+                    mode={inDeviceMode ? "device" : "overview"}
+                    deviceView={
+                      inDeviceMode
+                        ? {
+                            deviceLabel: effectiveDeviceId!,
+                            interfaces: deviceInterfaces,
+                            xray: deviceXray,
+                            trace: deviceTrace,
+                            packetFrames: devicePacketFrames,
+                            onSelectInterface: setSelectedInterfaceId,
+                            selectedInterfaceId,
+                            onSelectPacket: () => {
+                              setPacketSelected(true);
+                              setAutoPlay(false);
+                            },
+                            packetSelected,
+                            pipelineTitle: isRr1Device ? "Route Reflector — No Forwarding Pipeline" : "Conceptual SRv6 L3VPN Pipeline",
+                            onFocusObject: setFocusedObject,
+                            focusedObjectId: activeFocusedObject?.id,
+                          }
+                        : undefined
+                    }
+                  />
+                )}
+              </TopologyFrame>
+
+              {cameraMode === "packetFollow" && (
+                <PacketFocusPanel
+                  currentHopLabel={lastHop ? `${lastHop.router}: ${lastHop.action} → ${lastHop.output}` : undefined}
+                  hopIndex={state.journey.length}
+                  totalHops={4}
+                  onPrevHop={() => engine.goTo(Math.max(0, index - 1))}
+                  onNextHop={() => engine.advance()}
+                  canPrev={index > 0}
+                  canNext={canAdvance}
+                  cameraFollow={true}
+                  onToggleCameraFollow={() => setAutoEnterDevices((v) => !v)}
+                />
+              )}
 
               {packetSelected && activePacket && (
                 <PacketDetailPanel
@@ -435,8 +675,14 @@ export default function Srv6L3vpnDemo() {
                   direction="PE1 → P1 → P2 → PE2"
                   paused={packetSelected}
                   onResume={() => setPacketSelected(false)}
-                  onStepForward={() => engine.advance()}
-                  onStepBack={() => engine.goTo(Math.max(0, index - 1))}
+                  onStepForward={() => {
+                    engine.advance();
+                    followPacketIntoCurrentDevice();
+                  }}
+                  onStepBack={() => {
+                    engine.goTo(Math.max(0, index - 1));
+                    followPacketIntoCurrentDevice();
+                  }}
                   canStepForward={canAdvance}
                   canStepBack={index > 0}
                   onClose={() => setPacketSelected(false)}
@@ -448,7 +694,7 @@ export default function Srv6L3vpnDemo() {
               {inDeviceMode && !packetSelected && !selectedLinkDetail ? (
                 <DeviceExplorerPanel
                   explanation={nodeExplanation!}
-                  tabs={isRr1Device ? rr1ExplorerTabs : isPDevice ? pExplorerTabs : peExplorerTabs}
+                  tabs={explorerTabsFor(effectiveDeviceId!)}
                   xrayEnabled={deviceXray}
                   onToggleXray={() => setDeviceXray((v) => !v)}
                   onExit={() => {
@@ -551,79 +797,35 @@ export default function Srv6L3vpnDemo() {
             </GlassPanel>
           )}
 
-          {showPerVrfLab && !isComplete && (
-            <GlassPanel strong className="space-y-3 p-5">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Read-Only Lab: Per-VRF (End.DT4) vs. Per-CE (End.DX4)</h3>
-              <div className="flex flex-wrap gap-2">
-                {[CE2_HOST_IPV4, CE3_HOST_IPV4].map((ip) => (
-                  <button
-                    key={ip}
-                    type="button"
-                    onClick={() => setPerCeDst(ip)}
-                    className={clsx("rounded-full border px-3 py-1 text-[11px] font-semibold pv-mono transition-colors", perCeDst === ip ? "border-pv-cyan/50 bg-pv-cyan/15 text-pv-cyan-soft" : "border-pv-border text-pv-text-faint hover:text-pv-text")}
-                  >
-                    dst {ip}
-                  </button>
-                ))}
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2 text-xs">
-                <div className="rounded-lg border border-pv-success/40 bg-pv-success/5 p-2.5">
-                  <p className="mb-1 font-semibold text-pv-success">End.DT4 (per-VRF)</p>
-                  <p className="pv-mono text-pv-text">{perVrfResult.dt4Ce ? `→ ${perVrfResult.dt4Ce}` : "→ no match"}</p>
-                </div>
-                <div className="rounded-lg border border-pv-border p-2.5">
-                  <p className="mb-1 font-semibold text-pv-text-muted">End.DX4 (per-CE, fixed to CE2)</p>
-                  <p className="pv-mono text-pv-text">→ {perVrfResult.dx4Ce} (always, regardless of destination)</p>
-                </div>
-              </div>
-            </GlassPanel>
-          )}
+          {showPerVrfLab && !isComplete && perVrfLabPanel}
+          {showRtMismatchLab && !isComplete && rtMismatchLabPanel}
+          {showMissingTlvLab && !isComplete && missingTlvLabPanel}
+          {showPolicyPreview && !isComplete && policyPreviewPanel}
 
-          {showRtMismatchLab && !isComplete && rtMismatchResult && (
-            <GlassPanel strong className="space-y-2 p-5">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Read-Only Lab: RT Mismatch</h3>
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <Badge tone="cyan">Received</Badge>
-                <Badge tone="danger">RT Import Failed</Badge>
-              </div>
-              <p className="text-xs text-pv-text-muted">{rtMismatchResult.rtImport.reason}</p>
-              <p className="text-xs text-pv-text-faint">Contrast with the incident ahead: there, RT import PASSES and Service SID resolution is what fails instead.</p>
-            </GlassPanel>
-          )}
-
-          {showMissingTlvLab && !isComplete && (
-            <GlassPanel strong className="space-y-2 p-5">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Read-Only Lab: Missing SRv6 L3 Service TLV</h3>
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <Badge tone="cyan">Received</Badge>
-                <Badge tone="muted">No Service SID</Badge>
-              </div>
-              <p className="text-xs text-pv-text-muted">{missingTlv.reason}</p>
-            </GlassPanel>
-          )}
-
-          {showPolicyPreview && !isComplete && (
-            <GlassPanel strong className="space-y-3 p-5">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-pv-violet">Advanced Preview: Shortest Path vs. SR Policy Service Steering</h3>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setPolicyPreviewOn(false)} className={clsx("rounded-full border px-3 py-1.5 text-xs font-semibold uppercase transition-colors", !policyPreviewOn ? "border-pv-cyan/50 bg-pv-cyan/15 text-pv-cyan-soft" : "border-pv-border text-pv-text-faint")}>
-                  Shortest Path
-                </button>
-                <button type="button" onClick={() => setPolicyPreviewOn(true)} className={clsx("rounded-full border px-3 py-1.5 text-xs font-semibold uppercase transition-colors", policyPreviewOn ? "border-pv-violet/50 bg-pv-violet/15 text-pv-violet" : "border-pv-border text-pv-text-faint")}>
-                  SR Policy Steered
-                </button>
-              </div>
-              {!policyPreviewOn ? (
-                <p className="pv-mono text-xs text-pv-text-muted">Outer IPv6 DA = {PE2_DT4_SID.sidText} — no SRH.</p>
-              ) : (
-                <div className="space-y-1 pv-mono text-xs text-pv-text-muted">
-                  <p>Outer IPv6 DA = {P1_ENDX_SID_TEXT} (P1 End.X)</p>
-                  <p>SRH Segment List[0] = {PE2_DT4_SID.sidText} (final)</p>
-                  <p>SRH Segment List[1] = {P1_ENDX_SID_TEXT}</p>
-                  <p className="text-pv-text-faint">At P1: End.X advances DA → {PE2_DT4_SID.sidText}. At PE2: Segments Left = 0 → End.DT4 executes as the final instruction, same as shortest path.</p>
-                </div>
-              )}
-            </GlassPanel>
+          {showPlanes && !isComplete && (
+            <PlaneSplitPanel
+              show={planeView}
+              controlTitle="Control Plane — VRF → RD → RT → MP-BGP → Service SID"
+              controlRows={[
+                { label: "VRF CUST-A routes (PE1)", value: `${(state.installedAt.PE1 ?? []).length + (state.localRoutes.PE1 ?? []).length} routes` },
+                { label: "PE2 export RT", value: CUST_A_EXPORT_RT },
+                { label: "PE1 import RT", value: CUST_A_IMPORT_RT },
+                { label: "PE2 Service SID (End.DT4)", value: PE2_DT4_SID.sidText },
+                { label: "PE2 locator state", value: state.locatorWithdrawn.PE2 ? "WITHDRAWN" : "advertised" },
+                { label: "PE1 import result (CE2 route)", value: (() => { const e = (state.installedAt.PE1 ?? []).find((p) => p.route.prefix.startsWith("10.20.1")); return e ? (e.installed ? "Installed" : e.rtImport?.passed ? "RT ok, SID unresolved" : "RT rejected") : "—"; })() },
+              ]}
+              dataTitle="Data Plane — Current Packet"
+              dataRows={
+                state.packet
+                  ? [
+                      { label: "Location", value: state.packetAt ?? "—" },
+                      { label: "Outer IPv6 DA (Service SID)", value: fmtIpv6(state.packet.outer.daHextets) },
+                      { label: "SRH", value: state.packet.outer.srh ? `Segments Left ${state.packet.outer.srh.segmentsLeft}` : "(none)" },
+                      { label: "Inner payload", value: state.packet.inner ? state.packet.inner.kind : "—" },
+                    ]
+                  : [{ label: "Packet", value: "none in flight" }]
+              }
+            />
           )}
 
           {showTroubleshoot && !isComplete && <TroubleshootingLayers title="Troubleshooting Layers" layers={diagnosticLayers} />}
@@ -656,7 +858,7 @@ export default function Srv6L3vpnDemo() {
               <Button size="sm" onClick={() => engine.advance()} disabled={!canAdvance}>
                 {nextLabel}
               </Button>
-              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={() => setAutoPlay((v) => !v)}>
+              <Button variant={autoPlay ? "primary" : "ghost"} size="sm" onClick={handleToggleAutoPlay}>
                 {autoPlay ? "⏸ Auto-Playing" : "▶ Auto-Play"}
               </Button>
               <div className="flex gap-1 rounded-full border border-pv-border p-0.5">
@@ -713,6 +915,278 @@ export default function Srv6L3vpnDemo() {
           <CLIOutputPanel commands={cliCommands} />
         </div>
       </div>
+
+      {focusMode && (
+        <TopologyFocusMode
+          onClose={() => setFocusMode(false)}
+          toolbar={
+            <>
+              <TopologyModeSwitcher
+                options={[
+                  { value: "overview", label: "Overview" },
+                  { value: "device", label: "Device" },
+                  { value: "packetFollow", label: "Packet Follow" },
+                  { value: "freeOrbit", label: "Free Orbit" },
+                ]}
+                value={cameraMode}
+                onChange={handleCameraModeChange}
+              />
+              {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+              {cameraMode === "packetFollow" && (
+                <button
+                  type="button"
+                  onClick={() => setAutoEnterDevices((v) => !v)}
+                  className={clsx("rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors", autoEnterDevices ? "border-pv-cyan/50 bg-pv-cyan/15 text-pv-cyan-soft" : "border-pv-border text-pv-text-faint hover:text-pv-text")}
+                >
+                  Auto-Enter Devices
+                </button>
+              )}
+            </>
+          }
+          header={
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <Badge tone="muted">
+                  Step {Math.min(index + 1, totalSteps)} / {totalSteps}
+                </Badge>
+                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label ?? (isComplete ? "Complete" : "")}</span>
+              </div>
+              {questionActive ? (
+                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
+                  Prediction pending — answer in the panel to continue
+                </span>
+              ) : currentStep?.id === "repair-challenge" ? (
+                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
+                  Engineer challenge pending — restore PE2&apos;s locator to continue
+                </span>
+              ) : (
+                currentStep?.narrative && (
+                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
+                    {currentStep.narrative}
+                  </p>
+                )
+              )}
+            </div>
+          }
+          canvas={
+            <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
+              <NetworkScene3D
+                nodes={nodes3D}
+                links={links3D}
+                activePacket={inDeviceMode ? undefined : activePacket3D}
+                onSelectNode={(id) => {
+                  setSelectedNodeId(id as ExtRouterId);
+                  setPacketSelected(false);
+                  setSelectedLinkId(undefined);
+                  setInspectorSurface("device");
+                  setHistoricalIndex(undefined);
+                }}
+                onSelectLink={(id) => setSelectedLinkId(id)}
+                selectedLinkId={selectedLinkId}
+                onFocusLink={setFocusedObject}
+                onSelectPacket={() => setPacketSelected(true)}
+                packetSelected={packetSelected}
+                focusPosition={focusPosition3D}
+                eyeOffset={eyeOffset3D}
+                mode={inDeviceMode ? "device" : "overview"}
+                deviceView={
+                  inDeviceMode
+                    ? {
+                        deviceLabel: effectiveDeviceId!,
+                        interfaces: deviceInterfaces,
+                        xray: deviceXray,
+                        trace: deviceTrace,
+                        packetFrames: devicePacketFrames,
+                        onSelectInterface: setSelectedInterfaceId,
+                        selectedInterfaceId,
+                        onSelectPacket: () => setPacketSelected(true),
+                        packetSelected,
+                        pipelineTitle: isRr1Device ? "Route Reflector — No Forwarding Pipeline" : "Conceptual SRv6 L3VPN Pipeline",
+                        onFocusObject: setFocusedObject,
+                        focusedObjectId: activeFocusedObject?.id,
+                      }
+                    : undefined
+                }
+              />
+            </div>
+          }
+          inspector={
+            currentStep?.question ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
+                <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
+              </>
+            ) : currentStep?.id === "repair-challenge" ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
+                <RepairChallenge options={REPAIR_OPTIONS} attempt={state.repairAttempt} onTry={(choice) => engine.act({ choice })} />
+              </>
+            ) : showPerVrfLab ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Per-VRF vs. Per-CE Lab</p>
+                {perVrfLabPanel}
+              </>
+            ) : showRtMismatchLab ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">RT Mismatch Lab</p>
+                {rtMismatchLabPanel}
+              </>
+            ) : showMissingTlvLab ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Missing Service TLV Lab</p>
+                {missingTlvLabPanel}
+              </>
+            ) : showPolicyPreview ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">SR Policy Service-Steering Preview</p>
+                {policyPreviewPanel}
+              </>
+            ) : selectedLinkDetail ? (
+              <LinkDetailPanel
+                detail={selectedLinkDetail}
+                onClose={() => {
+                  setSelectedLinkId(undefined);
+                  setFocusedObject(undefined);
+                }}
+              />
+            ) : activeFocusedObject && activeFocusedObject.kind !== "link" ? (
+              <ObjectFocusPanel
+                kind={activeFocusedObject.kind}
+                title={focusPanelFieldsFor(activeFocusedObject).title}
+                fields={focusPanelFieldsFor(activeFocusedObject).fields}
+                onBack={() => setFocusedObject(undefined)}
+                onOverview={() => {
+                  setFocusedObject(undefined);
+                  handleCameraModeChange("overview");
+                }}
+              />
+            ) : inDeviceMode && isRr1Device ? (
+              // RR1 is a synthetic, presentation-only device with no ScenarioEngine
+              // state of its own (§ rrIntegration.ts) — it never has a Hop trace, so
+              // it has only one surface, not a Hop/Device switch.
+              <DeviceExplorerPanel
+                explanation={nodeExplanation!}
+                tabs={rr1ExplorerTabs}
+                xrayEnabled={deviceXray}
+                onToggleXray={() => setDeviceXray((v) => !v)}
+                onExit={() => {
+                  setCameraMode("overview");
+                  setEnteredDeviceId(undefined);
+                }}
+              />
+            ) : inspectorSurface === "device" ? (
+              inDeviceMode ? (
+                <div className="space-y-3">
+                  <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" />
+                  <DeviceExplorerPanel
+                    explanation={nodeExplanation!}
+                    tabs={isPDevice ? pExplorerTabs : peExplorerTabs}
+                    xrayEnabled={deviceXray}
+                    onToggleXray={() => setDeviceXray((v) => !v)}
+                    onExit={() => {
+                      setCameraMode("overview");
+                      setEnteredDeviceId(undefined);
+                    }}
+                  />
+                </div>
+              ) : nodeExplanation ? (
+                <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} xrayEnabled={xrayMode} />
+              ) : (
+                <GlassPanel className="p-4">
+                  <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+                </GlassPanel>
+              )
+            ) : historicalIndex !== undefined && historicalTrace ? (
+              <div className="space-y-3">
+                {inDeviceMode && (
+                  <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" disabledValues={["device"]} />
+                )}
+                <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-pv-violet">Historical — {historicalStep?.label}</span>
+                  </div>
+                  <button type="button" onClick={() => setHistoricalIndex(undefined)} className="text-[11px] font-semibold uppercase tracking-wide text-pv-text-faint transition-colors hover:text-pv-cyan-soft">
+                    Return to Current →
+                  </button>
+                </div>
+                <HopInspectorPanel trace={historicalTrace} deviceName={historicalDeviceId ?? "—"} interfaces={historicalInterfaces} />
+                <PacketDiffViewer before={historicalTrace.packetBeforeFrames} after={historicalTrace.packetAfterFrames} beforeText={historicalTrace.packetBefore} afterText={historicalTrace.packetAfter} mutations={historicalTrace.mutations} />
+              </div>
+            ) : focusTrace ? (
+              <div className="space-y-3">
+                {inDeviceMode && <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" />}
+                <HopInspectorPanel
+                  trace={focusTrace}
+                  deviceName={focusInspectDeviceId ?? "—"}
+                  interfaces={focusInterfaces}
+                  onFocusNextHop={(id) => {
+                    setSelectedNodeId(id as RouterId);
+                    setInspectorSurface("hop");
+                    setHistoricalIndex(undefined);
+                    if (cameraMode === "device" && DEVICE_ROUTERS.includes(id as RouterId)) setEnteredDeviceId(id as RouterId);
+                  }}
+                />
+                <PacketDiffViewer before={focusTrace.packetBeforeFrames} after={focusTrace.packetAfterFrames} beforeText={focusTrace.packetBefore} afterText={focusTrace.packetAfter} mutations={focusTrace.mutations} />
+              </div>
+            ) : (
+              <GlassPanel className="p-4">
+                <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
+              </GlassPanel>
+            )
+          }
+          timeline={
+            <div className="space-y-2">
+              <HopTimeline
+                hops={journeyHopEntries}
+                currentIndex={historicalIndex !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalIndex) : journeyHopEntries.length - 1}
+                onSelectHop={(i) => {
+                  const entry = journeyHopEntries[i];
+                  if (!entry) return;
+                  setInspectorSurface("hop");
+                  if (entry.index === index) {
+                    setHistoricalIndex(undefined);
+                    return;
+                  }
+                  setHistoricalIndex(entry.index);
+                  setFocusedObject(undefined);
+                  const histState = engine.getStateAt(entry.index);
+                  const histStep = srv6L3vpnSteps[entry.index];
+                  const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
+                  const router = histState ? deviceForStep(entry.id, histPacket) : undefined;
+                  if (router && DEVICE_ROUTERS.includes(router)) {
+                    setSelectedNodeId(router);
+                    if (cameraMode === "device") setEnteredDeviceId(router);
+                  }
+                }}
+              />
+              <PacketFlowControls
+                playing={autoPlay}
+                onTogglePlay={handleToggleAutoPlay}
+                onPrevHop={() => {
+                  setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
+                  engine.goTo(Math.max(0, index - 1));
+                }}
+                onNextHop={() => {
+                  setHistoricalIndex(undefined);
+                  setInspectorSurface("hop");
+                  engine.advance();
+                }}
+                onReset={handleRestart}
+                canPrevHop={index > 0}
+                canNextHop={canAdvance}
+                speed={speed as PlaySpeed}
+                onSpeedChange={setSpeed}
+                followPacket={cameraMode === "packetFollow"}
+                onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
+                view3D={viewMode3D}
+                onToggleView3D={() => setViewMode3D((v) => !v)}
+              />
+            </div>
+          }
+        />
+      )}
     </div>
   );
 }
@@ -783,4 +1257,3 @@ function RepairChallenge({ options, attempt, onTry }: { options: { id: string; l
     </GlassPanel>
   );
 }
-
