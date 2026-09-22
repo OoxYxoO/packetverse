@@ -244,6 +244,8 @@ function seg(id: string, owner: RouterId, behavior: CsidBehavior = "END", adjace
 export const BASE_PROGRAM: LogicalSegment[] = [seg("S1", "R2"), seg("S2", "R3"), seg("S3", "R4"), seg("S4", "R5"), seg("S5", "R6"), seg("S6", "R7"), seg("S7", "R8")];
 /** End.X variant: R6's segment is bound to a forced adjacency toward R8, so the sequence itself no longer visits R7 as a segment (R7 may still exist physically as an unlisted transit router elsewhere in the network — it simply isn't part of THIS program). R8 still appears as its own final segment — Container A (R2..R6, capacity-full) then Container B (R8 alone) — so the End.X forcing is visible exactly at the container-boundary crossing, not folded away into a same-container shift. */
 export const ENDX_PROGRAM: LogicalSegment[] = [seg("S1", "R2"), seg("S2", "R3"), seg("S3", "R4"), seg("S4", "R5"), seg("S5x", "R6", "END_X", "R8"), seg("S6", "R8")];
+/** REPLACE-CSID lab program: R2, R3, R4 End, then R8's End.DT4 service SID as the final segment. */
+export const REPLACE_PROGRAM: LogicalSegment[] = [seg("T1", "R2"), seg("T2", "R3"), seg("T3", "R4"), seg("T4", "R8", "END_DT4")];
 
 export function logicalSegmentsEqual(a: LogicalSegment[], b: LogicalSegment[]): boolean {
   return a.length === b.length && a.every((s, i) => s.id === b[i].id && s.owner === b[i].owner && s.behavior === b[i].behavior && s.adjacency === b[i].adjacency);
@@ -681,6 +683,58 @@ export interface CsidJourneyHop {
   lookup: string;
   action: string;
   output: string;
+  /**
+   * Structured facts copied from the SAME advance result that produced
+   * the strings above — recorded once in run(), never recomputed by the
+   * presentation layer. Segments Left is undefined when no SRH exists.
+   */
+  flavor: CsidFlavor;
+  behavior: CsidBehavior;
+  daBefore: Hextets;
+  daAfter: Hextets;
+  segmentsLeftBefore?: number;
+  segmentsLeftAfter?: number;
+  hopLimitBefore: number;
+  hopLimitAfter: number;
+  forwardVia?: RouterId;
+  reason: string;
+}
+function nextCsidHop(router: RouterId, behavior: CsidBehavior, pkt: CsidPacketState, result: NextCsidAdvanceResult, lookup: string): CsidJourneyHop {
+  return {
+    router,
+    input: fmtIpv6(pkt.daHextets),
+    lookup,
+    action: result.outcome,
+    output: fmtIpv6(result.newDaHextets),
+    flavor: "NEXT_CSID",
+    behavior,
+    daBefore: pkt.daHextets,
+    daAfter: result.newDaHextets,
+    segmentsLeftBefore: pkt.srh?.segmentsLeft,
+    segmentsLeftAfter: result.newSrh?.segmentsLeft,
+    hopLimitBefore: pkt.hopLimit,
+    hopLimitAfter: result.newHopLimit,
+    forwardVia: result.forwardVia,
+    reason: result.reason,
+  };
+}
+function replaceCsidHop(segment: LogicalSegment, pkt: CsidPacketState, result: ReplaceCsidAdvanceResult): CsidJourneyHop {
+  return {
+    router: segment.owner,
+    input: fmtIpv6(pkt.daHextets),
+    lookup: result.reason,
+    action: result.outcome,
+    output: fmtIpv6(result.newDaHextets),
+    flavor: "REPLACE_CSID",
+    behavior: segment.behavior,
+    daBefore: pkt.daHextets,
+    daAfter: result.newDaHextets,
+    segmentsLeftBefore: pkt.srh?.segmentsLeft,
+    segmentsLeftAfter: result.newSrh?.segmentsLeft,
+    hopLimitBefore: pkt.hopLimit,
+    hopLimitAfter: pkt.hopLimit,
+    reason: result.reason,
+  };
 }
 export interface FaultState {
   targetRouter: RouterId;
@@ -1004,7 +1058,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const result = executeNextCsidAdvance({ daHextets: state.packet.daHextets, layout: NEXT_CSID_LAYOUT, hopLimit: state.packet.hopLimit, srh: state.packet.srh, endpointBehavior: "END" });
-      const hop: CsidJourneyHop = { router: "R2", input: fmtIpv6(state.packet.daHextets), lookup: `Local SID: MATCH (End+NEXT-CSID). ${result.reason}`, action: result.outcome, output: fmtIpv6(result.newDaHextets) };
+      const hop = nextCsidHop("R2", "END", state.packet, result, `Local SID: MATCH (End+NEXT-CSID). ${result.reason}`);
       return { state: { ...state, packet: { ...state.packet, daHextets: result.newDaHextets, hopLimit: result.newHopLimit, srh: result.newSrh }, journey: [...state.journey, hop] }, events: [{ type: "SRV6_CSID_CONTAINER_ADVANCED", stepId: "r2-match-execute", timestamp: Date.now(), message: "R2 intra-container NEXT-CSID shift" }] };
     },
     whatChanged: (prev, next) => [`R2: DA ${fmtIpv6(prev.packet!.daHextets)} -> ${fmtIpv6(next.packet!.daHextets)}. Segments Left unchanged. Hop Limit ${prev.packet!.hopLimit} -> ${next.packet!.hopLimit}.`],
@@ -1069,7 +1123,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
       const hops: CsidJourneyHop[] = [];
       for (const router of ["R3", "R4", "R5"] as RouterId[]) {
         const result = executeNextCsidAdvance({ daHextets: pkt.daHextets, layout: NEXT_CSID_LAYOUT, hopLimit: pkt.hopLimit, srh: pkt.srh, endpointBehavior: "END" });
-        hops.push({ router, input: fmtIpv6(pkt.daHextets), lookup: `Local SID: MATCH. ${result.reason}`, action: result.outcome, output: fmtIpv6(result.newDaHextets) });
+        hops.push(nextCsidHop(router, "END", pkt, result, `Local SID: MATCH. ${result.reason}`));
         pkt = { ...pkt, daHextets: result.newDaHextets, hopLimit: result.newHopLimit, srh: result.newSrh };
       }
       return { state: { ...state, packet: pkt, packetAt: "R6", journey: [...state.journey, ...hops] }, events: [] };
@@ -1083,7 +1137,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const result = executeNextCsidAdvance({ daHextets: state.packet.daHextets, layout: NEXT_CSID_LAYOUT, hopLimit: state.packet.hopLimit, srh: state.packet.srh, endpointBehavior: "END" });
-      const hop: CsidJourneyHop = { router: "R6", input: fmtIpv6(state.packet.daHextets), lookup: `Local SID: MATCH. ${result.reason}`, action: result.outcome, output: fmtIpv6(result.newDaHextets) };
+      const hop = nextCsidHop("R6", "END", state.packet, result, `Local SID: MATCH. ${result.reason}`);
       return { state: { ...state, packet: { ...state.packet, daHextets: result.newDaHextets, hopLimit: result.newHopLimit, srh: result.newSrh }, journey: [...state.journey, hop] }, events: [{ type: "SRV6_CSID_CONTAINER_CROSSED", stepId: "r6-boundary-cross", timestamp: Date.now(), message: "R6 crossed from Container A to Container B" }] };
     },
     whatChanged: (prev, next) => [`R6: CONTAINER BOUNDARY CROSSED. Segments Left ${prev.packet!.srh?.segmentsLeft} -> ${next.packet!.srh?.segmentsLeft}. This is the ONLY point in the whole run where Segments Left changes.`],
@@ -1113,7 +1167,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
       const hops: CsidJourneyHop[] = [];
       for (const router of ["R7", "R8"] as RouterId[]) {
         const result = executeNextCsidAdvance({ daHextets: pkt.daHextets, layout: NEXT_CSID_LAYOUT, hopLimit: pkt.hopLimit, srh: pkt.srh, endpointBehavior: "END" });
-        hops.push({ router, input: fmtIpv6(pkt.daHextets), lookup: `Local SID: MATCH. ${result.reason}`, action: result.outcome, output: fmtIpv6(result.newDaHextets) });
+        hops.push(nextCsidHop(router, "END", pkt, result, `Local SID: MATCH. ${result.reason}`));
         pkt = { ...pkt, daHextets: result.newDaHextets, hopLimit: result.newHopLimit, srh: result.newSrh };
       }
       return { state: { ...state, packet: pkt, packetAt: "R8", journey: [...state.journey, ...hops] }, events: [{ type: "PACKET_RECEIVED", stepId: "r7-r8-finish", timestamp: Date.now(), message: "Delivered at R8 via compressed NEXT-CSID encoding" }] };
@@ -1194,11 +1248,11 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
       const hops: CsidJourneyHop[] = [];
       for (const router of ["R2", "R3", "R4", "R5"] as RouterId[]) {
         const result = executeNextCsidAdvance({ daHextets: pkt.daHextets, layout: NEXT_CSID_LAYOUT, hopLimit: pkt.hopLimit, srh: pkt.srh, endpointBehavior: "END" });
-        hops.push({ router, input: fmtIpv6(pkt.daHextets), lookup: `Local SID: MATCH. ${result.reason}`, action: result.outcome, output: fmtIpv6(result.newDaHextets) });
+        hops.push(nextCsidHop(router, "END", pkt, result, `Local SID: MATCH. ${result.reason}`));
         pkt = { ...pkt, daHextets: result.newDaHextets, hopLimit: result.newHopLimit, srh: result.newSrh };
       }
       const r6 = executeNextCsidAdvance({ daHextets: pkt.daHextets, layout: NEXT_CSID_LAYOUT, hopLimit: pkt.hopLimit, srh: pkt.srh, endpointBehavior: "END_X", adjacency: "R8" });
-      hops.push({ router: "R6", input: fmtIpv6(pkt.daHextets), lookup: `Local SID: MATCH (End.X+NEXT-CSID). ${r6.reason} Forwards via adjacency ${r6.forwardVia}, not FIB.`, action: r6.outcome, output: fmtIpv6(r6.newDaHextets) });
+      hops.push(nextCsidHop("R6", "END_X", pkt, r6, `Local SID: MATCH (End.X+NEXT-CSID). ${r6.reason} Forwards via adjacency ${r6.forwardVia}, not FIB.`));
       pkt = { ...pkt, daHextets: r6.newDaHextets, hopLimit: r6.newHopLimit, srh: r6.newSrh };
       return { state: { ...state, packet: pkt, packetAt: "R8", journey: [...state.journey, ...hops] }, events: [{ type: "SRV6_CSID_CONTAINER_CROSSED", stepId: "endx-walk", timestamp: Date.now(), message: "R6 End.X forced adjacency to R8, bypassing R7" }] };
     },
@@ -1211,7 +1265,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const result = executeNextCsidAdvance({ daHextets: state.packet.daHextets, layout: NEXT_CSID_LAYOUT, hopLimit: state.packet.hopLimit, srh: state.packet.srh, endpointBehavior: "END" });
-      const hop: CsidJourneyHop = { router: "R8", input: fmtIpv6(state.packet.daHextets), lookup: `Local SID: MATCH. ${result.reason}`, action: result.outcome, output: fmtIpv6(result.newDaHextets) };
+      const hop = nextCsidHop("R8", "END", state.packet, result, `Local SID: MATCH. ${result.reason}`);
       return { state: { ...state, packet: { ...state.packet, daHextets: result.newDaHextets }, journey: [...state.journey, hop] }, events: [{ type: "PACKET_RECEIVED", stepId: "endx-r8-final", timestamp: Date.now(), message: "Delivered via End.X-forced path" }] };
     },
   },
@@ -1432,8 +1486,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
     label: "First Container: A Fully Formed SID",
     narrative: "The first item is a fully formed 128-bit SID: Locator-Block + first CSID (Locator-Node + Function) + Index. Initially Index = 0.",
     run: (state) => {
-      const program = [seg("T1", "R2"), seg("T2", "R3"), seg("T3", "R4"), seg("T4", "R8", "END_DT4")];
-      const plan = compressReplaceCsidRun(program, liveStructures(state));
+      const plan = compressReplaceCsidRun(REPLACE_PROGRAM, liveStructures(state));
       const { daHextets, srh } = buildDaAndSrh(plan);
       return { state: { ...state, replacePacket: { daHextets, hopLimit: 64, srh }, replaceJourney: [] }, events: [] };
     },
@@ -1470,10 +1523,9 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
       // what CROSSES into the SRH's packed container for the first time.
       let packedContext: ReplacePackedContext | undefined;
       const hops: CsidJourneyHop[] = [];
-      const owners: RouterId[] = ["R2", "R3", "R4", "R8"];
-      for (const router of owners) {
+      for (const segment of REPLACE_PROGRAM) {
         const result = executeReplaceCsidAdvance({ daHextets: pkt.daHextets, layout: REPLACE_CSID_LAYOUT, packedContext, srh: pkt.srh });
-        hops.push({ router, input: fmtIpv6(pkt.daHextets), lookup: result.reason, action: result.outcome, output: fmtIpv6(result.newDaHextets) });
+        hops.push(replaceCsidHop(segment, pkt, result));
         pkt = { ...pkt, daHextets: result.newDaHextets, srh: result.newSrh };
         packedContext = result.newPackedContext;
       }
