@@ -370,6 +370,8 @@ export default function Srv6PolicyDemo() {
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState) : undefined;
   const historicalInterfaces = historicalDeviceId && historicalState ? interfacesFor(historicalDeviceId, historicalState) : undefined;
+  // A valid historical chip selection outranks the non-gating live-step panels in the Focus inspector (Drop-Upon-Invalid, Weighted Lab, End.B6.Encaps); an unanswered question and the repair challenge still come first.
+  const showLiveStepPanel = !(historicalCursor !== undefined && historicalTrace);
 
   // --- Shared camera-mode transition — used by BOTH the normal toolbar's
   // switcher and Focus Mode's, and by "Follow Packet".
@@ -1033,17 +1035,17 @@ export default function Srv6PolicyDemo() {
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
                 <RepairChallenge options={REPAIR_OPTIONS} attempt={state.troubleshooting.repairAttempt} onTry={(choice) => engine.act({ choice })} />
               </>
-            ) : currentStep?.id === "policy-invalid-shown" ? (
+            ) : showLiveStepPanel && currentStep?.id === "policy-invalid-shown" ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Drop-Upon-Invalid Experiment</p>
                 <DropUponInvalidPanel dropUponInvalid={state.dropUponInvalid} onToggle={(v) => engine.act({ toggleDrop: v })} onSend={() => engine.act({ send: true })} />
               </>
-            ) : showWeightedLab ? (
+            ) : showLiveStepPanel && showWeightedLab ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Weighted Segment-List Lab</p>
                 <WeightedLabPanel labFlow={labFlow} onSelectFlow={setLabFlow} selection={labSelection} distribution={labDistribution} />
               </>
-            ) : showBsidExperiment && state.bsidExperiment ? (
+            ) : showLiveStepPanel && showBsidExperiment && state.bsidExperiment ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">End.B6.Encaps Experiment</p>
                 <BsidExperimentPanel experiment={state.bsidExperiment} />
@@ -1148,6 +1150,7 @@ export default function Srv6PolicyDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = srv6PolicySteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
