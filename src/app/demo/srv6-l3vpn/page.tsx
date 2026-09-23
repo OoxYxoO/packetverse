@@ -410,6 +410,7 @@ export default function Srv6L3vpnDemo() {
 
   const handleRestart = () => {
     awardedRef.current = false;
+    setAutoPlay(false);
     engine.restart();
     setCameraMode("overview");
     setEnteredDeviceId(undefined);
