@@ -296,10 +296,22 @@ export default function BgpVplsDemo() {
   const journeyStepIndices = bgpVplsSteps.map((s, i) => ({ s, i })).filter(({ s, i }) => i <= index && (!!s.packet || isHopStep(s.id)));
   const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
 
+  // --- Historical-cursor invariant (ARCHITECTURE.md §18) — inspection is only
+  // meaningful for a step strictly EARLIER than the live one. Once any live
+  // navigation (Previous, progress bar, Step Back, …) reaches or passes the
+  // selected step, historical mode ends. The stored cursor is cleared during
+  // render (React's "adjust state on prop change" pattern) so it can't
+  // resurrect when the lesson later moves forward again; `historicalCursor`
+  // is the only value the rest of the page reads.
+  if (historicalIndex !== undefined && historicalIndex >= index) setHistoricalIndex(undefined);
+  const historicalCursor = historicalIndex !== undefined && historicalIndex < index ? historicalIndex : undefined;
+  // Chip position of a valid historical selection; -1 falls back to the live entry, never to "no current chip".
+  const historicalTimelinePos = historicalCursor !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalCursor) : -1;
+
   // --- Historical inspection — reuses ScenarioEngine's OWN `stateByIndex`
   // snapshot (`getStateAt`). Presentation-only — never calls `engine.goTo()`.
-  const historicalState = historicalIndex !== undefined ? engine.getStateAt(historicalIndex) : undefined;
-  const historicalStep = historicalIndex !== undefined ? bgpVplsSteps[historicalIndex] : undefined;
+  const historicalState = historicalCursor !== undefined ? engine.getStateAt(historicalCursor) : undefined;
+  const historicalStep = historicalCursor !== undefined ? bgpVplsSteps[historicalCursor] : undefined;
   const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && historicalState && historicalStep ? traceFor(historicalDeviceId, historicalState, historicalStep.id) : undefined;
@@ -1386,7 +1398,7 @@ export default function BgpVplsDemo() {
                   <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
                 </GlassPanel>
               )
-            ) : historicalIndex !== undefined && historicalTrace ? (
+            ) : historicalCursor !== undefined && historicalTrace ? (
               <div className="space-y-3">
                 {inDeviceMode && <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" disabledValues={["device"]} />}
                 <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
@@ -1426,7 +1438,7 @@ export default function BgpVplsDemo() {
             <div className="space-y-2">
               <HopTimeline
                 hops={journeyHopEntries}
-                currentIndex={historicalIndex !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalIndex) : journeyHopEntries.length - 1}
+                currentIndex={historicalTimelinePos >= 0 ? historicalTimelinePos : journeyHopEntries.length - 1}
                 onSelectHop={(i) => {
                   const entry = journeyHopEntries[i];
                   if (!entry) return;

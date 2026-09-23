@@ -171,10 +171,21 @@ export default function SrMplsVsSrv6Capstone() {
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
 
   // --- Historical cursor (read-only engine snapshot, never goTo) ---
-  const historicalState = historicalIndex !== undefined ? engine.getStateAt(historicalIndex) : undefined;
-  const historicalStep = historicalIndex !== undefined ? capstoneSteps[historicalIndex] : undefined;
+  // Invariant (ARCHITECTURE.md §18) — inspection is only
+  // meaningful for a step strictly EARLIER than the live one. Once any live
+  // navigation (Previous, progress bar, Step Back, …) reaches or passes the
+  // selected step, historical mode ends. The stored cursor is cleared during
+  // render (React's "adjust state on prop change" pattern) so it can't
+  // resurrect when the lesson later moves forward again; `historicalCursor`
+  // is the only value the rest of the page reads — including the inspected
+  // step/state/architecture and `tech` below, so a stale future step can
+  // never lock the technology context.
+  if (historicalIndex !== undefined && historicalIndex >= index) setHistoricalIndex(undefined);
+  const historicalCursor = historicalIndex !== undefined && historicalIndex < index ? historicalIndex : undefined;
+  const historicalState = historicalCursor !== undefined ? engine.getStateAt(historicalCursor) : undefined;
+  const historicalStep = historicalCursor !== undefined ? capstoneSteps[historicalCursor] : undefined;
   const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
-  const historical = historicalIndex !== undefined && !!historicalState && !!historicalStep;
+  const historical = historicalCursor !== undefined && !!historicalState && !!historicalStep;
 
   // --- ONE technology context for everything inspected: the inspected step's own data plane when it has one, otherwise the learner's choice. Packet frames, hop trace, pipeline and Device Explorer all read this same value, so they can never mix SR-MPLS and SRv6 state.
   const inspectStepId = historical ? historicalStep!.id : stepId;
@@ -261,6 +272,8 @@ export default function SrMplsVsSrv6Capstone() {
     .map((s, i) => ({ s, i }))
     .filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined))
     .map(({ s, i }) => ({ id: s.id, label: `${stepArchTag(stepArchitecture(s.id))} · ${s.label}`, index: i }));
+  // Chip position of a valid historical selection; -1 falls back to the live entry, never to "no current chip".
+  const historicalTimelinePos = historicalCursor !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalCursor) : -1;
 
   const historicalDeviceId = historical ? deviceWithEvent(deviceForStep(historicalStep!.id, historicalPacket), historicalState!, historicalStep!.id, tech) : undefined;
   const historicalTrace = historicalDeviceId ? traceFor(historicalDeviceId, historicalState!, tech, historicalStep!.id) : undefined;
@@ -979,7 +992,7 @@ export default function SrMplsVsSrv6Capstone() {
             <div className="space-y-2">
               <HopTimeline
                 hops={journeyHopEntries}
-                currentIndex={historical ? journeyHopEntries.findIndex((h) => h.index === historicalIndex) : journeyHopEntries.length - 1}
+                currentIndex={historicalTimelinePos >= 0 ? historicalTimelinePos : journeyHopEntries.length - 1}
                 onSelectHop={(i) => {
                   const entry = journeyHopEntries[i];
                   if (!entry) return;
