@@ -1208,6 +1208,7 @@ export default function SrPolicyDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = srPolicySteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
