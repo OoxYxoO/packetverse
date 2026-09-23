@@ -558,8 +558,21 @@ export const PRIMARY_TRANSITION_ROUTER: Partial<Record<string, RouterId>> = {
   "repair-challenge": "PE1",
 };
 
-/** Sender-priority (`packet.from ?? packet.to`) — every JourneyHop in this lesson is recorded against the router that PERFORMED the lookup/encapsulation/decapsulation (the packet's sender for that hop), matching MPLS L3VPN's own rule. */
+/**
+ * Packet steps whose visual starts at a customer endpoint (CE1 → PE1). CE1 is
+ * not a modeled processing device (`traceFor` has no CE trace); the ingress
+ * lookup/encapsulation for these moments is modeled on PE1 (`traceForPe1`).
+ */
+const CE_INGRESS_INSPECTION_DEVICE: Partial<Record<string, RouterId>> = {
+  "send-ce1-ce2": "PE1",
+  "send-ce1-ce3": "PE1",
+  "verify-dataplane": "PE1",
+};
+
+/** Sender-priority (`packet.from ?? packet.to`) — a packet step is inspected on the router that PERFORMED the lookup/encapsulation/decapsulation (the packet's sender for that hop), matching MPLS L3VPN's own rule. The exception is a CE-originated ingress visual, whose sender is a customer endpoint; those steps are inspected on the ingress PE instead (`CE_INGRESS_INSPECTION_DEVICE`). */
 export function deviceForStep(stepId: string, packet: PacketVisual | undefined): RouterId | undefined {
+  const ingressPe = CE_INGRESS_INSPECTION_DEVICE[stepId];
+  if (ingressPe) return ingressPe;
   if (packet) return (packet.from ?? packet.to) as RouterId;
   return PRIMARY_TRANSITION_ROUTER[stepId];
 }
