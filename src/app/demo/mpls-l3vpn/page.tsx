@@ -334,6 +334,18 @@ export default function MplsL3vpnDemo() {
     .filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined));
   const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
 
+  // --- Historical-cursor invariant (ARCHITECTURE.md §18) — inspection is only
+  // meaningful for a step strictly EARLIER than the live one. Once any live
+  // navigation (Previous, progress bar, Step Back, …) reaches or passes the
+  // selected step, historical mode ends. The stored cursor is cleared during
+  // render (React's "adjust state on prop change" pattern) so it can't
+  // resurrect when the lesson later moves forward again; `historicalCursor`
+  // is the only value the rest of the page reads.
+  if (historicalIndex !== undefined && historicalIndex >= index) setHistoricalIndex(undefined);
+  const historicalCursor = historicalIndex !== undefined && historicalIndex < index ? historicalIndex : undefined;
+  // Chip position of a valid historical selection; -1 falls back to the live entry, never to "no current chip".
+  const historicalTimelinePos = historicalCursor !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalCursor) : -1;
+
   // --- Historical inspection ("Historical Timeline Inspection Fix" §3/§4)
   // — reuses ScenarioEngine's OWN `stateByIndex` snapshot (exposed via
   // `getStateAt`). Presentation-only — never calls `engine.goTo()`. The
@@ -341,8 +353,8 @@ export default function MplsL3vpnDemo() {
   // a frozen `L3VpnState`, so a control-plane branch that reads e.g.
   // `state.received.PE1.rtMatched` correctly shows whatever was true AT
   // THAT historical step, not after a later fault/repair changed it.
-  const historicalState = historicalIndex !== undefined ? engine.getStateAt(historicalIndex) : undefined;
-  const historicalStep = historicalIndex !== undefined ? l3vpnSteps[historicalIndex] : undefined;
+  const historicalState = historicalCursor !== undefined ? engine.getStateAt(historicalCursor) : undefined;
+  const historicalStep = historicalCursor !== undefined ? l3vpnSteps[historicalCursor] : undefined;
   const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
@@ -1262,7 +1274,7 @@ export default function MplsL3vpnDemo() {
                   <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
                 </GlassPanel>
               )
-            ) : historicalIndex !== undefined && historicalTrace ? (
+            ) : historicalCursor !== undefined && historicalTrace ? (
               <div className="space-y-3">
                 {inDeviceMode && (
                   <TopologyModeSwitcher
@@ -1317,7 +1329,7 @@ export default function MplsL3vpnDemo() {
             <div className="space-y-2">
               <HopTimeline
                 hops={journeyHopEntries}
-                currentIndex={historicalIndex !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalIndex) : journeyHopEntries.length - 1}
+                currentIndex={historicalTimelinePos >= 0 ? historicalTimelinePos : journeyHopEntries.length - 1}
                 onSelectHop={(i) => {
                   const entry = journeyHopEntries[i];
                   if (!entry) return;
