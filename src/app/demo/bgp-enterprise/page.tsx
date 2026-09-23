@@ -331,6 +331,16 @@ export default function BgpEnterpriseDemo() {
         : undefined;
   const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state, currentStep?.id ?? "", activePacket) : undefined;
 
+  // --- Historical-cursor invariant (ARCHITECTURE.md §18) — inspection is only
+  // meaningful for a step strictly EARLIER than the live one. Once any live
+  // navigation (Previous, progress bar, Step Back, …) reaches or passes the
+  // selected step, historical mode ends. The stored cursor is cleared during
+  // render (React's "adjust state on prop change" pattern) so it can't
+  // resurrect when the lesson later moves forward again; `historicalCursor`
+  // is the only value the rest of the page reads.
+  if (historicalIndex !== undefined && historicalIndex >= index) setHistoricalIndex(undefined);
+  const historicalCursor = historicalIndex !== undefined && historicalIndex < index ? historicalIndex : undefined;
+
   // --- HopTimeline data — every packet-carrying OR FSM-transition step
   // completed so far (`PRIMARY_TRANSITION_ROUTER` already identifies the
   // no-packet transition steps — TCP/BGP state moves with no message of
@@ -341,6 +351,8 @@ export default function BgpEnterpriseDemo() {
     .map((s, i) => ({ s, i }))
     .filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined));
   const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
+  // Chip position of a valid historical selection; -1 falls back to the live entry, never to "no current chip".
+  const historicalTimelinePos = historicalCursor !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalCursor) : -1;
 
   // --- Historical inspection ("Historical Timeline Inspection Fix" §3/§4)
   // — reuses ScenarioEngine's OWN `stateByIndex` snapshot (exposed via
@@ -348,8 +360,8 @@ export default function BgpEnterpriseDemo() {
   // engine already freezes the exact state at the moment each index was
   // entered, which is what `goTo()` itself restores from. Presentation-
   // only — never calls `engine.goTo()`, so the live lesson never moves.
-  const historicalState = historicalIndex !== undefined ? engine.getStateAt(historicalIndex) : undefined;
-  const historicalStep = historicalIndex !== undefined ? bgpSteps[historicalIndex] : undefined;
+  const historicalState = historicalCursor !== undefined ? engine.getStateAt(historicalCursor) : undefined;
+  const historicalStep = historicalCursor !== undefined ? bgpSteps[historicalCursor] : undefined;
   const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace =
@@ -1351,7 +1363,7 @@ export default function BgpEnterpriseDemo() {
                   <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
                 </GlassPanel>
               )
-            ) : historicalIndex !== undefined && historicalTrace ? (
+            ) : historicalCursor !== undefined && historicalTrace ? (
               <div className="space-y-3">
                 {inDeviceMode && (
                   <TopologyModeSwitcher
@@ -1406,7 +1418,7 @@ export default function BgpEnterpriseDemo() {
             <div className="space-y-2">
               <HopTimeline
                 hops={journeyHopEntries}
-                currentIndex={historicalIndex !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalIndex) : journeyHopEntries.length - 1}
+                currentIndex={historicalTimelinePos >= 0 ? historicalTimelinePos : journeyHopEntries.length - 1}
                 onSelectHop={(i) => {
                   const entry = journeyHopEntries[i];
                   if (!entry) return;
