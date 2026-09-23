@@ -540,6 +540,7 @@ export default function SrPolicyDemo() {
   };
 
   const handleRestart = () => {
+    setAutoPlay(false);
     engine.restart();
     setCameraMode("overview");
     setEnteredDeviceId(undefined);
@@ -1092,6 +1093,13 @@ export default function SrPolicyDemo() {
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
                 <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
+              </>
+            ) : currentStep?.id === "repair-challenge" ? (
+              // Same priority as a question — this step gates advancement via
+              // `requiresState`, so Focus Mode must surface the challenge itself.
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
+                <RepairChallenge options={REPAIR_OPTIONS} attempt={state.troubleshooting.repairAttempt} onTry={(choice) => engine.act({ choice })} />
               </>
             ) : selectedLinkDetail ? (
               <LinkDetailPanel
