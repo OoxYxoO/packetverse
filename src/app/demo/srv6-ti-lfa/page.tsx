@@ -267,6 +267,8 @@ export default function Srv6TiLfaDemo() {
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
   const historicalInterfaces = historicalDeviceId && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+  // A valid historical chip selection outranks the passive live-step teaching panels in the Focus inspector (End.X+USD, Multi-SID, Pre-Convergence, Repair Spaces/Program, Recovery); an unanswered question and the repair challenge still come first.
+  const showLiveStepPanel = !(historicalCursor !== undefined && historicalTrace);
 
   /** Detail shown in <ObjectFocusPanel> for a focused stage/packetLayer/interface. Every field comes straight off `deviceTrace`/`deviceInterfaces`/`devicePacketFrames`; link focus reuses <LinkDetailPanel> instead. */
   function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
@@ -902,7 +904,7 @@ export default function Srv6TiLfaDemo() {
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
                 <RepairChallenge options={REPAIR_OPTIONS} attempt={state.repairAttempt} onTry={(choice) => engine.act({ choice })} />
               </>
-            ) : showBehaviorExecution && state.linkRepair?.repairList.sids[0] ? (
+            ) : showLiveStepPanel && showBehaviorExecution && state.linkRepair?.repairList.sids[0] ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">End.X + USD Execution</p>
                 <Srv6BehaviorExecutionViewer
@@ -918,27 +920,27 @@ export default function Srv6TiLfaDemo() {
                   }}
                 />
               </>
-            ) : showMultiSidLab ? (
+            ) : showLiveStepPanel && showMultiSidLab ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Multi-SID SRH Lab</p>
                 {multiSidPanel}
               </>
-            ) : currentStep && PRE_CONVERGENCE_STEPS.has(currentStep.id) ? (
+            ) : showLiveStepPanel && currentStep && PRE_CONVERGENCE_STEPS.has(currentStep.id) ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Pre-Convergence FIB</p>
                 {preConvergencePanel}
               </>
-            ) : currentStep && REPAIR_SPACES_STEPS.has(currentStep.id) && repairSpacesPanel ? (
+            ) : showLiveStepPanel && currentStep && REPAIR_SPACES_STEPS.has(currentStep.id) && repairSpacesPanel ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Repair Spaces</p>
                 {repairSpacesPanel}
               </>
-            ) : currentStep && REPAIR_PROGRAM_STEPS.has(currentStep.id) && repairProgramPanel ? (
+            ) : showLiveStepPanel && currentStep && REPAIR_PROGRAM_STEPS.has(currentStep.id) && repairProgramPanel ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Repair Program</p>
                 {repairProgramPanel}
               </>
-            ) : currentStep && RECOVERY_STEPS.has(currentStep.id) ? (
+            ) : showLiveStepPanel && currentStep && RECOVERY_STEPS.has(currentStep.id) ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Recovery Timeline</p>
                 {recoveryPanel}
@@ -1038,6 +1040,7 @@ export default function Srv6TiLfaDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = srv6TiLfaSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
