@@ -103,12 +103,32 @@ export default function SrMplsFoundationsDemo() {
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Explicit Hop-vs-Device intent inside Focus Mode ("Shared Focus Mode Inspector Fix") — set by the actual gesture (node click → device; timeline/next-hop/Play → hop), never inferred from whether a trace object happens to exist. */
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
+  /** Presentation cursor for HopTimeline inspection — a ScenarioEngine step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
+  const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
 
   const { state, currentStep, index, totalSteps, isComplete, lastAnswer, whatChanged, activePacket } = snapshot;
   const canAdvance = engine.canAdvance();
+
+  // --- Historical-cursor invariant — inspection is only meaningful for a
+  // step strictly EARLIER than the live one. Once any live navigation
+  // (Previous, progress bar, Step Back, …) reaches or passes the selected
+  // step, historical mode ends. The stored cursor is cleared during render
+  // (React's "adjust state on prop change" pattern) so it can't resurrect
+  // when the lesson later moves forward again; `historicalCursor` is the
+  // only value the rest of the page reads. This lesson also resets its
+  // journey mid-lesson, so a selection whose chip is no longer in the
+  // current journey epoch (live navigation crossed a reset) ends the same
+  // way — rewinding back into that epoch later must not resurrect it.
+  //
+  // HopTimeline data — the current journey epoch, each chip mapped to the
+  // ScenarioEngine step that recorded it (see `deriveJourneyTimeline`).
+  const journeyHopEntries = deriveJourneyTimeline(engine.getStateAt, index);
+  const historicalEntry = historicalIndex !== undefined && historicalIndex < index ? journeyHopEntries.find((h) => h.index === historicalIndex) : undefined;
+  if (historicalIndex !== undefined && !historicalEntry) setHistoricalIndex(undefined);
+  const historicalCursor = historicalEntry?.index;
 
   const nodes = useMemo(() => GRAPH_NODES.map((n) => ({ ...n, kind: (n.id === "R1" || n.id === "R6" ? "pe-router" : "p-router") as "pe-router" | "p-router" })), []);
   const activeSegment = resolveActiveSegment(state.segmentList ?? []);
@@ -317,27 +337,38 @@ export default function SrMplsFoundationsDemo() {
   // viewport goes sticky/compact instead of scrolling out of view.
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
 
-  // --- Hop Inspector target — reuses the SAME selectedNodeId/effectiveDeviceId/
-  // activeDeviceId state the rest of the page already computes (brief §10:
-  // "Do not duplicate ScenarioEngine state"). Clicking an earlier HopTimeline
-  // entry just moves `selectedNodeId` to that hop's router — no engine.goTo()
-  // needed, since `traceFor` already reads directly off the current,
-  // never-shrinking `state.journey` log for any router in it.
+  // --- Live Hop Inspector target — reuses the SAME selectedNodeId/
+  // effectiveDeviceId/activeDeviceId state the rest of the page already
+  // computes (brief §10: "Do not duplicate ScenarioEngine state").
   //
   // Deterministic precedence ("3D Inspection & Selection UX Pass" §3/§14/§15):
   //   selectedNodeId > effectiveDeviceId > activeDeviceId
-  // `selectedNodeId` is set by exactly three explicit, mutually-exclusive
-  // learner gestures — clicking a 3D node, clicking a HopTimeline entry, or
-  // clicking the Hop Inspector's "Go to next hop" CTA — and always wins,
-  // so a direct node click can never be silently overridden by the current
-  // processing device or by "there happens to be a next hop." Because all
-  // three gestures funnel through the same single piece of state rather
-  // than three competing ones, none of them can race or silently substitute
-  // for another — whichever the learner clicked most recently is what shows.
+  // `selectedNodeId` is set by explicit learner gestures — clicking a 3D
+  // node, clicking a HopTimeline entry, or clicking the Hop Inspector's
+  // "Go to next hop" CTA — and always wins, so a direct node click can
+  // never be silently overridden by the current processing device or by
+  // "there happens to be a next hop." A HopTimeline entry for an earlier
+  // step is inspected through `historicalCursor` below instead, never
+  // through this live-state trace.
   const focusInspectDeviceId = (selectedNodeId ?? effectiveDeviceId ?? activeDeviceId) as RouterId | undefined;
   const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state) : undefined;
   const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state) : undefined;
-  const journeyHopEntries = state.journey.map((h, i) => ({ id: `${h.router}-${i}`, label: h.router }));
+
+  // Chip position of a valid historical selection; -1 falls back to the live entry, never to "no current chip".
+  const historicalTimelinePos = historicalCursor !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalCursor) : -1;
+
+  // --- Historical inspection — reuses ScenarioEngine's OWN `stateByIndex`
+  // snapshot (exposed via `getStateAt`). Presentation-only — never calls
+  // `engine.goTo()`. The device is the exact JourneyHop router the chip
+  // recorded, and `traceFor`/`interfacesFor` run unmodified against the
+  // frozen SrMplsState: inside that snapshot the selected hop is still the
+  // latest hop at its router, and prev/next routers come from the journey
+  // as it stood at that moment, never from a later hop or journey epoch.
+  const historicalState = historicalCursor !== undefined ? engine.getStateAt(historicalCursor) : undefined;
+  const historicalStep = historicalCursor !== undefined ? srMplsSteps[historicalCursor] : undefined;
+  const historicalDeviceId = historicalEntry?.router;
+  const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState) : undefined;
+  const historicalInterfaces = historicalDeviceId && historicalState ? interfacesFor(historicalDeviceId, historicalState) : undefined;
 
   // --- Shared camera-mode transition (brief §12) — used by BOTH the normal
   // toolbar's switcher and Focus Mode's, and by "Follow Packet" (which is
@@ -363,6 +394,7 @@ export default function SrMplsFoundationsDemo() {
     if (!autoPlay) {
       setFocusedObject(undefined);
       setInspectorSurface("hop");
+      setHistoricalIndex(undefined);
     }
     setAutoPlay((v) => !v);
   }
@@ -510,6 +542,7 @@ export default function SrMplsFoundationsDemo() {
     setLabSegments([{ type: "NODE", target: "R6" }]);
     setFocusMode(false);
     setFocusedObject(undefined);
+    setHistoricalIndex(undefined);
     setInspectorSurface("hop");
   };
 
@@ -623,6 +656,7 @@ export default function SrMplsFoundationsDemo() {
                       setPacketSelected(false);
                       setSelectedLinkId(undefined);
                       setInspectorSurface("device");
+                      setHistoricalIndex(undefined);
                     }}
                     onSelectLink={(id) => {
                       setSelectedLinkId(id);
@@ -966,6 +1000,7 @@ export default function SrMplsFoundationsDemo() {
                     setPacketSelected(false);
                     setSelectedLinkId(undefined);
                     setInspectorSurface("device");
+                    setHistoricalIndex(undefined);
                   }}
                   onSelectLink={(id) => setSelectedLinkId(id)}
                   selectedLinkId={selectedLinkId}
@@ -1062,6 +1097,28 @@ export default function SrMplsFoundationsDemo() {
                     <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
                   </GlassPanel>
                 )
+              ) : historicalCursor !== undefined && historicalTrace ? (
+                // Level 3 historical (timeline) inspection — a frozen snapshot
+                // from ScenarioEngine's own `stateByIndex` (via `getStateAt`),
+                // never the live `focusTrace`/`state` below. Device Explorer
+                // is live-only in this lesson, so the Hop/Device switch is
+                // shown disabled rather than letting a historical packet/
+                // segment list combine with live CLI/SID/segment-list tabs as
+                // though they were the same moment.
+                <div className="space-y-3">
+                  {inDeviceMode && <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" disabledValues={["device"]} />}
+                  <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-pv-violet">Historical — {historicalStep?.label}</span>
+                    </div>
+                    <button type="button" onClick={() => setHistoricalIndex(undefined)} className="text-[11px] font-semibold uppercase tracking-wide text-pv-text-faint transition-colors hover:text-pv-cyan-soft">
+                      Return to Current →
+                    </button>
+                  </div>
+                  <HopInspectorPanel trace={historicalTrace} deviceName={historicalDeviceId ?? "—"} interfaces={historicalInterfaces} />
+                  <PacketDiffViewer before={historicalTrace.packetBeforeFrames} after={historicalTrace.packetAfterFrames} beforeText={historicalTrace.packetBefore} afterText={historicalTrace.packetAfter} mutations={historicalTrace.mutations} />
+                </div>
               ) : focusTrace ? (
                 <>
                   {inDeviceMode && (
@@ -1079,6 +1136,7 @@ export default function SrMplsFoundationsDemo() {
                     onFocusNextHop={(id) => {
                       setSelectedNodeId(id as RouterId);
                       setInspectorSurface("hop");
+                      setHistoricalIndex(undefined);
                       if (cameraMode === "device") setEnteredDeviceId(id as RouterId);
                     }}
                   />
@@ -1095,23 +1153,28 @@ export default function SrMplsFoundationsDemo() {
             <div className="space-y-2">
               <HopTimeline
                 hops={journeyHopEntries}
-                currentIndex={journeyHopEntries.length - 1}
+                currentIndex={historicalTimelinePos >= 0 ? historicalTimelinePos : journeyHopEntries.length - 1}
                 onSelectHop={(i) => {
-                  const h = state.journey[i];
-                  if (!h) return;
+                  const entry = journeyHopEntries[i];
+                  if (!entry) return;
                   setInspectorSurface("hop");
-                  setSelectedNodeId(h.router);
-                  if (cameraMode === "device") setEnteredDeviceId(h.router);
+                  // The chip recorded at the live step IS the current hop — inspect it live, not as history.
+                  setHistoricalIndex(entry.index === index ? undefined : entry.index);
+                  setFocusedObject(undefined);
+                  setSelectedNodeId(entry.router);
+                  if (cameraMode === "device") setEnteredDeviceId(entry.router);
                 }}
               />
               <PacketFlowControls
                 playing={autoPlay}
                 onTogglePlay={handleToggleAutoPlay}
                 onPrevHop={() => {
+                  setHistoricalIndex(undefined);
                   setInspectorSurface("hop");
                   engine.goTo(Math.max(0, index - 1));
                 }}
                 onNextHop={() => {
+                  setHistoricalIndex(undefined);
                   setInspectorSurface("hop");
                   engine.advance();
                 }}
@@ -1146,6 +1209,45 @@ function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number
   const maxDim = Math.max(sx, sy, sz);
   const dist = Math.max(0.55, maxDim * 1.8);
   return [dist * 0.55, dist * 0.5, dist * 0.75];
+}
+
+interface JourneyTimelineEntry {
+  id: string;
+  label: string;
+  /** ScenarioEngine step index whose run() recorded this hop — the snapshot historical inspection reads. */
+  index: number;
+  router: RouterId;
+  /** Position within the current journey epoch. */
+  journeyIndex: number;
+}
+
+/**
+ * HopTimeline entries for the CURRENT journey epoch, each mapped to the
+ * ScenarioEngine step that actually recorded it. Several steps reset
+ * `state.journey = []`, so a journey position is NOT a step index; this
+ * walks the engine's own per-step snapshots instead. Every appending
+ * step spreads the previous array (`[...state.journey, hop]`), so a
+ * snapshot whose journey no longer starts with the previous snapshot's
+ * exact hop objects began a new epoch — earlier entries are discarded,
+ * exactly as the old `state.journey`-only timeline showed them.
+ */
+function deriveJourneyTimeline(getStateAt: (i: number) => SrMplsState | undefined, liveIndex: number): JourneyTimelineEntry[] {
+  let entries: JourneyTimelineEntry[] = [];
+  let prev: SrMplsState["journey"] = [];
+  for (let i = 0; i <= liveIndex; i++) {
+    const journey = getStateAt(i)?.journey;
+    if (!journey) continue;
+    const continues = journey.length >= prev.length && prev.every((h, k) => journey[k] === h);
+    if (!continues) {
+      entries = [];
+      prev = [];
+    }
+    for (let k = prev.length; k < journey.length; k++) {
+      entries.push({ id: `${journey[k].router}-${k}`, label: journey[k].router, index: i, router: journey[k].router, journeyIndex: k });
+    }
+    prev = journey;
+  }
+  return entries;
 }
 
 function linkIdsOnPath(path: RouterId[], links: SrMplsState["links"]): string[] {
