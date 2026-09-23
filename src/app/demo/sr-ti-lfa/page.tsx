@@ -1213,6 +1213,7 @@ export default function SrTiLfaDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = srTiLfaSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
