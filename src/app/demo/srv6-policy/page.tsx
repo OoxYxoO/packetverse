@@ -134,6 +134,16 @@ export default function Srv6PolicyDemo() {
   const { state, currentStep, index, totalSteps, isComplete, lastAnswer, whatChanged, activePacket } = snapshot;
   const canAdvance = engine.canAdvance();
 
+  // --- Historical-cursor invariant — inspection is only meaningful for a
+  // step strictly EARLIER than the live one. Once any live navigation
+  // (Previous, progress bar, Step Back, …) reaches or passes the selected
+  // step, historical mode ends. The stored cursor is cleared during render
+  // (React's "adjust state on prop change" pattern) so it can't resurrect
+  // when the lesson later moves forward again; `historicalCursor` is the
+  // only value the rest of the page reads.
+  if (historicalIndex !== undefined && historicalIndex >= index) setHistoricalIndex(undefined);
+  const historicalCursor = historicalIndex !== undefined && historicalIndex < index ? historicalIndex : undefined;
+
   const nodes = useMemo(
     () =>
       GRAPH_NODES.map((n) => ({
@@ -346,14 +356,16 @@ export default function Srv6PolicyDemo() {
   // no-packet control-plane/fault step tracked in PRIMARY_TRANSITION_ROUTER.
   const journeyStepIndices = srv6PolicySteps.map((s, i) => ({ s, i })).filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined));
   const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
+  // Chip position of a valid historical selection; -1 falls back to the live entry, never to "no current chip".
+  const historicalTimelinePos = historicalCursor !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalCursor) : -1;
 
   // --- Historical inspection — reuses ScenarioEngine's OWN `stateByIndex`
   // snapshot (exposed via `getStateAt`). Presentation-only — never calls
   // `engine.goTo()`. `traceFor`/`explainNode` work unmodified against a
   // frozen historical Srv6PolicyState, since `state.journey` inside that
   // snapshot only ever contains hops that had actually happened by that index.
-  const historicalState = historicalIndex !== undefined ? engine.getStateAt(historicalIndex) : undefined;
-  const historicalStep = historicalIndex !== undefined ? srv6PolicySteps[historicalIndex] : undefined;
+  const historicalState = historicalCursor !== undefined ? engine.getStateAt(historicalCursor) : undefined;
+  const historicalStep = historicalCursor !== undefined ? srv6PolicySteps[historicalCursor] : undefined;
   const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState) : undefined;
@@ -1077,7 +1089,7 @@ export default function Srv6PolicyDemo() {
                   <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
                 </GlassPanel>
               )
-            ) : historicalIndex !== undefined && historicalTrace ? (
+            ) : historicalCursor !== undefined && historicalTrace ? (
               // Level 3 historical (timeline) inspection — a frozen snapshot
               // from ScenarioEngine's own `stateByIndex` (via `getStateAt`),
               // never the live `focusTrace`/`state` below. Device Explorer
@@ -1125,7 +1137,7 @@ export default function Srv6PolicyDemo() {
             <div className="space-y-2">
               <HopTimeline
                 hops={journeyHopEntries}
-                currentIndex={historicalIndex !== undefined ? journeyHopEntries.findIndex((h) => h.index === historicalIndex) : journeyHopEntries.length - 1}
+                currentIndex={historicalTimelinePos >= 0 ? historicalTimelinePos : journeyHopEntries.length - 1}
                 onSelectHop={(i) => {
                   const entry = journeyHopEntries[i];
                   if (!entry) return;
