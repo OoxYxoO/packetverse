@@ -272,6 +272,8 @@ export default function Srv6L3vpnDemo() {
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
   const historicalInterfaces = historicalDeviceId && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+  // A valid historical chip selection outranks the passive live-step labs in the Focus inspector (Per-VRF vs. Per-CE, RT Mismatch, Missing Service TLV, SR Policy preview); an unanswered question and the repair challenge still come first.
+  const showLiveStepPanel = !(historicalCursor !== undefined && historicalTrace);
 
   /** Detail shown in <ObjectFocusPanel> for a focused stage/packetLayer/interface. Every field comes straight off `deviceTrace`/`deviceInterfaces`/`devicePacketFrames`; link focus reuses <LinkDetailPanel> instead. */
   function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
@@ -1036,22 +1038,22 @@ export default function Srv6L3vpnDemo() {
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
                 <RepairChallenge options={REPAIR_OPTIONS} attempt={state.repairAttempt} onTry={(choice) => engine.act({ choice })} />
               </>
-            ) : showPerVrfLab ? (
+            ) : showLiveStepPanel && showPerVrfLab ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Per-VRF vs. Per-CE Lab</p>
                 {perVrfLabPanel}
               </>
-            ) : showRtMismatchLab ? (
+            ) : showLiveStepPanel && showRtMismatchLab ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">RT Mismatch Lab</p>
                 {rtMismatchLabPanel}
               </>
-            ) : showMissingTlvLab ? (
+            ) : showLiveStepPanel && showMissingTlvLab ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Missing Service TLV Lab</p>
                 {missingTlvLabPanel}
               </>
-            ) : showPolicyPreview ? (
+            ) : showLiveStepPanel && showPolicyPreview ? (
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-violet">SR Policy Service-Steering Preview</p>
                 {policyPreviewPanel}
@@ -1165,6 +1167,7 @@ export default function Srv6L3vpnDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = srv6L3vpnSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
