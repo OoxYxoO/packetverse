@@ -1,6 +1,6 @@
 # PacketVerse Lesson Blueprint
 
-The standard shape every flagship interactive lesson in this repo follows, and how the five lessons built so far actually map onto it. Read `docs/ARCHITECTURE.md` first — this document assumes that architecture and only talks about lesson *content* structure.
+The standard shape used by PacketVerse interactive lessons, and the reference implementations that demonstrate each pattern. Read `docs/ARCHITECTURE.md` first — this document assumes that architecture and only talks about lesson *content* structure.
 
 ## The standard arc
 
@@ -60,9 +60,11 @@ A `repair-challenge` step using `action`/`requiresState` (not `question`) — 3-
 
 ## The EVPN/VXLAN exception: data plane before its control plane
 
-Most lessons teach control plane → data plane, because the control plane is *why the data plane works at all* (an LSP doesn't exist without LDP; a VPN route can't be imported without MP-BGP). EVPN/VXLAN deliberately inverts this for one arc: VXLAN (the encapsulation) is taught completely, successfully, end-to-end **before** BGP EVPN is introduced — with the one missing piece (how did the ingress VTEP know the remote MAC's location?) explicitly flagged in the state model as `learnedVia: "assumed"` and called out in the narrative ("assume this was known for now — we'll explain how shortly"), never silently hand-waved. This is the right pattern whenever a protocol has **two genuinely separable questions** — "does the mechanism work" and "how did it learn what it needed to know" — where teaching them interleaved would obscure which failure belongs to which layer. The upcoming BUM/Type-3 lesson has exactly this shape too: ingress replication needs to be demonstrated as a data-plane mechanism, but the flood-list membership question is fundamentally a control-plane (Type-3/IMET) topic — keep that same "assumed, then explained" honesty if the lesson reuses a pre-existing flood list before deriving it live.
+Most lessons teach control plane → data plane, because the control plane is *why the data plane works at all* (an LSP doesn't exist without LDP; a VPN route can't be imported without MP-BGP). EVPN/VXLAN deliberately inverts this for one arc: VXLAN (the encapsulation) is taught completely, successfully, end-to-end **before** BGP EVPN is introduced — with the one missing piece (how did the ingress VTEP know the remote MAC's location?) explicitly flagged in the state model as `learnedVia: "assumed"` and called out in the narrative ("assume this was known for now — we'll explain how shortly"), never silently hand-waved. This is the right pattern whenever a protocol has **two genuinely separable questions** — "does the mechanism work" and "how did it learn what it needed to know" — where teaching them interleaved would obscure which failure belongs to which layer. The BUM/Type-3 lesson (`evpn-bum`) has exactly this shape too: ingress replication is demonstrated as a data-plane mechanism, while flood-list membership is fundamentally a control-plane (Type-3/IMET) topic — any lesson that reuses a pre-existing flood list before deriving it live keeps the same "assumed, then explained" honesty.
 
 ## Reference implementations
+
+The foundational lessons below remain the best examples of lesson *content* structure. (These are content references; for historical-inspection architecture see the second table and `docs/ARCHITECTURE.md` §17–§19.)
 
 | Lesson | File | What it's the best example of |
 |---|---|---|
@@ -73,9 +75,19 @@ Most lessons teach control plane → data plane, because the control plane is *w
 | MPLS L3VPN | `scenarios/mplsL3vpn.ts` + `app/demo/mpls-l3vpn/` | The fullest expression of the standard arc: VRF → RD → RT → MP-BGP VPNv4 (control) → two-label push/swap/pop (data) → RT-import-mismatch fault → repair. Also the reference for **integrating a second, already-completed lesson's real logic** without duplicating it (`rrIntegration.ts` reusing `bgpRouteReflector.ts`'s `evaluateReflection`) — copy this pattern instead of re-deriving reflection/RR logic if a future lesson needs an RR again. Historical inspection of the fault/repair steps (§28 of the interactive-topology brief) must give each RT-import-check event its own `traceFor` branch reading `state.received.PE1`/`state.vrfs.PE1` directly — a generic step-index fallback shows the wrong (already-healed or already-broken) RT comparison for an event on the other side of the fault. |
 | EVPN / VXLAN Foundations | `scenarios/evpnVxlan.ts` + `app/demo/evpn-vxlan/` | Data-plane-before-control-plane sequencing (see above); a *reused* fault shape (RT-mismatch, now on a MAC/IP route) applied to a new protocol family instead of inventing a new failure category; strict, explicit scope boundaries recorded directly in the scenario file's own doc comment (what's deferred and why) so a future contributor doesn't accidentally re-derive Route Type 1/3/4/5 logic inside what's supposed to be the foundations lesson. |
 
+Strongest current Level-3 references (Focus Mode / historical inspection):
+
+| Lesson | File | What it's the best example of |
+|---|---|---|
+| SRv6 Policy | `app/demo/srv6-policy/` | Complex `ScenarioEngine` Level 3 with SR Policy state; frozen `getStateAt()` historical `HopTimeline` inspection; the centralized `historicalIndex < liveIndex` stale-cursor invariant (ARCHITECTURE.md §18). The reference to copy for historical inspection. |
+| SRv6 CSID | `app/demo/srv6-csid/` | Compressed instruction (CSID owner sequence) kept distinct from the physical packet path; DA / Segments Left correctness per hop; a long historical timeline. |
+| SR-MPLS vs SRv6 Capstone | `app/demo/sr-mpls-vs-srv6/` | Dual-technology state isolation: two parallel executions of one intent, compared side by side, each inspected with its own native technology-specific packet/inspector view rather than one packet's before/after. |
+| EVPN Troubleshooting | `app/demo/evpn-troubleshooting/` | Level 3 without `ScenarioEngine`: history from frozen per-test results plus a `stateBeforeFix` snapshot (ARCHITECTURE.md §19). |
+| SR-MPLS Foundations | `app/demo/sr-mpls-foundations/` | The original Focus Mode / Hop Inspector / Question Context Mode architecture. Its timeline history is still the legacy selection-only (live-state) model — do **not** copy that part; use SRv6 Policy's. |
+
 ## The interactive-topology standard (mandatory for every lesson)
 
-Every lesson — new or existing — is expected to deliver this learner arc, using the topology itself as part of the explanation, not decoration:
+Every lesson is expected to deliver this learner arc, using the topology itself as part of the explanation, not decoration:
 
 ```
 Explore → Observe → Predict → Answer → Reveal → Follow Packet → Inspect Hop → Inspect Object → Troubleshoot
@@ -85,7 +97,9 @@ Capability is expressed in three tiers. A lesson gets the richest tier its **rea
 
 - **Level 1 — Topology Focus** (mandatory for every lesson with a 3D topology): Expand/Focus Mode, 2D↔3D where supported, Overview/Device/Free Orbit, node/link/interface-anchor selection, focused 3D object inspection, Back to Device, Overview return.
 - **Level 2 — Packet Journey** (any lesson whose domain models a packet or control message moving): Play/Pause/Previous/Next/Reset, Follow Packet, HopTimeline, active path, ingress/egress, current device, next hop, reason. A control-plane message (BGP OPEN, OSPF Hello, LDP label mapping) is a journey exactly as much as a data-plane packet is — never fake a "packet" to get this tier, model the message the protocol actually sends.
-- **Level 3 — Processing Inspection** (lessons with enough domain data): Hop Inspector, PacketDiff/before-after, processing stages, packet/header stack, object focus on a stage/layer/interface/link — every field sourced from the domain/adapter, never invented to fill the panel.
+- **Level 3 — Processing Inspection** (lessons with enough domain data): Hop Inspector, PacketDiff/before-after, processing stages, packet/header stack, object focus on a stage/layer/interface/link, and historical inspection of earlier timeline entries against their own frozen state — every field sourced from the domain/adapter, never invented to fill the panel.
+
+All 34 current demo lessons are classified Level 3. For historical inspection, 32 use the standard `ScenarioEngine` `getStateAt()` model, `evpn-troubleshooting` uses its intentional investigation-history variant, and `sr-mpls-foundations` still uses the legacy selection-only model pending normalization — see ARCHITECTURE.md's curriculum status and §18.
 
 **Anti-fake-data rule (mandatory):** do not add fake packet stacks, guessed interfaces, invented next hops, synthetic protocol states, or placeholder lookup results presented as real, just to claim a higher tier. If the domain state doesn't yet expose a fact, either enrich the scene adapter accurately (see `deviceTrace.ts` in `ospf-area0`/`bgp-enterprise`/`bgp-route-reflector`/`mpls-ldp`/`mpls-l3vpn` for the pattern: add `ingressInterfaceId`/`egressInterfaceId`/`lookupType`/`lookupKey`/`lookupResult`/`nextHopId`/`nextHopLabel`/`reason` to `traceFor()`'s return, deriving every value from data the scenario file already computed) or leave that specific capability unavailable and say so in the report. Accuracy beats feature count.
 
@@ -95,7 +109,7 @@ Capability is expressed in three tiers. A lesson gets the richest tier its **rea
 
 ### Lesson capability checklist
 
-Run through this before calling any lesson (new or migrated) done:
+Run through this before calling any new or newly touched lesson done. This is the architectural expectation going forward; it does not claim that every existing page has already been audited against every item (known follow-ups are listed in ARCHITECTURE.md §18, "Known Level-3 normalization work").
 
 - [ ] Focus Mode works (Expand, Overview, Device, Free Orbit, Close)
 - [ ] questions work in Focus Mode (visible, answerable, same state as normal mode) and always win the inspector slot over Hop/Device
@@ -103,10 +117,17 @@ Run through this before calling any lesson (new or migrated) done:
 - [ ] Device Explorer is actually reachable inside Focus Mode (not just the main column) once a device is entered, and a Hop/Device switch appears whenever both surfaces exist for that device
 - [ ] packet/message journey is modeled if the domain has one (HopTimeline shows real, protocol-appropriate labels — not generic "hop 1/2/3"); selecting a timeline entry sets `InspectorSurface` to `"hop"`
 - [ ] Hop Inspector is domain-derived (ingress/egress/lookup/action/reason come from `traceFor()`, not invented in the component)
+- [ ] earlier timeline entries show frozen state, not current live state (`ScenarioEngine` lessons: `historicalIndex` + `engine.getStateAt()`, never `engine.goTo()`)
+- [ ] the historical cursor is strictly earlier than the live cursor; rewinding to or across the selected historical step clears it
+- [ ] a missing historical entry never produces an invalid (`-1`) timeline selection — fall back to the live position
+- [ ] long `HopTimeline` histories scroll horizontally without shrinking or overlapping chips
+- [ ] Device Explorer never mixes live device state with frozen history (Device surface disabled while historical)
+- [ ] a logical instruction/segment sequence (SIDs, CSIDs, policy segment list) is never treated as physical adjacency or the physical packet path
 - [ ] before/after is accurate (`packetBefore`/`packetAfter` or `packetBeforeFrames`/`packetAfterFrames` reflect real state, never guessed)
 - [ ] relevant packet/header layers can be focused, where the domain models discrete layers
 - [ ] interfaces/links can be inspected (`DeviceInterfaceData`/`LinkDetail`, generic `extra` bag for protocol-specific fields)
-- [ ] one-canvas invariant holds (normal = 1, Focus Mode open = 1, close = 1)
+- [ ] `requiresState` actions (repair/challenge controls) are visible and usable inside Focus Mode
+- [ ] one WebGL canvas: one-canvas invariant holds (normal = 1, Focus Mode open = 1, close = 1)
 - [ ] anti-spoiler verified at every `predict-*` step (no future mutation/next-hop/reason visible before the learner answers)
 
 ## Practical checklist for the next lesson
@@ -116,7 +137,7 @@ Run through this before calling any lesson (new or migrated) done:
 3. **Scene Adapter split**: `deviceTrace.ts` (traces/interfaces/packet frames/link detail) + `explain.ts` (per-device NodeExplanation, tense derived from `state.journey`) + the scenario file itself (state + steps + packet builders). Nothing protocol-specific in `page.tsx` beyond wiring and toolbar/tab layout.
 4. **One fault, otherwise-healthy stack, policy-layer where it fits the protocol** (see §8 above).
 5. **Register the lesson**: `lessons/index.ts` (new `Lesson` entry, correct `prerequisites`, `simulationPath`), `learningPaths.ts` (point the relevant track node's `lessonId`/`status` at it), and `ACHIEVEMENTS` in `useProgressStore.ts` (new completion achievement, real title/description).
-6. **Interactive-topology capability checklist** — run the full checklist in "The interactive-topology standard" above; a new lesson must ship at least Level 1, and Level 2/3 wherever real domain data supports it.
-7. **Quality gates, every time, no exceptions**: `npx tsc --noEmit`, `npx eslint <changed paths>`, `npx next build` — all clean before calling it done.
+6. **Interactive-topology capability checklist** — run the full checklist in "The interactive-topology standard" above; a new lesson must ship at least Level 1, and Level 2/3 wherever real domain data supports it (every current lesson is Level 3 — match that unless the domain genuinely can't support it).
+7. **Quality gates, every time, no exceptions** — the same gates CI (`.github/workflows/ci.yml`, "Quality gates") runs: `npm ci`, `npx next typegen`, `npx tsc --noEmit`, `npm run lint`, `npm run build` — all clean (ESLint 0 errors, every demo route built) before calling it done.
 8. **Browser-verify the full arc** before reporting complete: every prediction question renders with the right options; at least one full device-entry X-Ray pass per enterable device; the fault genuinely breaks only the intended layer (diagnostic ladder shows the right ✓/✕/? pattern); the wrong repair option(s) are rejected with real feedback and the correct one repairs and re-verifies; completion awards XP and an achievement that will actually render on the Dashboard; zero new console errors across the whole run; Previous/goTo/Restart don't leak stale state (ARCHITECTURE.md §15); one-canvas invariant holds.
 9. **Report what was implemented and what was explicitly deferred** — every lesson prompt in this project ends with that ask; treat it as a hard requirement of "done," not a nice-to-have summary.
