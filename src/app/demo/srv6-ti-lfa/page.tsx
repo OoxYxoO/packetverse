@@ -406,6 +406,7 @@ export default function Srv6TiLfaDemo() {
 
   const handleRestart = () => {
     awardedRef.current = false;
+    setAutoPlay(false);
     engine.restart();
     setCameraMode("overview");
     setEnteredDeviceId(undefined);
