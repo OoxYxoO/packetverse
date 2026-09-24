@@ -39,8 +39,13 @@ import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, NodeExplanation } from "@/components/network3d/types";
 import type { PacketVisual } from "@/lib/sim-engine/types";
+import { LessonGuideDialog } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
 import { explainNode } from "./explain";
 import { focusIndicesFor, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { FIRST_CONNECTION_GUIDE_SECTIONS, FirstConnectionGuideContent } from "./LessonGuideContent";
+import { FirstConnection2DView } from "./FirstConnection2DView";
+import { STEP_BRIEFING, packetCalloutFor, type StepBriefing } from "./presentation";
 
 /** The one step whose primary teaching actor isn't the packet's own sender — everywhere else, sender-priority (matches this lesson's step-id-keyed traceFor, mirroring the OSPF/BGP Enterprise convention — see ARCHITECTURE.md §18). */
 const STEP_PRIMARY_DEVICE: Partial<Record<string, FirstConnectionDeviceId>> = { "frame-to-gateway": "switch" };
@@ -67,6 +72,27 @@ function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number
 }
 
 const TCP_STATES = ["CLOSED", "SYN_SENT", "SYN_RECEIVED", "ESTABLISHED"];
+
+type SceneDimension = "3d" | "2d";
+
+function GuideButton({ onClick, compact }: { onClick: () => void; compact?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        "group inline-flex items-center gap-2 rounded-full border border-pv-violet/50 bg-gradient-to-r from-pv-violet/20 to-pv-cyan/10 font-semibold text-pv-text shadow-[0_0_18px_rgba(139,140,248,0.25)] transition-all hover:border-pv-violet hover:shadow-[0_0_24px_rgba(139,140,248,0.4)]",
+        compact ? "px-3 py-1.5 text-[11px] uppercase tracking-wide" : "px-4 py-2 text-sm",
+      )}
+    >
+      <svg viewBox="0 0 24 24" className="h-4 w-4 text-pv-violet" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+        <path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5z" strokeLinejoin="round" />
+        <path d="M8 7h7M8 11h5" strokeLinecap="round" />
+      </svg>
+      Lesson Guide
+    </button>
+  );
+}
 
 function TCPStatePanel({ tcpState }: { tcpState: string }) {
   return (
@@ -133,6 +159,8 @@ export default function FirstConnectionDemo() {
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
+  const [sceneDim, setSceneDim] = useState<SceneDimension>("3d");
+  const [guideOpen, setGuideOpen] = useState(false);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -175,7 +203,7 @@ export default function FirstConnectionDemo() {
     active: activePacket ? linksOnPath(activePacket.from, activePacket.to).includes(l.id) : false,
     onPath: visitedLinkIds.has(l.id),
   }));
-  const activePacket3D: ActivePacket3D | undefined = activePacket ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const activePacket3D: ActivePacket3D | undefined = activePacket ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to, callout: packetCalloutFor(activePacket) } : undefined;
 
   const activeDeviceId = DEVICE_ORDER.find((d) => traceFor(d, state, currentStep?.id ?? "").activeStageId !== undefined);
   const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : undefined;
@@ -285,6 +313,45 @@ export default function FirstConnectionDemo() {
     if (v === "freeOrbit") setEnteredDeviceId(undefined);
   }
 
+  /** 2D is an overview-only surface — leave any entered device so the inspector panels match what's shown. */
+  function handleSceneDimChange(v: SceneDimension) {
+    setSceneDim(v);
+    if (v === "2d") {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  function handleSelectNode2D(id: string) {
+    setSelectedNodeId(id as FirstConnectionDeviceId);
+    setSelectedLinkId(undefined);
+    setPacketSelected(false);
+    setInspectorSurface("device");
+    setHistoricalIndex(undefined);
+  }
+
+  const briefing: StepBriefing | undefined = currentStep ? (STEP_BRIEFING[currentStep.id] ?? { phase: { label: "Step", tone: "cyan" }, objective: currentStep.label, doingNow: "" }) : undefined;
+  const dimSwitcher = <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={sceneDim} onChange={handleSceneDimChange} />;
+  const scene2D = (fill?: boolean) => (
+    <FirstConnection2DView
+      activePacket={activePacket}
+      activeNodeIds={activeDeviceIds}
+      visitedLinkIds={visitedLinkIds}
+      onSelectNode={handleSelectNode2D}
+      onSelectLink={(id) => {
+        setSelectedLinkId(id);
+        setSelectedNodeId(undefined);
+        setPacketSelected(false);
+      }}
+      onSelectPacket={() => {
+        setPacketSelected(true);
+        setAutoPlay(false);
+      }}
+      fill={fill}
+    />
+  );
+
   function handleToggleAutoPlay() {
     if (!autoPlay) {
       setFocusedObject(undefined);
@@ -345,16 +412,19 @@ export default function FirstConnectionDemo() {
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-8">
-        <Badge tone="cyan" className="mb-3">
-          Flagship Demo
-        </Badge>
-        <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">Laptop → Switch → Router → Server</h1>
-        <p className="mt-2 max-w-2xl text-sm text-pv-text-muted">
-          You are <span className="pv-mono text-pv-cyan-soft">192.168.10.10</span>. Mission: connect to{" "}
-          <span className="pv-mono text-pv-cyan-soft">10.20.20.20</span> over HTTPS. Drive every packet yourself —
-          ARP, switching, routing, and the TCP handshake.
-        </p>
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <Badge tone="cyan" className="mb-3">
+            Flagship Demo
+          </Badge>
+          <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">Laptop → Switch → Router → Server</h1>
+          <p className="mt-2 max-w-2xl text-sm text-pv-text-muted">
+            You are <span className="pv-mono text-pv-cyan-soft">192.168.10.10</span>. Mission: connect to{" "}
+            <span className="pv-mono text-pv-cyan-soft">10.20.20.20</span> over HTTPS. Drive every packet yourself —
+            ARP, switching, routing, and the TCP handshake.
+          </p>
+        </div>
+        <GuideButton onClick={() => setGuideOpen(true)} />
       </div>
 
       <div className="mb-6 flex gap-1.5 overflow-x-auto pb-2">
@@ -374,7 +444,8 @@ export default function FirstConnectionDemo() {
       </div>
 
       <div className="mb-6 flex flex-wrap gap-3">
-        <TopologyModeSwitcher options={[{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "freeOrbit", label: "Free Orbit" }]} value={cameraMode} onChange={handleCameraModeChange} />
+        {dimSwitcher}
+        {sceneDim === "3d" && <TopologyModeSwitcher options={[{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "freeOrbit", label: "Free Orbit" }]} value={cameraMode} onChange={handleCameraModeChange} />}
         {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
         <TopologyModeSwitcher options={[{ value: "off", label: "Normal View" }, { value: "on", label: "X-Ray Packet View" }]} value={xrayMode ? "on" : "off"} onChange={(v) => setXrayMode(v === "on")} tone="violet" />
       </div>
@@ -384,6 +455,8 @@ export default function FirstConnectionDemo() {
           <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
             {focusMode ? (
               <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" />
+            ) : sceneDim === "2d" ? (
+              scene2D()
             ) : (
               <NetworkScene3D
                 nodes={nodes3D}
@@ -476,16 +549,18 @@ export default function FirstConnectionDemo() {
             )
           )}
 
-          {!isComplete && currentStep && (
-            <GlassPanel strong className="p-6">
-              <div className="mb-2 flex items-center gap-2">
-                <Badge tone="muted">
-                  Step {index + 1} / {totalSteps}
-                </Badge>
-                <span className="text-xs text-pv-text-faint">{currentStep.label}</span>
-              </div>
-              <p className="text-sm leading-relaxed text-pv-text">{currentStep.narrative}</p>
-            </GlassPanel>
+          {!isComplete && currentStep && briefing && (
+            <MissionBriefingCard
+              stepNumber={index + 1}
+              totalSteps={totalSteps}
+              title={currentStep.label}
+              phase={briefing.phase}
+              objective={briefing.objective}
+              context={currentStep.narrative}
+              doingNow={briefing.doingNow}
+              takeaway={briefing.takeaway}
+              questionPending={questionActive}
+            />
           )}
 
           {!isComplete && currentStep?.question && (
@@ -564,30 +639,23 @@ export default function FirstConnectionDemo() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
-              <TopologyModeSwitcher options={[{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "freeOrbit", label: "Free Orbit" }]} value={cameraMode} onChange={handleCameraModeChange} />
+              {dimSwitcher}
+              {sceneDim === "3d" && <TopologyModeSwitcher options={[{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "freeOrbit", label: "Free Orbit" }]} value={cameraMode} onChange={handleCameraModeChange} />}
               {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+              <GuideButton compact onClick={() => setGuideOpen(true)} />
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">Step {index + 1} / {totalSteps}</Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label}</span>
-              </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Prediction pending — answer in the panel to continue
-                </span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            currentStep && briefing ? (
+              <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={briefing.objective} questionPending={questionActive} />
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Lesson complete — TCP session established</span>
+            )
           }
           canvas={
+            sceneDim === "2d" ? (
+              scene2D(true)
+            ) : (
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
               <NetworkScene3D
                 nodes={nodes3D}
@@ -635,6 +703,7 @@ export default function FirstConnectionDemo() {
                 }
               />
             </div>
+            )
           }
           inspector={
             currentStep?.question ? (
@@ -759,11 +828,17 @@ export default function FirstConnectionDemo() {
                 speed={speed as PlaySpeed}
                 onSpeedChange={setSpeed}
                 followPacket={false}
+                view3D={sceneDim === "3d"}
+                onToggleView3D={() => handleSceneDimChange(sceneDim === "3d" ? "2d" : "3d")}
               />
             </div>
           }
         />
       )}
+
+      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="ARP & Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" sections={FIRST_CONNECTION_GUIDE_SECTIONS}>
+        <FirstConnectionGuideContent />
+      </LessonGuideDialog>
     </div>
   );
 }

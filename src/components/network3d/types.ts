@@ -82,6 +82,16 @@ export interface ActivePacket3D {
   packet: PacketVisual;
   fromId: string;
   toId: string;
+  /** Optional readable, camera-facing bubble riding above the packet (e.g. "ARP Request · Broadcast"). When set, the packet also travels on a raised path and stops just short of the destination device instead of sinking into its chassis. Opt-in; omitting it keeps the original bare-marker behavior. */
+  callout?: PacketCallout3D;
+}
+
+export interface PacketCallout3D {
+  title: string;
+  /** One short line, e.g. the packet summary. */
+  detail?: string;
+  /** Hex color (three.js needs real values, not CSS variables). */
+  color: string;
 }
 
 /**
