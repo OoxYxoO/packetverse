@@ -759,13 +759,13 @@ export default function EvpnVpwsDemo() {
           {currentStep?.id === "multiple-vpws-scaling" && (
             <GlassPanel strong className="p-4">
               <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-pv-text-muted">Same Ethernet Segment, Distinct VPWS Services</h4>
-              <div className="grid grid-cols-4 gap-2 pv-mono text-[11px]">
-                <span className="text-pv-text-faint">Service</span><span className="text-pv-text-faint">A-D Per-EVI</span><span className="text-pv-text-faint">Service ID</span><span className="text-pv-text-faint">Service Label</span>
-                <span className="text-pv-text">VPWS-500</span><span className="text-pv-text">PE1/PE2 → PE3</span><span className="text-pv-text">500</span><span className="text-pv-text">24500</span>
-                <span className="text-pv-text">VPWS-501</span><span className="text-pv-text">PE1/PE2 → PE3</span><span className="text-pv-text">501</span><span className="text-pv-text">24501</span>
-                <span className="text-pv-text">VPWS-502</span><span className="text-pv-text">PE1/PE2 → PE3</span><span className="text-pv-text">502</span><span className="text-pv-text">24502</span>
+              <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,1.3fr)] gap-x-3 gap-y-2 pv-mono text-[11px] [overflow-wrap:anywhere]">
+                <span className="text-pv-text-faint">Service</span><span className="text-pv-text-faint">A-D Per-EVI</span><span className="text-pv-text-faint">Service ID</span><span className="text-pv-text-faint">Label Allocation</span>
+                <span className="text-pv-text">VPWS-500</span><span className="text-pv-text">Per participating PE (simulated)</span><span className="text-pv-text">500</span><span className="text-pv-text">PE1 24500 · PE2 24501 · PE3 24502</span>
+                <span className="text-pv-text">VPWS-501</span><span className="text-pv-text">Distinct per-service routes</span><span className="text-pv-text">501</span><span className="text-pv-text-faint">Per-PE labels (not modeled)</span>
+                <span className="text-pv-text">VPWS-502</span><span className="text-pv-text">Distinct per-service routes</span><span className="text-pv-text">502</span><span className="text-pv-text-faint">Per-PE labels (not modeled)</span>
               </div>
-              <p className="mt-2 text-[11px] text-pv-text-faint">One service label never automatically identifies all services on the ES — each has its own A-D per-EVI route, service ID, and service label.</p>
+              <p className="mt-2 text-[11px] text-pv-text-faint">Each VPWS service instance has its own A-D per-EVI signaling and service ID. Service labels are downstream-assigned: every advertising PE allocates its own local label for a service, so one service can have a different label at each PE — there is no single label per service. Only VPWS-500 is simulated here.</p>
             </GlassPanel>
           )}
 
