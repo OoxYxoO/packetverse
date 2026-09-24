@@ -350,7 +350,24 @@ export default function EvpnVpwsDemo() {
     if (currentStep?.question) recordAnswer(optionId === currentStep.question.correctOptionId);
   };
 
+  const ethernetSegmentInspector = (
+    <GlassPanel strong className="space-y-2 p-5">
+      <div className="flex items-center justify-between">
+        <h3 className="pv-mono text-sm font-bold text-pv-text">Ethernet Segment</h3>
+        <button type="button" onClick={() => setSelectedRegionId(undefined)} className="text-xs text-pv-text-faint hover:text-pv-text">✕</button>
+      </div>
+      <div className="grid grid-cols-2 gap-2 pv-mono text-[11px]">
+        <span className="text-pv-text-faint">ESI</span><span className="text-pv-text">{ESI}</span>
+        <span className="text-pv-text-faint">Redundancy Mode</span><span className="text-pv-text">SINGLE-ACTIVE</span>
+        <span className="text-pv-text-faint">Primary</span><span className="text-pv-text">{state.election.primaryPe ?? "(not yet elected)"}</span>
+        <span className="text-pv-text-faint">Backup</span><span className="text-pv-text">{state.election.backupPe ?? "(none)"}</span>
+        <span className="text-pv-text-faint">Service</span><span className="text-pv-text">VPWS-{VPWS_SERVICE_ID}</span>
+      </div>
+    </GlassPanel>
+  );
+
   const handleRestart = () => {
+    setAutoPlay(false);
     engine.restart();
     setCameraMode("overview");
     setEnteredDeviceId(undefined);
@@ -545,21 +562,7 @@ export default function EvpnVpwsDemo() {
 
               {selectedLinkDetail && !packetSelected && <LinkDetailPanel detail={selectedLinkDetail} onClose={() => setSelectedLinkId(undefined)} />}
 
-              {selectedRegionId === "ethernet-segment" && !packetSelected && !selectedLinkDetail && (
-                <GlassPanel strong className="space-y-2 p-5">
-                  <div className="flex items-center justify-between">
-                    <h3 className="pv-mono text-sm font-bold text-pv-text">Ethernet Segment</h3>
-                    <button type="button" onClick={() => setSelectedRegionId(undefined)} className="text-xs text-pv-text-faint hover:text-pv-text">✕</button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 pv-mono text-[11px]">
-                    <span className="text-pv-text-faint">ESI</span><span className="text-pv-text">{ESI}</span>
-                    <span className="text-pv-text-faint">Redundancy Mode</span><span className="text-pv-text">SINGLE-ACTIVE</span>
-                    <span className="text-pv-text-faint">Primary</span><span className="text-pv-text">{state.election.primaryPe ?? "(not yet elected)"}</span>
-                    <span className="text-pv-text-faint">Backup</span><span className="text-pv-text">{state.election.backupPe ?? "(none)"}</span>
-                    <span className="text-pv-text-faint">Service</span><span className="text-pv-text">VPWS-{VPWS_SERVICE_ID}</span>
-                  </div>
-                </GlassPanel>
-              )}
+              {selectedRegionId === "ethernet-segment" && !packetSelected && !selectedLinkDetail && ethernetSegmentInspector}
 
               {inDeviceMode && !packetSelected && !selectedLinkDetail && !selectedRegionId ? (
                 <DeviceExplorerPanel explanation={nodeExplanation!} tabs={isFabricDevice(effectiveDeviceId) ? explorerTabsFor(effectiveDeviceId) : []} xrayEnabled={deviceXray} onToggleXray={() => setDeviceXray((v) => !v)} onExit={() => { setCameraMode("overview"); setEnteredDeviceId(undefined); }} />
@@ -884,7 +887,7 @@ export default function EvpnVpwsDemo() {
                 onSelectRegion={(id) => { setSelectedRegionId(id); setSelectedNodeId(undefined); setSelectedLinkId(undefined); setPacketSelected(false); }}
                 selectedRegionId={selectedRegionId}
                 onSelectNode={(id) => { setSelectedNodeId(id as EvpnVpwsDeviceId); setSelectedRegionId(undefined); setSelectedLinkId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
-                onSelectLink={(id) => setSelectedLinkId(id)}
+                onSelectLink={(id) => { setSelectedLinkId(id); setSelectedRegionId(undefined); }}
                 onFocusLink={setFocusedObject}
                 selectedLinkId={selectedLinkId}
                 onSelectPacket={() => setPacketSelected(true)}
@@ -923,6 +926,8 @@ export default function EvpnVpwsDemo() {
               <RepairChallenge options={REPAIR_OPTIONS} attempt={state.repairAttempt} onTry={(choice) => engine.act({ choice })} />
             ) : selectedLinkDetail ? (
               <LinkDetailPanel detail={selectedLinkDetail} onClose={() => { setSelectedLinkId(undefined); setFocusedObject(undefined); }} />
+            ) : selectedRegionId === "ethernet-segment" ? (
+              ethernetSegmentInspector
             ) : activeFocusedObject && activeFocusedObject.kind !== "link" ? (
               <ObjectFocusPanel
                 kind={activeFocusedObject.kind}
@@ -1009,6 +1014,8 @@ export default function EvpnVpwsDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
+                  setSelectedRegionId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = evpnVpwsSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
