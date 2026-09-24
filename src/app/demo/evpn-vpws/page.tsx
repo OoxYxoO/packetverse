@@ -109,11 +109,6 @@ const PRIMARY_TRANSITION_ROUTER: Record<string, "PE1" | "CORE" | "PE2" | "PE3"> 
   "challenge-refail-pe1": "PE2",
 };
 
-function deviceForStep(stepId: string, packet: PacketVisual | undefined): EvpnVpwsDeviceId | undefined {
-  if (packet) return (packet.from ?? packet.to) as EvpnVpwsDeviceId;
-  return PRIMARY_TRANSITION_ROUTER[stepId];
-}
-
 function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number] {
   const [sx, sy, sz] = target.size ?? [0.6, 0.3, 0.3];
   const maxDim = Math.max(sx, sy, sz);
@@ -122,6 +117,19 @@ function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number
 }
 
 const FABRIC_ENTERABLE: ("PE1" | "CORE" | "PE2" | "PE3")[] = ["PE1", "CORE", "PE2", "PE3"];
+
+/**
+ * The fabric device whose processing trace a step is about — never a CE host (the packet's source is not
+ * necessarily the device doing the work). Resolution: the first device, in FABRIC_ENTERABLE order (matching
+ * live `activeDeviceId`), with an active stage for this exact step and state; else the step's primary router;
+ * else a packet endpoint that is itself a fabric device.
+ */
+function traceSubjectForStep(stepId: string, state: EvpnVpwsState, packet: PacketVisual | undefined): (typeof FABRIC_ENTERABLE)[number] | undefined {
+  const active = FABRIC_ENTERABLE.find((d) => traceFor(d, state, stepId).activeStageId !== undefined);
+  if (active) return active;
+  if (PRIMARY_TRANSITION_ROUTER[stepId]) return PRIMARY_TRANSITION_ROUTER[stepId];
+  return FABRIC_ENTERABLE.find((d) => d === packet?.from || d === packet?.to);
+}
 
 export default function EvpnVpwsDemo() {
   const { engine, snapshot } = useScenarioEngine<EvpnVpwsState>(createEvpnVpwsState(), evpnVpwsSteps);
@@ -199,12 +207,15 @@ export default function EvpnVpwsDemo() {
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
   const isFabricDevice = (id: EvpnVpwsDeviceId | undefined): id is "PE1" | "CORE" | "PE2" | "PE3" => id === "PE1" || id === "CORE" || id === "PE2" || id === "PE3";
-  const activeDeviceId = FABRIC_ENTERABLE.find((d) => traceFor(d, state, currentStep?.id ?? "").activeStageId !== undefined);
+  // One step context for every live trace consumer: once complete there is no current step, and an empty id
+  // would read as "before step 0" (pre-election time travel) — use the scenario's terminal step instead.
+  const traceStepId = currentStep?.id ?? (isComplete ? evpnVpwsSteps[evpnVpwsSteps.length - 1]?.id ?? "" : "");
+  const activeDeviceId = FABRIC_ENTERABLE.find((d) => traceFor(d, state, traceStepId).activeStageId !== undefined);
   const effectiveDeviceId = cameraMode === "device" ? enteredDeviceId : cameraMode === "packetFollow" && autoEnterDevices ? activeDeviceId : undefined;
   const inDeviceMode = !!effectiveDeviceId;
 
-  const deviceTrace = isFabricDevice(effectiveDeviceId) ? traceFor(effectiveDeviceId, state, currentStep?.id ?? "") : undefined;
-  const deviceInterfaces = isFabricDevice(effectiveDeviceId) ? interfacesFor(effectiveDeviceId, state, currentStep?.id ?? "") : [];
+  const deviceTrace = isFabricDevice(effectiveDeviceId) ? traceFor(effectiveDeviceId, state, traceStepId) : undefined;
+  const deviceInterfaces = isFabricDevice(effectiveDeviceId) ? interfacesFor(effectiveDeviceId, state, traceStepId) : [];
   const devicePacketFrames = effectiveDeviceId ? packetFramesFor(state) : undefined;
 
   const focusedObjectStillValid =
@@ -242,8 +253,8 @@ export default function EvpnVpwsDemo() {
   const selectedFabricId = isFabricDevice(selectedNodeId) ? selectedNodeId : undefined;
   const effectiveFabricId = isFabricDevice(effectiveDeviceId) ? effectiveDeviceId : undefined;
   const focusInspectDeviceId = selectedFabricId ?? effectiveFabricId ?? activeDeviceId;
-  const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state, currentStep?.id ?? "") : undefined;
-  const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state, currentStep?.id ?? "") : undefined;
+  const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state, traceStepId) : undefined;
+  const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state, traceStepId) : undefined;
 
   const journeyStepIndices = evpnVpwsSteps.map((s, i) => ({ s, i })).filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined));
   const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
@@ -263,7 +274,7 @@ export default function EvpnVpwsDemo() {
   const historicalState = historicalCursor !== undefined ? engine.getStateAt(historicalCursor) : undefined;
   const historicalStep = historicalCursor !== undefined ? evpnVpwsSteps[historicalCursor] : undefined;
   const historicalPacket = historicalStep && historicalState ? historicalStep.packet?.(historicalState) : undefined;
-  const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
+  const historicalDeviceId = historicalStep && historicalState ? traceSubjectForStep(historicalStep.id, historicalState, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && isFabricDevice(historicalDeviceId) && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
   const historicalInterfaces = historicalDeviceId && isFabricDevice(historicalDeviceId) && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
 
@@ -1040,7 +1051,7 @@ export default function EvpnVpwsDemo() {
                   const histState = engine.getStateAt(entry.index);
                   const histStep = evpnVpwsSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
-                  const device = deviceForStep(entry.id, histPacket);
+                  const device = histState ? traceSubjectForStep(entry.id, histState, histPacket) : undefined;
                   if (device && isFabricDevice(device)) {
                     setSelectedNodeId(device);
                     if (cameraMode === "device") setEnteredDeviceId(device);
