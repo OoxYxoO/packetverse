@@ -378,7 +378,7 @@ export default function EvpnVpwsDemo() {
         <span className="text-pv-text-faint">Purpose</span><span className="text-pv-text">Carries VPWS-{VPWS_SERVICE_ID} between the participating PEs</span>
         <span className="text-pv-text-faint">Control Plane</span><span className="text-pv-text">BGP EVPN between the PEs — {state.bgpSessionUp ? "Established" : "not yet established"}</span>
         <span className="text-pv-text-faint">Data Plane</span><span className="text-pv-text">MPLS transport label carries the service across the core</span>
-        <span className="text-pv-text-faint">CORE Role</span><span className="text-pv-text">Transport forwarding only — no EVPN routes, no service lookup</span>
+        <span className="text-pv-text-faint">CORE Role</span><span className="text-pv-text">Transport forwarding only — no EVPN routes, no VPWS service-label lookup</span>
       </div>
       <p className="text-xs text-pv-text-muted">The core carries a VPWS service the PEs already selected — it never learns customer MACs to choose it. Service labels are downstream-assigned by each PE.</p>
     </GlassPanel>
