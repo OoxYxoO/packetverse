@@ -141,6 +141,17 @@ export function discoverVpwsEndpoint(routes: Partial<Record<PeId, VpwsAdRoute>>,
   return routes.PE3 && !routes.PE3.withdrawn ? "PE3" : undefined;
 }
 
+/**
+ * EVPN-VPWS service labels are downstream-assigned: the sending PE pushes the label the
+ * DISPOSITION PE advertised in its A-D per-EVI route, never its own. Pure — resolves only
+ * from stored routes; undefined when no usable remote endpoint exists (no fallback label).
+ */
+export function remoteServiceLabelFor(routes: Partial<Record<PeId, VpwsAdRoute>>, ingressPe: PeId): number | undefined {
+  const remote = discoverVpwsEndpoint(routes, ingressPe);
+  const route = remote ? routes[remote] : undefined;
+  return route && !route.withdrawn ? route.serviceLabel : undefined;
+}
+
 export interface VpwsParameterCheck {
   compatible: boolean;
   reason: string;
@@ -199,9 +210,9 @@ export interface VpwsPacketState {
 
 function pushLabel(pkt: VpwsPacketState, value: number, purpose: LabelPurpose): VpwsPacketState {
   const wasEmpty = pkt.labels.length === 0;
+  // Only the first-pushed (innermost) label is Bottom-of-Stack; labels beneath the new top keep their S bit.
   const newTop: MplsLabel = { value, tc: 0, ttl: 255, bottomOfStack: wasEmpty, purpose };
-  const rest = pkt.labels.map((l) => ({ ...l, bottomOfStack: false }));
-  return { ...pkt, labels: [newTop, ...rest] };
+  return { ...pkt, labels: [newTop, ...pkt.labels] };
 }
 function popTopLabel(pkt: VpwsPacketState): VpwsPacketState {
   const [, ...rest] = pkt.labels;
@@ -209,13 +220,27 @@ function popTopLabel(pkt: VpwsPacketState): VpwsPacketState {
 }
 
 export const TRANSPORT_LABEL = 16003;
-export const VPWS_SERVICE_LABEL = 24500;
+/** Each PE's OWN locally-allocated VPWS service label — what it advertises for others to push toward it (allocation only, never a forwarding choice). */
+export const LOCAL_SERVICE_LABEL: Record<PeId, number> = { PE1: 24500, PE2: 24501, PE3: 24502 };
 
-export function buildVpwsLabelStack(frame: EthernetFrame): VpwsPacketState {
+/** `serviceLabel` must be the disposition PE's advertised label (see remoteServiceLabelFor). */
+export function buildVpwsLabelStack(frame: EthernetFrame, serviceLabel: number): VpwsPacketState {
   let pkt: VpwsPacketState = { frame, labels: [] };
-  pkt = pushLabel(pkt, VPWS_SERVICE_LABEL, "service");
+  pkt = pushLabel(pkt, serviceLabel, "service");
   pkt = pushLabel(pkt, TRANSPORT_LABEL, "transport");
   return pkt;
+}
+/** Encapsulate only when a real downstream label exists — never invents one. */
+function labeledCustomerFrame(frame: EthernetFrame, serviceLabel: number | undefined): VpwsPacketState {
+  return serviceLabel === undefined ? { frame, labels: [] } : buildVpwsLabelStack(frame, serviceLabel);
+}
+/** Stack text for a disposition hop — the transport label over the given downstream service label. */
+function labeledStackText(serviceLabel: number | undefined): string {
+  return vpwsStackText(labeledCustomerFrame({ srcMac: "", dstMac: "" }, serviceLabel));
+}
+/** Journey text rendered from an actual label stack, e.g. "[16003][24502][Ethernet]". */
+function vpwsStackText(pkt: VpwsPacketState): string {
+  return pkt.labels.length > 0 ? `${pkt.labels.map((l) => `[${l.value}]`).join("")}[Ethernet]` : "[Ethernet] (not encapsulated — no usable remote endpoint)";
 }
 export function popTransportLabel(pkt: VpwsPacketState): VpwsPacketState {
   return popTopLabel(pkt);
@@ -483,7 +508,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     packet: (state) => (state.perEviAdRoutes.PE1 ? bgpAdPacket("ad-pe1", "PE1", "PE3", "EVPN Type 1 — A-D per-EVI from PE1 (Primary)", "EVPN TYPE 1 · A-D PER-EVI", state.perEviAdRoutes.PE1, "announce") : undefined),
     run: (state) => {
       const role = pbRoleFor(state.election, "PE1");
-      const route = buildVpwsAdRoute("PE1", ESI, role === "ineligible" || role === "not-elected" ? "primary" : role, CORRECT_L2_MTU, VPWS_SERVICE_LABEL);
+      const route = buildVpwsAdRoute("PE1", ESI, role === "ineligible" || role === "not-elected" ? "primary" : role, CORRECT_L2_MTU, LOCAL_SERVICE_LABEL.PE1);
       return { state: { ...state, perEviAdRoutes: { ...state.perEviAdRoutes, PE1: route } }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "pe1-advertises-adevi", timestamp: Date.now(), message: "PE1 advertises A-D per-EVI for VPWS-500 (Primary)" }] };
     },
   },
@@ -494,7 +519,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     packet: (state) => (state.perEviAdRoutes.PE2 ? bgpAdPacket("ad-pe2", "PE2", "PE3", "EVPN Type 1 — A-D per-EVI from PE2 (Backup)", "EVPN TYPE 1 · A-D PER-EVI", state.perEviAdRoutes.PE2, "announce") : undefined),
     run: (state) => {
       const role = pbRoleFor(state.election, "PE2");
-      const route = buildVpwsAdRoute("PE2", ESI, role === "ineligible" || role === "not-elected" ? "backup" : role, CORRECT_L2_MTU, VPWS_SERVICE_LABEL + 1);
+      const route = buildVpwsAdRoute("PE2", ESI, role === "ineligible" || role === "not-elected" ? "backup" : role, CORRECT_L2_MTU, LOCAL_SERVICE_LABEL.PE2);
       return { state: { ...state, perEviAdRoutes: { ...state.perEviAdRoutes, PE2: route } }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "pe2-advertises-adevi", timestamp: Date.now(), message: "PE2 advertises A-D per-EVI for VPWS-500 (Backup)" }] };
     },
   },
@@ -504,7 +529,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     narrative: "PE3 advertises its own route: VPWS Service ID 500, Remote endpoint: CE-B, Service Label.",
     packet: (state) => (state.perEviAdRoutes.PE3 ? bgpAdPacket("ad-pe3", "PE3", "PE1", "EVPN Type 1 — A-D per-EVI from PE3 (remote endpoint)", "EVPN TYPE 1 · A-D PER-EVI", state.perEviAdRoutes.PE3, "announce") : undefined),
     run: (state) => {
-      const route = buildVpwsAdRoute("PE3", "", "remote", CORRECT_L2_MTU, VPWS_SERVICE_LABEL + 2);
+      const route = buildVpwsAdRoute("PE3", "", "remote", CORRECT_L2_MTU, LOCAL_SERVICE_LABEL.PE3);
       const perEviAdRoutes = { ...state.perEviAdRoutes, PE3: route };
       return { state: { ...state, perEviAdRoutes, vpwsService: installVpwsService(perEviAdRoutes, CORRECT_L2_MTU) }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "pe3-advertises-adevi", timestamp: Date.now(), message: "PE3 advertises A-D per-EVI for VPWS-500 — remote endpoint CE-B" }] };
     },
@@ -546,12 +571,16 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
   {
     id: "mpls-data-plane",
     label: "MPLS Data Plane — Two-Label Stack",
-    narrative: `Packet leaving PE1: [TRANSPORT LABEL ${TRANSPORT_LABEL}] [VPWS SERVICE LABEL ${VPWS_SERVICE_LABEL}] [CUSTOMER ETHERNET FRAME].`,
-    packet: () => vpwsPacket("frame-labeled", "PE1", "CORE", "MPLS-encapsulated — two-label stack", "MPLS", buildVpwsLabelStack({ srcMac: CE_A_MAC, dstMac: CE_B_MAC })),
-    run: (state) => ({
-      state: { ...state, packetAt: "CORE", packet: buildVpwsLabelStack({ srcMac: CE_A_MAC, dstMac: CE_B_MAC }), journey: [...state.journey, { device: "PE1", input: "Remote service label resolved", lookup: "Push VPWS service label, then transport label", action: "PUSH_LABELS", output: `[${TRANSPORT_LABEL}][${VPWS_SERVICE_LABEL}][Ethernet]` }] },
-      events: [{ type: "PACKET_SENT", stepId: "mpls-data-plane", timestamp: Date.now(), message: "PE1 encapsulates with a two-label MPLS stack" }],
-    }),
+    narrative: `Packet leaving PE1: [TRANSPORT LABEL ${TRANSPORT_LABEL}] [VPWS SERVICE LABEL ${LOCAL_SERVICE_LABEL.PE3} — the label PE3 advertised, not PE1's own] [CUSTOMER ETHERNET FRAME].`,
+    packet: (state) => vpwsPacket("frame-labeled", "PE1", "CORE", "MPLS-encapsulated — two-label stack", "MPLS", labeledCustomerFrame({ srcMac: CE_A_MAC, dstMac: CE_B_MAC }, remoteServiceLabelFor(state.perEviAdRoutes, "PE1"))),
+    run: (state) => {
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, "PE1");
+      const packet = labeledCustomerFrame({ srcMac: CE_A_MAC, dstMac: CE_B_MAC }, serviceLabel);
+      return {
+        state: { ...state, packetAt: "CORE", packet, journey: [...state.journey, { device: "PE1", input: serviceLabel === undefined ? "No usable remote endpoint" : `Remote service label ${serviceLabel} resolved (advertised by PE3)`, lookup: "Push VPWS service label, then transport label", action: "PUSH_LABELS", output: vpwsStackText(packet) }] },
+        events: [{ type: "PACKET_SENT", stepId: "mpls-data-plane", timestamp: Date.now(), message: "PE1 encapsulates with a two-label MPLS stack" }],
+      };
+    },
   },
   {
     id: "vpws-service-label-explain",
@@ -569,10 +598,14 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     label: "PE3 — Conceptual EVPN-VPWS Egress Pipeline",
     narrative: "MPLS ingress → transport processing → VPWS service label → identify VPWS-500 → identify CE-B AC → optional VLAN/tag translation → forward customer Ethernet frame → CE-B.",
     packet: () => vpwsPacket("frame-decap", "PE3", "CE-B", "Decapsulated — delivered to CE-B", "FRAME", { frame: { srcMac: CE_A_MAC, dstMac: CE_B_MAC }, labels: [] }),
-    run: (state) => ({
-      state: { ...state, packetAt: "CE-B", journey: [...state.journey, { device: "PE3", input: `[${TRANSPORT_LABEL}][${VPWS_SERVICE_LABEL}][Ethernet]`, lookup: `Pop transport → read service label ${VPWS_SERVICE_LABEL} → VPWS-${VPWS_SERVICE_ID} → CE-B AC (VLAN ${REMOTE_AC_VLAN})`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" }] },
-      events: [{ type: "PACKET_RECEIVED", stepId: "pe3-disposition", timestamp: Date.now(), message: "CE-B receives the customer frame" }],
-    }),
+    run: (state) => {
+      // The arriving packet carries PE3's own downstream-assigned label (what PE1 pushed).
+      const serviceLabel = state.packet?.labels.find((l) => l.purpose === "service")?.value ?? state.perEviAdRoutes.PE3?.serviceLabel;
+      return {
+        state: { ...state, packetAt: "CE-B", journey: [...state.journey, { device: "PE3", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-B AC (VLAN ${REMOTE_AC_VLAN})`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" }] },
+        events: [{ type: "PACKET_RECEIVED", stepId: "pe3-disposition", timestamp: Date.now(), message: "CE-B receives the customer frame" }],
+      };
+    },
   },
   {
     id: "full-journey-recap",
@@ -584,20 +617,24 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     label: "Return Direction",
     narrative: "CE-B → PE3 → selected remote PRIMARY = PE1 → provider core → PE1 → CE-A.",
     packet: () => vpwsPacket("frame-return", "CE-B", "PE3", "Customer Ethernet frame — CE-B → CE-A", "FRAME", { frame: { srcMac: CE_B_MAC, dstMac: CE_A_MAC }, labels: [] }),
-    run: (state) => ({
-      state: {
-        ...state,
-        direction: "ce-b-to-ce-a",
-        packetAt: "CE-A",
-        journey: [
-          ...state.journey,
-          { device: "PE3", input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint = current Primary (PE1)`, action: "SERVICE_LOOKUP", output: "Encapsulated toward PE1" },
-          { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE1" },
-          { device: "PE1", input: `[${TRANSPORT_LABEL}][${VPWS_SERVICE_LABEL}][Ethernet]`, lookup: `Pop transport → read service label → VPWS-${VPWS_SERVICE_ID} → CE-A AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-A" },
-        ],
-      },
-      events: [{ type: "PACKET_RECEIVED", stepId: "return-direction", timestamp: Date.now(), message: "CE-A receives the return frame via PE1 (Primary)" }],
-    }),
+    run: (state) => {
+      // PE3 pushes the label its remote endpoint (current Primary PE1) advertised.
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, "PE3");
+      return {
+        state: {
+          ...state,
+          direction: "ce-b-to-ce-a",
+          packetAt: "CE-A",
+          journey: [
+            ...state.journey,
+            { device: "PE3", input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint = current Primary (PE1)`, action: "SERVICE_LOOKUP", output: `Encapsulated toward PE1 with service label ${serviceLabel ?? "(none)"}` },
+            { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE1" },
+            { device: "PE1", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-A AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-A" },
+          ],
+        },
+        events: [{ type: "PACKET_RECEIVED", stepId: "return-direction", timestamp: Date.now(), message: "CE-A receives the return frame via PE1 (Primary)" }],
+      };
+    },
   },
   {
     id: "logical-vpws-view",
@@ -658,20 +695,24 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     label: "Data-Path Failover",
     narrative: "BEFORE: CE-B → PE3 → PE1 → CE-A. AFTER: CE-B → PE3 → PE2 → CE-A.",
     packet: () => vpwsPacket("frame-after-failover", "CE-B", "PE3", "Customer Ethernet frame — CE-B → CE-A (after failover)", "FRAME", { frame: { srcMac: CE_B_MAC, dstMac: CE_A_MAC }, labels: [] }),
-    run: (state) => ({
-      state: {
-        ...state,
-        direction: "ce-b-to-ce-a",
-        packetAt: "CE-A",
-        journey: [
-          ...state.journey,
-          { device: "PE3", input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint = new Primary (PE2)`, action: "SERVICE_LOOKUP", output: "Encapsulated toward PE2" },
-          { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE2" },
-          { device: "PE2", input: `[${TRANSPORT_LABEL}][${VPWS_SERVICE_LABEL}][Ethernet]`, lookup: `Pop transport → read service label → VPWS-${VPWS_SERVICE_ID} → CE-A AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-A" },
-        ],
-      },
-      events: [{ type: "PACKET_RECEIVED", stepId: "data-path-failover", timestamp: Date.now(), message: "CE-A receives the frame via the new Primary, PE2" }],
-    }),
+    run: (state) => {
+      // PE1's route is withdrawn — PE3 now pushes the label the new Primary PE2 advertised.
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, "PE3");
+      return {
+        state: {
+          ...state,
+          direction: "ce-b-to-ce-a",
+          packetAt: "CE-A",
+          journey: [
+            ...state.journey,
+            { device: "PE3", input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint = new Primary (PE2)`, action: "SERVICE_LOOKUP", output: `Encapsulated toward PE2 with service label ${serviceLabel ?? "(none)"}` },
+            { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE2" },
+            { device: "PE2", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-A AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-A" },
+          ],
+        },
+        events: [{ type: "PACKET_RECEIVED", stepId: "data-path-failover", timestamp: Date.now(), message: "CE-A receives the frame via the new Primary, PE2" }],
+      };
+    },
   },
   {
     id: "failure-distinction-note",
@@ -684,7 +725,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     narrative: "PE1's AC to CE-A comes back up and re-advertises its A-D per-EVI route. This lesson's deterministic election always prefers PE1 when both are healthy — Primary reverts to PE1, and PE2 returns to Backup.",
     run: (state) => {
       const election = selectVpwsPrimary(state.election, false);
-      const restoredPe1: VpwsAdRoute = { ...(state.perEviAdRoutes.PE1 ?? buildVpwsAdRoute("PE1", ESI, "primary", CORRECT_L2_MTU, VPWS_SERVICE_LABEL)), withdrawn: false };
+      const restoredPe1: VpwsAdRoute = { ...(state.perEviAdRoutes.PE1 ?? buildVpwsAdRoute("PE1", ESI, "primary", CORRECT_L2_MTU, LOCAL_SERVICE_LABEL.PE1)), withdrawn: false };
       let routes: Partial<Record<PeId, VpwsAdRoute>> = { ...state.perEviAdRoutes, PE1: restoredPe1 };
       (CEA_PES as PeId[]).forEach((p) => {
         const r = routes[p];
