@@ -169,7 +169,9 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
 
   if (device === "CORE") {
     const base: DeviceProcessingTrace = { deviceId: "CORE", stages: CORE_STAGES, completedStageIds: [] };
-    if (!state.packetAt) return base;
+    // Active only while the labeled packet is in the core, or at CORE's own teaching step (whose run
+    // then hands the packet to PE3) — a packet merely existing elsewhere is not CORE processing it.
+    if (state.packetAt !== "CORE" && currentStepId !== "core-transport-only") return base;
     return { ...base, activeStageId: "transport-forward", completedStageIds: ["underlay-ingress", "top-label"], lookupType: "Top Transport Label (Swap)", lookupKey: `Label ${TRANSPORT_LABEL}`, reason: "Ordinary transport forwarding — never inspects the VPWS service label or customer MACs, and never selects a VPWS AC." };
   }
 
@@ -205,6 +207,11 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
       return { deviceId: device, stages: PE1_PE2_FORWARD_STAGES, completedStageIds: [], lookupType: ACTION_LOOKUP_TYPE.AC_UNAVAILABLE, reason: ACTION_REASON.AC_UNAVAILABLE };
     }
     const base: DeviceProcessingTrace = { deviceId: device, stages: PE1_PE2_FORWARD_STAGES, completedStageIds: [] };
+    // The customer frame has just entered this PE on its AC (last hop is the CE's AC_INGRESS) — state-backed, no hop invented.
+    const lastHop = state.journey[state.journey.length - 1];
+    if (state.packetAt === device && lastHop?.action === "AC_INGRESS") {
+      return { ...base, activeStageId: "ac-ingress", lookupType: ACTION_LOOKUP_TYPE.AC_INGRESS, reason: ACTION_REASON.AC_INGRESS };
+    }
     const forwarded = state.journey.some((h) => h.device === device && (h.action === "PUSH_LABELS" || h.action === "SERVICE_LOOKUP" || h.action === "POP_SERVICE"));
     if (!forwarded) return base;
     return { ...base, completedStageIds: allIds(PE1_PE2_FORWARD_STAGES) };
@@ -229,7 +236,8 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
   }
   const base: DeviceProcessingTrace = { deviceId: "PE3", stages: PE3_EGRESS_STAGES, completedStageIds: [] };
   const delivered = state.journey.some((h) => h.device === "PE3" && h.action === "POP_SERVICE");
-  if (!delivered) return { ...base, activeStageId: state.perEviAdRoutes.PE3 ? "identify-service" : undefined, completedStageIds: state.perEviAdRoutes.PE3 ? ["mpls-ingress", "transport-processing", "service-label"] : [] };
+  // An installed A-D route is control state, not packet processing — egress activates only once the packet is at PE3.
+  if (!delivered) return state.packetAt === "PE3" ? { ...base, activeStageId: "mpls-ingress" } : base;
   return { ...base, completedStageIds: allIds(PE3_EGRESS_STAGES) };
 }
 
