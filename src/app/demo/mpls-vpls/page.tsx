@@ -1147,6 +1147,8 @@ export default function MplsVplsDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
+                  setSelectedFloodCopyId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = mplsVplsSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
