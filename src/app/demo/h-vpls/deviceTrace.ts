@@ -196,9 +196,11 @@ function egressIfaceFor(router: RouterId, hop: JourneyHop | undefined, state: Hv
  * `run()` with no `.packet`, the fault/repair sequence, the standalone
  * spoke-failure experiment) — these never touch `state.packet`, so
  * `deviceForStep` needs a fixed subject the way mpls-vpls's own map does.
- * Every packet-carrying step instead resolves from the packet's own
- * `from`/`to` (sender priority — `state.journey` records each hop against
- * the router that PERFORMED the action).
+ * A packet-carrying step otherwise resolves from the packet's own `from`/`to`
+ * (sender priority) — correct for sender-processing visuals such as
+ * PUSH_SPOKE / PUSH_MESH. Ingress, delivery and multi-hop visuals whose run()
+ * records the modeled action on another device use
+ * `PACKET_INSPECTION_DEVICE` below instead.
  *
  * `mtu2-mtu3-discard` and `pe3-mtu3-discard-path` are included even though
  * those steps push no new journey hop for their primary subject (they only
@@ -225,7 +227,34 @@ export const PRIMARY_TRANSITION_ROUTER: Partial<Record<string, RouterId>> = {
   "engineer-challenge-confirm": "PE1",
 };
 
+/**
+ * Packet steps whose visual shows the frame arriving at (or originating
+ * before) the device whose JourneyHop the step records — source learning,
+ * spoke/mesh ingress lookup, local switching, split horizon, AC delivery,
+ * replication. Sender priority would inspect the previous device instead
+ * (an empty CE trace, or that device's older hop). A multi-hop step maps
+ * to its first modeled processing hop, as `known-unicast-hierarchy-path`
+ * already does via its sender.
+ */
+const PACKET_INSPECTION_DEVICE: Partial<Record<string, RouterId>> = {
+  "mtu1-learn-ce1": "MTU1",
+  "ce2-receives-directly": "CE2",
+  "pe1-receives-spoke-copy": "PE1",
+  "pe2-receives-mesh-delivers-spoke": "PE2",
+  "mtu1-local-deliver-ce1": "MTU1",
+  "send-ce1-to-ce2-2-local": "MTU1",
+  "pe1-spoke-ingress-relearn-flood": "PE1",
+  "pe2-mesh-ingress-delivers-ce3": "PE2",
+  "mtu2-delivers-ce3": "MTU2",
+  "send-ce1-to-ce4": "MTU1",
+  "demonstrate-fault": "MTU1",
+  "signature-fault-visual": "PE1",
+  "verify-spoke-to-mesh-restored": "PE1",
+};
+
 export function deviceForStep(stepId: string, packet: PacketVisual | undefined): RouterId | undefined {
+  const processingDevice = PACKET_INSPECTION_DEVICE[stepId];
+  if (processingDevice) return processingDevice;
   if (packet) return (packet.from ?? packet.to) as RouterId;
   return PRIMARY_TRANSITION_ROUTER[stepId];
 }
