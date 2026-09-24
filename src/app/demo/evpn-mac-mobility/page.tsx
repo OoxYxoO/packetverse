@@ -336,6 +336,7 @@ export default function EvpnMacMobilityDemo() {
   };
 
   const handleRestart = () => {
+    setAutoPlay(false);
     engine.restart();
     setCameraMode("overview");
     setEnteredDeviceId(undefined);
@@ -877,6 +878,7 @@ export default function EvpnMacMobilityDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = evpnMobilitySteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
