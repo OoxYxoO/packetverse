@@ -53,10 +53,20 @@ const ACTION_REASON: Record<JourneyAction, string> = {
   PUSH_LABELS: "A two-label stack is pushed: the VPWS service label identifies the service/AC at the far end, the transport label carries the packet across the core.",
   TRANSPORT_FORWARD: "The core performs ordinary transport label swap forwarding — it never inspects the VPWS service label or customer MACs, and never selects a VPWS AC.",
   POP_TRANSPORT: "Transport label removed — the service label beneath it is now exposed for the disposition PE to read.",
-  POP_SERVICE: "The service label identifies VPWS-500 and its CE-B attachment circuit — the customer frame is forwarded there unchanged.",
+  POP_SERVICE: "The service label identifies VPWS-500 and its local attachment circuit — the customer frame is forwarded there unchanged.",
   AC_EGRESS: "The customer frame leaves on the identified attachment circuit exactly as it arrived — VPWS never modifies customer MACs.",
   AC_UNAVAILABLE: "This PE's attachment circuit to its customer edge is down — the PE device itself, its underlay, and BGP EVPN session all remain healthy.",
 };
+
+/** The customer edge a PE's attachment circuit faces — PE3 serves CE-B, PE1/PE2 serve CE-A. */
+function customerEdgeOf(device: "PE1" | "PE2" | "PE3"): "CE-A" | "CE-B" {
+  return device === "PE3" ? "CE-B" : "CE-A";
+}
+/** Disposition names the AC it delivers to; every other action's reason is device-independent. */
+function reasonFor(device: "PE1" | "PE2" | "PE3", action: JourneyAction): string {
+  if (action === "POP_SERVICE") return `The service label identifies VPWS-500 and its ${customerEdgeOf(device)} attachment circuit — the customer frame is forwarded there unchanged.`;
+  return ACTION_REASON[action];
+}
 
 function findLastHop(journey: JourneyHop[], device: EvpnVpwsDeviceId, action: JourneyAction): JourneyHop | undefined {
   for (let idx = journey.length - 1; idx >= 0; idx--) {
@@ -85,7 +95,7 @@ function hopToTrace(device: "PE1" | "PE2" | "PE3", hop: JourneyHop, stages: Proc
     : isPop
       ? [{ type: "POP", detail: serviceLabel === undefined ? "Transport + service labels removed — customer frame forwarded to the AC" : `Transport + service label ${serviceLabel} removed — customer frame forwarded to the AC` }]
       : undefined;
-  const nextHopId = hop.action === "PUSH_LABELS" ? "CORE" : hop.action === "SERVICE_LOOKUP" && device !== "PE3" ? "PE3" : isPop ? "CE-B" : undefined;
+  const nextHopId = hop.action === "PUSH_LABELS" ? "CORE" : hop.action === "SERVICE_LOOKUP" && device !== "PE3" ? "PE3" : isPop ? customerEdgeOf(device) : undefined;
   return {
     deviceId: device,
     ...ifacePairForHop(device, hop.action),
@@ -101,7 +111,7 @@ function hopToTrace(device: "PE1" | "PE2" | "PE3", hop: JourneyHop, stages: Proc
     lookupResult: hop.output,
     nextHopId,
     nextHopLabel: nextHopId,
-    reason: ACTION_REASON[hop.action],
+    reason: reasonFor(device, hop.action),
     mutations,
   };
 }
@@ -126,15 +136,28 @@ const PE1_PE2_FORWARD_STAGES: ProcessingStage[] = [
   { id: "push-labels", label: "Push Service + Transport Labels" },
   { id: "egress", label: "Egress Toward Core" },
 ];
-const PE3_EGRESS_STAGES: ProcessingStage[] = [
-  { id: "mpls-ingress", label: "MPLS Ingress" },
-  { id: "transport-processing", label: "Transport Processing" },
-  { id: "service-label", label: "VPWS Service Label" },
-  { id: "identify-service", label: "Identify VPWS-500" },
-  { id: "identify-ac", label: "Identify CE-B AC" },
-  { id: "vlan-translation", label: "Optional VLAN/Tag Translation" },
-  { id: "forward-ce", label: "Forward Customer Ethernet Frame" },
+/** PE3 as the ingress PE (return/failover traffic from CE-B) — its remote endpoint is whichever CE-A-side PE is currently Primary. */
+const PE3_FORWARD_STAGES: ProcessingStage[] = [
+  { id: "ac-ingress", label: "Access Circuit Ingress" },
+  { id: "service-lookup", label: "Service Lookup (VPWS-500)" },
+  { id: "remote-endpoint", label: "Remote Endpoint = Current Primary" },
+  { id: "push-labels", label: "Push Service + Transport Labels" },
+  { id: "egress", label: "Egress Toward Core" },
 ];
+function dispositionStages(ce: "CE-A" | "CE-B"): ProcessingStage[] {
+  return [
+    { id: "mpls-ingress", label: "MPLS Ingress" },
+    { id: "transport-processing", label: "Transport Processing" },
+    { id: "service-label", label: "VPWS Service Label" },
+    { id: "identify-service", label: "Identify VPWS-500" },
+    { id: "identify-ac", label: `Identify ${ce} AC` },
+    { id: "vlan-translation", label: "Optional VLAN/Tag Translation" },
+    { id: "forward-ce", label: "Forward Customer Ethernet Frame" },
+  ];
+}
+const PE3_EGRESS_STAGES = dispositionStages("CE-B");
+/** PE1/PE2 as the disposition PE (return/failover) — delivering to CE-A. */
+const CEA_EGRESS_STAGES = dispositionStages("CE-A");
 const CORE_STAGES: ProcessingStage[] = [
   { id: "underlay-ingress", label: "MPLS Ingress" },
   { id: "top-label", label: "Top Transport Label" },
@@ -151,12 +174,12 @@ const SIGNATURE_MOMENT: Record<string, { device: "PE1" | "PE2" | "PE3"; action: 
   "mpls-data-plane": [{ device: "PE1", action: "PUSH_LABELS", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "push-labels" }],
   "pe3-disposition": [{ device: "PE3", action: "POP_SERVICE", stages: PE3_EGRESS_STAGES, activeStageId: "forward-ce" }],
   "return-direction": [
-    { device: "PE3", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
-    { device: "PE1", action: "POP_SERVICE", stages: PE3_EGRESS_STAGES, activeStageId: "forward-ce" },
+    { device: "PE3", action: "SERVICE_LOOKUP", stages: PE3_FORWARD_STAGES, activeStageId: "service-lookup" },
+    { device: "PE1", action: "POP_SERVICE", stages: CEA_EGRESS_STAGES, activeStageId: "forward-ce" },
   ],
   "data-path-failover": [
-    { device: "PE3", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
-    { device: "PE2", action: "POP_SERVICE", stages: PE3_EGRESS_STAGES, activeStageId: "forward-ce" },
+    { device: "PE3", action: "SERVICE_LOOKUP", stages: PE3_FORWARD_STAGES, activeStageId: "service-lookup" },
+    { device: "PE2", action: "POP_SERVICE", stages: CEA_EGRESS_STAGES, activeStageId: "forward-ce" },
   ],
   // restore-pe1-ac re-elects PE1 before the MTU fault, so verify-repair's ingress is always PE1.
   "verify-repair": [

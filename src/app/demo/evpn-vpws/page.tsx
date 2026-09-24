@@ -456,8 +456,15 @@ export default function EvpnVpwsDemo() {
     ];
   };
 
+  // PE3's title follows the pipeline its trace shows: control plane before traffic, ingress at its own
+  // service lookup (return/failover), egress otherwise.
+  const pe3PipelineTitle = () => {
+    if (deviceTrace?.stages.some((s) => s.id === "adevi-advertised")) return "Conceptual EVPN-VPWS Control Pipeline";
+    if (deviceTrace?.activeStageId === "service-lookup") return "Conceptual EVPN-VPWS Ingress Pipeline";
+    return "Conceptual EVPN-VPWS Egress Pipeline";
+  };
   const pipelineTitleFor = (device: "PE1" | "CORE" | "PE2" | "PE3") =>
-    device === "PE3" ? "Conceptual EVPN-VPWS Egress Pipeline" : device === "CORE" ? "Conceptual Transport Forwarding Pipeline" : "Conceptual VPWS Control / Forwarding Pipeline";
+    device === "PE3" ? pe3PipelineTitle() : device === "CORE" ? "Conceptual Transport Forwarding Pipeline" : "Conceptual VPWS Control / Forwarding Pipeline";
 
   const sceneProps = { nodes: nodes3D, links: links3D, regions: regions3D };
 
