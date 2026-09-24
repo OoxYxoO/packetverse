@@ -283,3 +283,23 @@ function Watermark() {
     </svg>
   );
 }
+
+/** The standard "Lesson Guide" launcher; `compact` suits toolbars such as Focus Mode. */
+export function LessonGuideButton({ onClick, compact }: { onClick: () => void; compact?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        "group inline-flex shrink-0 items-center gap-2 rounded-full border border-pv-violet/50 bg-gradient-to-r from-pv-violet/20 to-pv-cyan/10 font-semibold text-pv-text shadow-[0_0_18px_rgba(139,140,248,0.25)] transition-all hover:border-pv-violet hover:shadow-[0_0_24px_rgba(139,140,248,0.4)]",
+        compact ? "px-3 py-1.5 text-[11px] uppercase tracking-wide" : "px-4 py-2 text-sm",
+      )}
+    >
+      <svg viewBox="0 0 24 24" className="h-4 w-4 text-pv-violet" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+        <path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5z" strokeLinejoin="round" />
+        <path d="M8 7h7M8 11h5" strokeLinecap="round" />
+      </svg>
+      Lesson Guide
+    </button>
+  );
+}

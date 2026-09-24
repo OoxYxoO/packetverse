@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { OSPF_LESSON_SECTIONS, OspfLessonGuideContent } from "./LessonGuideContent";
+import { OSPF_DEEP_DIVE_SECTIONS, OspfDeepDiveContent } from "./DeepDiveContent";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import {
@@ -77,6 +80,11 @@ const WHY_OSPF: { q: string; a: string }[] = [
   { q: "WHY run SPF?", a: "Every router needs a consistent, loop-free view of the shortest path to everywhere, computed independently." },
 ];
 
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "The Area 0 diamond, step by step", sections: OSPF_LESSON_SECTIONS, content: <OspfLessonGuideContent /> },
+  { id: "deep", label: "OSPF Deep Dive", hint: "How OSPF works in general", sections: OSPF_DEEP_DIVE_SECTIONS, content: <OspfDeepDiveContent /> },
+];
+
 export default function OspfArea0Demo() {
   const { engine, snapshot } = useScenarioEngine<OspfState>(createOspfState(), ospfSteps);
   const [autoPlay, setAutoPlay] = useState(false);
@@ -100,6 +108,7 @@ export default function OspfArea0Demo() {
   const [userPacketHop, setUserPacketHop] = useState(0);
   const [sentPackets, setSentPackets] = useState<{ when: "before" | "after"; path: RouterId[]; cost: number }[]>([]);
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -574,15 +583,19 @@ export default function OspfArea0Demo() {
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6">
-        <Badge tone="cyan" className="mb-3">
-          OSPF · Single Area · Point-to-Point
-        </Badge>
-        <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">R1 Learns The Network — Automatically</h1>
-        <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
-          Four routers, Area 0, point-to-point links. Form the adjacencies yourself, synchronize the link-state database, watch SPF pick
-          the best path, then change the physics of the network by changing a single number.
-        </p>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <Badge tone="cyan" className="mb-3">
+            OSPF · Single Area · Point-to-Point
+          </Badge>
+          <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">R1 Learns The Network — Automatically</h1>
+          <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
+            Four routers, Area 0, point-to-point links. Form the adjacencies yourself, synchronize the link-state database, watch SPF pick
+            the best path, then change the physics of the network by changing a single number.
+          </p>
+        </div>
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="OSPF: Link-State Routing" subtitle="Area 0 · R1–R4 point-to-point diamond" tabs={GUIDE_TABS} />
       </div>
 
       <div className="mb-6 grid gap-2 sm:grid-cols-4">
@@ -1032,6 +1045,7 @@ export default function OspfArea0Demo() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
               <TopologyModeSwitcher
                 options={[
                   { value: "overview", label: "Overview" },

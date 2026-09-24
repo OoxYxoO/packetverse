@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { RR_LESSON_SECTIONS, RrLessonGuideContent } from "./LessonGuideContent";
+import { RR_DEEP_DIVE_SECTIONS, RrDeepDiveContent } from "./DeepDiveContent";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import {
@@ -122,6 +125,11 @@ function withKind(nodes: GNode[]): GNode[] {
   return nodes.map((n) => ({ ...n, kind: n.id === "RR1" || n.id === "RR2" ? ("p-router" as const) : ("router" as const) }));
 }
 
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "AS 65000: mesh → RR1 → RR1 + RR2", sections: RR_LESSON_SECTIONS, content: <RrLessonGuideContent /> },
+  { id: "deep", label: "Route Reflection Deep Dive", hint: "How route reflection works in general", sections: RR_DEEP_DIVE_SECTIONS, content: <RrDeepDiveContent /> },
+];
+
 export default function BgpRouteReflectorDemo() {
   const { engine, snapshot } = useScenarioEngine<RrState>(createRrState(), rrSteps);
   const [autoPlay, setAutoPlay] = useState(false);
@@ -142,6 +150,7 @@ export default function BgpRouteReflectorDemo() {
   const [selectedRegionId, setSelectedRegionId] = useState<string | undefined>(undefined);
   const [vendorView, setVendorView] = useState<"concept" | "cisco" | "juniper">("concept");
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -547,15 +556,19 @@ export default function BgpRouteReflectorDemo() {
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6">
-        <Badge tone="cyan" className="mb-3">
-          BGP Route Reflector · iBGP Scaling
-        </Badge>
-        <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">Full Mesh Doesn&apos;t Scale — Reflection Does</h1>
-        <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
-          Watch iBGP&apos;s full-mesh requirement explode as routers are added, then watch a Route Reflector bend the split-horizon
-          rule — just for its clients — and cut that mesh down to a hub and spoke.
-        </p>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <Badge tone="cyan" className="mb-3">
+            BGP Route Reflector · iBGP Scaling
+          </Badge>
+          <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">Full Mesh Doesn&apos;t Scale — Reflection Does</h1>
+          <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
+            Watch iBGP&apos;s full-mesh requirement explode as routers are added, then watch a Route Reflector bend the split-horizon
+            rule — just for its clients — and cut that mesh down to a hub and spoke.
+          </p>
+        </div>
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="BGP Route Reflector" subtitle="AS 65000 · PE1–PE6 · RR1 / RR2" tabs={GUIDE_TABS} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -1110,6 +1123,7 @@ export default function BgpRouteReflectorDemo() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
               <TopologyModeSwitcher
                 options={[
                   { value: "overview", label: "Overview" },
