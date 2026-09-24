@@ -1,5 +1,6 @@
 import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketMutation, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
 import type { EvpnRibRow } from "@/components/protocol/EvpnRouteTable";
+import type { PacketVisual } from "@/lib/sim-engine/types";
 import {
   ESI,
   GRAPH_EDGES,
@@ -241,11 +242,55 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
   return { ...base, completedStageIds: allIds(PE3_EGRESS_STAGES) };
 }
 
-export function packetFramesFor(state: EvpnVpwsState): PacketStackFrame[] | undefined {
-  if (!state.packet && state.journey.length === 0) return undefined;
-  const serviceLabel = state.packet?.labels.find((l) => l.purpose === "service")?.value;
-  if (state.packet && state.packet.labels.length > 0 && serviceLabel !== undefined) return mplsFrames(serviceLabel);
-  return ethernetFrames();
+/**
+ * The packet stack the device is handling at this step, read from its own trace rather than the
+ * persistent `state.packet` (which keeps the first PE1 → PE3 stack through later directions).
+ * No active processing stage → no packet stack.
+ */
+export function packetFramesFor(trace: DeviceProcessingTrace | undefined, state: EvpnVpwsState): PacketStackFrame[] | undefined {
+  switch (trace?.activeStageId) {
+    case "ac-ingress":
+    case "service-lookup":
+      return ethernetFrames(); // customer frame before encapsulation
+    case "push-labels":
+      return trace.packetAfterFrames; // the stack this PE just built
+    case "forward-ce":
+      return trace.packetBeforeFrames; // incoming stack carrying the disposition PE's own label
+    case "transport-forward":
+    case "mpls-ingress": {
+      // Only reached while the labeled packet is in the core or arriving at PE3 — `state.packet` is that packet.
+      const serviceLabel = state.packet?.labels.find((l) => l.purpose === "service")?.value;
+      return serviceLabel === undefined ? undefined : mplsFrames(serviceLabel);
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** The layer(s) the device actually acts on at its active stage — the X-Ray focus. */
+export function xrayFocusTonesFor(trace: DeviceProcessingTrace | undefined): PacketStackFrame["tone"][] | undefined {
+  switch (trace?.activeStageId) {
+    case "ac-ingress":
+    case "service-lookup":
+      return ["generic"];
+    case "push-labels":
+      return ["transport", "vpn"];
+    case "transport-forward":
+    case "mpls-ingress":
+      return ["transport"];
+    case "forward-ce":
+      return ["vpn"];
+    default:
+      return undefined;
+  }
+}
+
+const TONE_LAYER: Record<PacketStackFrame["tone"], RegExp> = { transport: /\(transport\)/, vpn: /\(service\)/, generic: /^Ethernet/, ip: /^IP/ };
+/** Maps focus tones onto a PacketVisual's layers; undefined when none of them is present — never a substitute layer. */
+export function layerIndicesForTones(tones: PacketStackFrame["tone"][] | undefined, packet: PacketVisual | undefined): number[] | undefined {
+  if (!tones || !packet) return undefined;
+  const indices = packet.layers.flatMap((l, idx) => (tones.some((t) => TONE_LAYER[t].test(l.name)) ? [idx] : []));
+  return indices.length > 0 ? indices : undefined;
 }
 
 interface IfaceDef { id: string; name: string; ip?: string; neighborId: EvpnVpwsDeviceId; neighborLabel: string; linkType: string; mtu: number; protocols: string[]; extra?: { label: string; value: string }[]; }

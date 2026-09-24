@@ -68,12 +68,14 @@ import {
   evpnRibRowsFor,
   interfacesFor,
   labelsTabRowsFor,
+  layerIndicesForTones,
   linkDetailFor,
   packetFramesFor,
   pbTabRowsFor,
   remoteEndpointsTabRowsFor,
   traceFor,
   vpwsServicesTabRowsFor,
+  xrayFocusTonesFor,
 } from "./deviceTrace";
 
 const REPAIR_OPTIONS = [
@@ -216,7 +218,9 @@ export default function EvpnVpwsDemo() {
 
   const deviceTrace = isFabricDevice(effectiveDeviceId) ? traceFor(effectiveDeviceId, state, traceStepId) : undefined;
   const deviceInterfaces = isFabricDevice(effectiveDeviceId) ? interfacesFor(effectiveDeviceId, state, traceStepId) : [];
-  const devicePacketFrames = effectiveDeviceId ? packetFramesFor(state) : undefined;
+  // Entered-device X-Ray: the stack and focus come from the device's own trace for this step, not the persistent state.packet.
+  const devicePacketFrames = packetFramesFor(deviceTrace, state);
+  const deviceFocusTones = xrayFocusTonesFor(deviceTrace);
 
   const focusedObjectStillValid =
     focusedObject &&
@@ -255,6 +259,9 @@ export default function EvpnVpwsDemo() {
   const focusInspectDeviceId = selectedFabricId ?? effectiveFabricId ?? activeDeviceId;
   const focusTrace = focusInspectDeviceId ? traceFor(focusInspectDeviceId, state, traceStepId) : undefined;
   const focusInterfaces = focusInspectDeviceId ? interfacesFor(focusInspectDeviceId, state, traceStepId) : undefined;
+  // Quick Inspect X-Ray is about the selected device's own action, not where the packet is — PE1 pushing both labels
+  // and CORE swapping only the transport label can look at the same packet. The global `focusIndices` stays packet-location only.
+  const quickInspectFocus = xrayPacket && selectedFabricId ? layerIndicesForTones(xrayFocusTonesFor(traceFor(selectedFabricId, state, traceStepId)), xrayPacket) : undefined;
 
   const journeyStepIndices = evpnVpwsSteps.map((s, i) => ({ s, i })).filter(({ s, i }) => i <= index && (!!s.packet || PRIMARY_TRANSITION_ROUTER[s.id] !== undefined));
   const journeyHopEntries = journeyStepIndices.map(({ s, i }) => ({ id: s.id, label: s.label, index: i }));
@@ -545,6 +552,7 @@ export default function EvpnVpwsDemo() {
                         xray: deviceXray,
                         trace: deviceTrace,
                         packetFrames: devicePacketFrames,
+                        focusTones: deviceFocusTones,
                         onSelectInterface: setSelectedInterfaceId,
                         selectedInterfaceId,
                         onSelectPacket: () => { setPacketSelected(true); setAutoPlay(false); },
@@ -600,7 +608,7 @@ export default function EvpnVpwsDemo() {
                 !packetSelected &&
                 !selectedLinkDetail &&
                 !selectedRegionId && (
-                  <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} focusLayerIndices={xrayMode ? focusIndices : undefined} xrayEnabled={xrayMode}>
+                  <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} focusLayerIndices={xrayMode ? quickInspectFocus : undefined} xrayEnabled={xrayMode}>
                     {selectedNodeId && isFabricDevice(selectedNodeId) && (
                       <Button size="sm" onClick={() => { setEnteredDeviceId(selectedNodeId); setCameraMode("device"); }}>Enter Device →</Button>
                     )}
@@ -933,6 +941,7 @@ export default function EvpnVpwsDemo() {
                         xray: deviceXray,
                         trace: deviceTrace,
                         packetFrames: devicePacketFrames,
+                        focusTones: deviceFocusTones,
                         onSelectInterface: setSelectedInterfaceId,
                         selectedInterfaceId,
                         onSelectPacket: () => setPacketSelected(true),
@@ -987,7 +996,7 @@ export default function EvpnVpwsDemo() {
                   />
                 </div>
               ) : nodeExplanation ? (
-                <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} focusLayerIndices={xrayMode ? focusIndices : undefined} xrayEnabled={xrayMode} />
+                <NodeInspectorPanel explanation={nodeExplanation} packet={xrayPacket} focusLayerIndices={xrayMode ? quickInspectFocus : undefined} xrayEnabled={xrayMode} />
               ) : (
                 <GlassPanel className="p-4">
                   <p className="text-xs text-pv-text-faint">Select a device, or advance the lesson, to inspect a hop.</p>
