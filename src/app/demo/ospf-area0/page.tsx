@@ -551,6 +551,7 @@ export default function OspfArea0Demo() {
   };
 
   const handleRestart = () => {
+    setAutoPlay(false);
     awardedRef.current = false;
     engine.restart();
     setCameraMode("overview");
@@ -1123,6 +1124,20 @@ export default function OspfArea0Demo() {
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
                 <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
               </>
+            ) : currentStep?.id === "challenge" ? (
+              // Same priority as a question — this step gates advancement via
+              // `requiresState`, so Focus Mode must surface the challenge itself.
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
+                <ChallengeControl
+                  options={CHALLENGE_COST_OPTIONS}
+                  currentCost={state.interfaces.R1?.R2?.cost}
+                  triedCost={state.challengeCost}
+                  succeeded={state.challengeSucceeded}
+                  route={state.routingTables.R1?.R4}
+                  onTry={(cost) => engine.act({ cost })}
+                />
+              </>
             ) : selectedLinkDetail ? (
               <LinkDetailPanel
                 detail={selectedLinkDetail}
@@ -1236,6 +1251,7 @@ export default function OspfArea0Demo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = ospfSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
