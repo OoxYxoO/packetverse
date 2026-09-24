@@ -366,6 +366,24 @@ export default function EvpnVpwsDemo() {
     </GlassPanel>
   );
 
+  // Region context only — the CORE node stays separately selectable for its own device inspection.
+  const providerCoreInspector = (
+    <GlassPanel strong className="space-y-2 p-5">
+      <div className="flex items-center justify-between">
+        <h3 className="pv-mono text-sm font-bold text-pv-text">MPLS/IP Provider Core</h3>
+        <button type="button" onClick={() => setSelectedRegionId(undefined)} className="text-xs text-pv-text-faint hover:text-pv-text">✕</button>
+      </div>
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 pv-mono text-[11px] [overflow-wrap:anywhere]">
+        <span className="text-pv-text-faint">Provider Devices</span><span className="text-pv-text">PE1 · PE2 · CORE · PE3</span>
+        <span className="text-pv-text-faint">Purpose</span><span className="text-pv-text">Carries VPWS-{VPWS_SERVICE_ID} between the participating PEs</span>
+        <span className="text-pv-text-faint">Control Plane</span><span className="text-pv-text">BGP EVPN between the PEs — {state.bgpSessionUp ? "Established" : "not yet established"}</span>
+        <span className="text-pv-text-faint">Data Plane</span><span className="text-pv-text">MPLS transport label carries the service across the core</span>
+        <span className="text-pv-text-faint">CORE Role</span><span className="text-pv-text">Transport forwarding only — no EVPN routes, no VPWS service-label lookup</span>
+      </div>
+      <p className="text-xs text-pv-text-muted">The core carries a VPWS service the PEs already selected — it never learns customer MACs to choose it. Service labels are downstream-assigned by each PE.</p>
+    </GlassPanel>
+  );
+
   const handleRestart = () => {
     setAutoPlay(false);
     engine.restart();
@@ -563,6 +581,7 @@ export default function EvpnVpwsDemo() {
               {selectedLinkDetail && !packetSelected && <LinkDetailPanel detail={selectedLinkDetail} onClose={() => setSelectedLinkId(undefined)} />}
 
               {selectedRegionId === "ethernet-segment" && !packetSelected && !selectedLinkDetail && ethernetSegmentInspector}
+              {selectedRegionId === "provider-core" && !packetSelected && !selectedLinkDetail && providerCoreInspector}
 
               {inDeviceMode && !packetSelected && !selectedLinkDetail && !selectedRegionId ? (
                 <DeviceExplorerPanel explanation={nodeExplanation!} tabs={isFabricDevice(effectiveDeviceId) ? explorerTabsFor(effectiveDeviceId) : []} xrayEnabled={deviceXray} onToggleXray={() => setDeviceXray((v) => !v)} onExit={() => { setCameraMode("overview"); setEnteredDeviceId(undefined); }} />
@@ -928,6 +947,8 @@ export default function EvpnVpwsDemo() {
               <LinkDetailPanel detail={selectedLinkDetail} onClose={() => { setSelectedLinkId(undefined); setFocusedObject(undefined); }} />
             ) : selectedRegionId === "ethernet-segment" ? (
               ethernetSegmentInspector
+            ) : selectedRegionId === "provider-core" ? (
+              providerCoreInspector
             ) : activeFocusedObject && activeFocusedObject.kind !== "link" ? (
               <ObjectFocusPanel
                 kind={activeFocusedObject.kind}
