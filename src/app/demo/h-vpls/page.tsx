@@ -159,7 +159,8 @@ export default function HVplsDemo() {
   const showViews = index >= STEP_IDX.transportRecap;
   const showScalingLab = index >= STEP_IDX.scalingLabIntro && index < STEP_IDX.troubleshootingIntro;
 
-  const cliCommands = useMemo(() => buildHvplsCliCommands(state, focusRouter), [state, focusRouter]);
+  // Provider CLI only — a CE picked in the device selector has no H-VPLS CLI (and would fall into the PE-rs builder).
+  const cliCommands = useMemo(() => (focusIsMtu || focusIsPe ? buildHvplsCliCommands(state, focusRouter) : []), [state, focusRouter, focusIsMtu, focusIsPe]);
   const lastHop = state.journey[state.journey.length - 1];
 
   const serviceFields = [
@@ -373,6 +374,40 @@ export default function HVplsDemo() {
     };
     const hardwareTab: DeviceExplorerTab = { id: "hardware", label: "Hardware", content: <p className="text-xs text-pv-text-muted">Generic stylized {nodeExplanation.deviceType.toLowerCase()} chassis — {deviceInterfaces.length} physical interfaces.</p> };
     const interfacesTab: DeviceExplorerTab = { id: "interfaces", label: "Interfaces", content: <InterfaceListTab interfaces={deviceInterfaces} selectedInterfaceId={selectedInterfaceId} onSelectInterface={setSelectedInterfaceId} /> };
+    const forwardingTab: DeviceExplorerTab = {
+      id: "forwarding",
+      label: "Forwarding",
+      content: (() => {
+        const hop = state.journey.filter((h) => h.device === router).slice(-1)[0];
+        return hop ? (
+          <div className="space-y-0.5 pv-mono text-[11px]">
+            <Row label="Input" value={hop.input} />
+            <Row label="Lookup" value={hop.lookup} />
+            <Row label="Action" value={hop.action} />
+            <Row label="Output" value={hop.output} />
+          </div>
+        ) : (
+          <p className="text-xs text-pv-text-faint">No forwarding entry for this router right now.</p>
+        );
+      })(),
+    };
+    const packetTab: DeviceExplorerTab = {
+      id: "packet",
+      label: "Packet",
+      content: (
+        <div className="space-y-2">
+          <p className="pv-mono text-[11px] text-pv-text-muted">
+            Before: <span className="text-pv-text">{nodeExplanation.packetBefore ?? "—"}</span>
+          </p>
+          <p className="pv-mono text-[11px] text-pv-text-muted">
+            After: <span className="text-pv-cyan-soft">{nodeExplanation.packetAfter ?? "—"}</span>
+          </p>
+          {devicePacketForTab ? <PacketInspector packet={devicePacketForTab} /> : <p className="text-xs text-pv-text-faint">No packet at this device right now.</p>}
+        </div>
+      ),
+    };
+    // A CE is a customer Ethernet endpoint, not an MTU-s/PE-rs: no H-VPLS service, bridge ports, FDB, spoke/mesh PWs, provider transport or CLI apply to it — return before any of those tabs (which call provider-only helpers) are built.
+    if (router.startsWith("CE")) return [overviewTab, hardwareTab, interfacesTab, forwardingTab, packetTab];
     const transportTab: DeviceExplorerTab = {
       id: "transport",
       label: "Transport",
@@ -409,38 +444,6 @@ export default function HVplsDemo() {
       id: "fdb",
       label: "MAC Table",
       content: <EthernetFdbViewer title={router} rows={fdbFor(state, router as MtuId | PeId).map((e) => ({ mac: e.mac, portKind: e.port.kind, portPeer: e.port.peer, age: e.age }))} />,
-    };
-    const forwardingTab: DeviceExplorerTab = {
-      id: "forwarding",
-      label: "Forwarding",
-      content: (() => {
-        const hop = state.journey.filter((h) => h.device === router).slice(-1)[0];
-        return hop ? (
-          <div className="space-y-0.5 pv-mono text-[11px]">
-            <Row label="Input" value={hop.input} />
-            <Row label="Lookup" value={hop.lookup} />
-            <Row label="Action" value={hop.action} />
-            <Row label="Output" value={hop.output} />
-          </div>
-        ) : (
-          <p className="text-xs text-pv-text-faint">No forwarding entry for this router right now.</p>
-        );
-      })(),
-    };
-    const packetTab: DeviceExplorerTab = {
-      id: "packet",
-      label: "Packet",
-      content: (
-        <div className="space-y-2">
-          <p className="pv-mono text-[11px] text-pv-text-muted">
-            Before: <span className="text-pv-text">{nodeExplanation.packetBefore ?? "—"}</span>
-          </p>
-          <p className="pv-mono text-[11px] text-pv-text-muted">
-            After: <span className="text-pv-cyan-soft">{nodeExplanation.packetAfter ?? "—"}</span>
-          </p>
-          {devicePacketForTab ? <PacketInspector packet={devicePacketForTab} /> : <p className="text-xs text-pv-text-faint">No packet at this device right now.</p>}
-        </div>
-      ),
     };
     const cliTab: DeviceExplorerTab = { id: "cli", label: "CLI", content: <CLIOutputPanel commands={buildHvplsCliCommands(state, router)} /> };
 
@@ -1045,7 +1048,7 @@ export default function HVplsDemo() {
           </div>
 
           <PacketJourneyTimeline hops={state.journey.map((h) => ({ router: h.device, action: h.action, output: h.output }))} />
-          <CLIOutputPanel commands={cliCommands} />
+          {(focusIsMtu || focusIsPe) && <CLIOutputPanel commands={cliCommands} />}
         </div>
       </div>
 
@@ -1257,6 +1260,8 @@ export default function HVplsDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
+                  setSelectedFloodCopyId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = hVplsSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
