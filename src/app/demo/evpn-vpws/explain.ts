@@ -3,8 +3,14 @@ import { ESI, VPWS_SERVICE_ID, pbRoleFor, type EvpnVpwsDeviceId, type EvpnVpwsSt
 
 const DEVICE_TYPE: Record<EvpnVpwsDeviceId, string> = { "CE-A": "Dual-Homed Customer Edge", PE1: "Provider Edge (ES Member)", PE2: "Provider Edge (ES Member)", CORE: "MPLS/IP Provider Core", PE3: "Provider Edge (Remote Endpoint)", "CE-B": "Single-Homed Customer Edge" };
 
+/** Index of the device's newest hop — the journey accumulates every direction, so the first match is stale history. */
+function lastHopIndex(state: EvpnVpwsState, nodeId: EvpnVpwsDeviceId): number {
+  for (let i = state.journey.length - 1; i >= 0; i--) if (state.journey[i].device === nodeId) return i;
+  return -1;
+}
+
 export function explainNode(state: EvpnVpwsState, nodeId: EvpnVpwsDeviceId): NodeExplanation {
-  const journeyIndex = state.journey.findIndex((h) => h.device === nodeId);
+  const journeyIndex = lastHopIndex(state, nodeId);
   const isCurrentActor = journeyIndex !== -1 && journeyIndex === state.journey.length - 1;
   const alreadyActed = journeyIndex !== -1 && !isCurrentActor;
   const hop = journeyIndex !== -1 ? state.journey[journeyIndex] : undefined;
