@@ -39,12 +39,13 @@ import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, NodeExplanation } from "@/components/network3d/types";
 import type { PacketVisual } from "@/lib/sim-engine/types";
-import { LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
 import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
 import { explainNode } from "./explain";
 import { focusIndicesFor, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
 import { FIRST_CONNECTION_GUIDE_SECTIONS, FirstConnectionGuideContent } from "./LessonGuideContent";
 import { ARP_DEEP_DIVE_SECTIONS, ArpDeepDiveContent } from "./ArpDeepDiveContent";
+import { TCP_DEEP_DIVE_SECTIONS, TcpDeepDiveContent } from "./TcpDeepDiveContent";
 import { FirstConnection2DView } from "./FirstConnection2DView";
 import { STEP_BRIEFING, packetCalloutFor, type StepBriefing } from "./presentation";
 
@@ -77,28 +78,10 @@ const TCP_STATES = ["CLOSED", "SYN_SENT", "SYN_RECEIVED", "ESTABLISHED"];
 const GUIDE_TABS: LessonGuideTab[] = [
   { id: "lesson", label: "This Lesson", hint: "ARP in the Laptop → Server journey", sections: FIRST_CONNECTION_GUIDE_SECTIONS, content: <FirstConnectionGuideContent /> },
   { id: "arp", label: "ARP Deep Dive", hint: "How ARP works in general", sections: ARP_DEEP_DIVE_SECTIONS, content: <ArpDeepDiveContent /> },
+  { id: "tcp", label: "TCP Deep Dive", hint: "How TCP connections work", sections: TCP_DEEP_DIVE_SECTIONS, content: <TcpDeepDiveContent /> },
 ];
 
 type SceneDimension = "3d" | "2d";
-
-function GuideButton({ onClick, compact }: { onClick: () => void; compact?: boolean }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={clsx(
-        "group inline-flex items-center gap-2 rounded-full border border-pv-violet/50 bg-gradient-to-r from-pv-violet/20 to-pv-cyan/10 font-semibold text-pv-text shadow-[0_0_18px_rgba(139,140,248,0.25)] transition-all hover:border-pv-violet hover:shadow-[0_0_24px_rgba(139,140,248,0.4)]",
-        compact ? "px-3 py-1.5 text-[11px] uppercase tracking-wide" : "px-4 py-2 text-sm",
-      )}
-    >
-      <svg viewBox="0 0 24 24" className="h-4 w-4 text-pv-violet" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-        <path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5z" strokeLinejoin="round" />
-        <path d="M8 7h7M8 11h5" strokeLinecap="round" />
-      </svg>
-      Lesson Guide
-    </button>
-  );
-}
 
 function TCPStatePanel({ tcpState }: { tcpState: string }) {
   return (
@@ -430,7 +413,7 @@ export default function FirstConnectionDemo() {
             ARP, switching, routing, and the TCP handshake.
           </p>
         </div>
-        <GuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
       </div>
 
       <div className="mb-6 flex gap-1.5 overflow-x-auto pb-2">
@@ -648,7 +631,7 @@ export default function FirstConnectionDemo() {
               {dimSwitcher}
               {sceneDim === "3d" && <TopologyModeSwitcher options={[{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "freeOrbit", label: "Free Orbit" }]} value={cameraMode} onChange={handleCameraModeChange} />}
               {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
-              <GuideButton compact onClick={() => setGuideOpen(true)} />
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
             </>
           }
           header={
@@ -842,7 +825,7 @@ export default function FirstConnectionDemo() {
         />
       )}
 
-      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="ARP & Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={GUIDE_TABS} />
+      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={GUIDE_TABS} />
     </div>
   );
 }
