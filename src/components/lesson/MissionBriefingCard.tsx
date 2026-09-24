@@ -2,7 +2,7 @@
 
 import { clsx } from "clsx";
 
-export type BriefingTone = "cyan" | "violet" | "success" | "arp" | "ethernet" | "ip" | "tcp";
+export type BriefingTone = "cyan" | "violet" | "success" | "warning" | "danger" | "arp" | "ethernet" | "ip" | "tcp" | "ospf" | "bgp" | "mpls";
 
 export interface BriefingPhase {
   label: string;
@@ -17,6 +17,11 @@ const TONE_VAR: Record<BriefingTone, string> = {
   ethernet: "var(--pv-proto-ethernet)",
   ip: "var(--pv-proto-ip)",
   tcp: "var(--pv-proto-tcp)",
+  warning: "var(--pv-warning)",
+  danger: "var(--pv-danger)",
+  ospf: "var(--pv-proto-ospf)",
+  bgp: "var(--pv-proto-bgp)",
+  mpls: "var(--pv-proto-mpls)",
 };
 
 interface MissionBriefingCardProps {
