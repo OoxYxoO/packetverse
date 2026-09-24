@@ -162,10 +162,11 @@ function egressIfaceFor(router: RouterId, hop: JourneyHop | undefined, state: Mp
  * decision recorded only via `run()` with no `.packet`, the MAC-aging
  * lab, the fault/repair sequence) — these never touch `state.packet`, so
  * `deviceForStep` needs a fixed subject the way mpls-ldp's
- * `PRIMARY_TRANSITION_ROUTER` does. Every packet-carrying step instead
- * resolves from the packet's own `from`/`to` (sender priority, since
- * `state.journey` records each hop against the router that PERFORMED the
- * action, exactly like mpls-l2vpn-vpws and mpls-ldp).
+ * `PRIMARY_TRANSITION_ROUTER` does. A packet-carrying step otherwise
+ * resolves from the packet's own `from`/`to` (sender priority): for PUSH /
+ * core-forwarding visuals the sender is the router whose JourneyHop the
+ * step records. That is NOT true for ingress visuals — see
+ * `PACKET_INSPECTION_DEVICE` below.
  *
  * `pe3-parallel-copy` is deliberately included even though that step
  * pushes no journey hop for PE3 (it only updates PE3's FDB) — clicking
@@ -191,7 +192,26 @@ export const PRIMARY_TRANSITION_ROUTER: Partial<Record<string, RouterId>> = {
   "engineer-challenge-confirm": "PE1",
 };
 
+/**
+ * Packet steps whose visual shows the frame ARRIVING at a PE (CE → PE,
+ * P2 → PE2) or originating at a CE, while the step's run() records the
+ * modeled action — source learning, PW lookup, flood/split-horizon decision
+ * — as a JourneyHop on the receiving PE. Sender priority would point
+ * Historical at the CE/P router instead (an empty CE trace, or a P router's
+ * older transit hop).
+ */
+const PACKET_INSPECTION_DEVICE: Partial<Record<string, RouterId>> = {
+  "pe1-learn-ce1": "PE1",
+  "pe2-pw-lookup-learn-ce1": "PE2",
+  "pe2-learn-ce2-local": "PE2",
+  "move-ce2-to-pe3": "PE3",
+  "demonstrate-fault": "PE1",
+  "signature-fault-visual": "PE2",
+};
+
 export function deviceForStep(stepId: string, packet: PacketVisual | undefined): RouterId | undefined {
+  const processingDevice = PACKET_INSPECTION_DEVICE[stepId];
+  if (processingDevice) return processingDevice;
   if (packet) return (packet.from ?? packet.to) as RouterId;
   return PRIMARY_TRANSITION_ROUTER[stepId];
 }
