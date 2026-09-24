@@ -130,7 +130,7 @@ export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSele
                   const from = positionById.get(activePacket.fromId);
                   const to = positionById.get(activePacket.toId);
                   if (!from || !to) return null;
-                  return <Packet3D id={activePacket.packet.id} from={from} to={to} onSelect={onSelectPacket} selected={packetSelected} />;
+                  return <Packet3D id={activePacket.packet.id} from={from} to={to} onSelect={onSelectPacket} selected={packetSelected} callout={activePacket.callout} />;
                 })()}
               {floodCopies?.map((c) => {
                 const from = positionById.get(c.fromId);
