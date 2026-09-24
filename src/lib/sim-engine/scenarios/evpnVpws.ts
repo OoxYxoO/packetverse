@@ -822,8 +822,21 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     packet: (state) => vpwsPacket("frame-verify", "CE-A", state.election.primaryPe ?? "PE1", "Verification frame — CE-A → CE-B", "FRAME", { frame: { srcMac: CE_A_MAC, dstMac: CE_B_MAC }, labels: [] }),
     run: (state) => {
       const via = state.election.primaryPe ?? "PE1";
+      // The ingress Primary pushes the label the disposition PE (PE3) advertised.
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, via);
       return {
-        state: { ...state, direction: "ce-a-to-ce-b", packetAt: "CE-B", challengeStage: "frame-sent", journey: [...state.journey, { device: via, input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint PE3`, action: "SERVICE_LOOKUP", output: "Encapsulated and delivered to CE-B" }] },
+        state: {
+          ...state,
+          direction: "ce-a-to-ce-b",
+          packetAt: "CE-B",
+          challengeStage: "frame-sent",
+          journey: [
+            ...state.journey,
+            { device: via, input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint PE3`, action: "SERVICE_LOOKUP", output: `Encapsulated toward PE3 with service label ${serviceLabel ?? "(none)"}` },
+            { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE3" },
+            { device: "PE3", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-B AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" },
+          ],
+        },
         events: [{ type: "PACKET_RECEIVED", stepId: "verify-repair", timestamp: Date.now(), message: `CE-B receives the verification frame via ${via} — VPWS-500 fully restored` }],
       };
     },
@@ -844,10 +857,25 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     label: "Resend Traffic Through PE2",
     narrative: "Send CE-A → CE-B traffic once more, now through the new Primary.",
     packet: () => vpwsPacket("frame-challenge", "CE-A", "PE2", "Customer Ethernet frame — CE-A → CE-B (via PE2)", "FRAME", { frame: { srcMac: CE_A_MAC, dstMac: CE_B_MAC }, labels: [] }),
-    run: (state) => ({
-      state: { ...state, direction: "ce-a-to-ce-b", packetAt: "CE-B", challengeStage: "done", journey: [...state.journey, { device: "PE2", input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint PE3`, action: "SERVICE_LOOKUP", output: "Encapsulated and delivered to CE-B" }] },
-      events: [{ type: "PACKET_RECEIVED", stepId: "challenge-resend", timestamp: Date.now(), message: "CE-B receives traffic through PE2 — the virtual wire survived the failover" }],
-    }),
+    run: (state) => {
+      // PE2 is the ingress here — it pushes PE3's advertised label, not its own.
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, "PE2");
+      return {
+        state: {
+          ...state,
+          direction: "ce-a-to-ce-b",
+          packetAt: "CE-B",
+          challengeStage: "done",
+          journey: [
+            ...state.journey,
+            { device: "PE2", input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint PE3`, action: "SERVICE_LOOKUP", output: `Encapsulated toward PE3 with service label ${serviceLabel ?? "(none)"}` },
+            { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE3" },
+            { device: "PE3", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-B AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" },
+          ],
+        },
+        events: [{ type: "PACKET_RECEIVED", stepId: "challenge-resend", timestamp: Date.now(), message: "CE-B receives traffic through PE2 — the virtual wire survived the failover" }],
+      };
+    },
   },
   {
     id: "single-active-vs-all-active-vpws",
