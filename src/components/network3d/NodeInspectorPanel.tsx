@@ -89,8 +89,9 @@ export function NodeInspectorPanel({ explanation, packet, focusLayerIndices, xra
         <div key={t.title} className="rounded-lg border border-pv-border p-2.5">
           <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-pv-text-faint">{t.title}</p>
           <div className="space-y-0.5 pv-mono text-[11px]">
-            {t.rows.map((r) => (
-              <div key={r.label} className="flex justify-between gap-3">
+            {t.rows.map((r, rowIndex) => (
+              // Labels are not unique (an MTU-s has several "AC" bridge ports), so the sibling index disambiguates these static rows.
+              <div key={`${r.label}-${r.value}-${rowIndex}`} className="flex justify-between gap-3">
                 <span className="text-pv-text-faint">{r.label}</span>
                 <span className="text-pv-text">{r.value}</span>
               </div>
