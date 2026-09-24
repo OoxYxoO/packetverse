@@ -336,6 +336,7 @@ export default function EvpnBumDemo() {
   };
 
   const handleRestart = () => {
+    setAutoPlay(false);
     engine.restart();
     setCameraMode("overview");
     setEnteredDeviceId(undefined);
@@ -805,7 +806,11 @@ export default function EvpnBumDemo() {
                 links={links3D}
                 activePacket={inDeviceMode ? undefined : activePacket3D}
                 floodCopies={inDeviceMode ? undefined : floodCopies3D}
-                onSelectFloodCopy={setSelectedFloodCopyId}
+                onSelectFloodCopy={(id) => {
+                  // Newest explicit gesture wins — Link Detail outranks the copy inspector, so a stale link must not hide it.
+                  setSelectedFloodCopyId(id);
+                  setSelectedLinkId(undefined);
+                }}
                 selectedFloodCopyId={selectedFloodCopyId}
                 regions={regions3D}
                 onSelectNode={(id) => {
@@ -816,7 +821,10 @@ export default function EvpnBumDemo() {
                   setInspectorSurface("device");
                   setHistoricalIndex(undefined);
                 }}
-                onSelectLink={(id) => setSelectedLinkId(id)}
+                onSelectLink={(id) => {
+                  setSelectedLinkId(id);
+                  setSelectedFloodCopyId(undefined);
+                }}
                 onFocusLink={setFocusedObject}
                 selectedLinkId={selectedLinkId}
                 onSelectPacket={() => setPacketSelected(true)}
@@ -850,6 +858,13 @@ export default function EvpnBumDemo() {
               <>
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
                 <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
+              </>
+            ) : currentStep?.id === "repair-challenge" ? (
+              // Same priority as a question — this step gates advancement via
+              // `requiresState`, so Focus Mode must surface the challenge itself.
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
+                <RepairChallenge options={REPAIR_OPTIONS} attempt={state.repairAttempt} onTry={(choice) => engine.act({ choice })} />
               </>
             ) : selectedLinkDetail ? (
               <LinkDetailPanel
@@ -965,6 +980,8 @@ export default function EvpnBumDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
+                  setSelectedFloodCopyId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = evpnBumSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
