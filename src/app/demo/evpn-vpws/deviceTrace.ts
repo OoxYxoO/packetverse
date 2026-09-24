@@ -112,6 +112,12 @@ const CONTROL_PIPELINE_STAGES: ProcessingStage[] = [
   { id: "remote-discovered", label: "Remote Endpoint Discovered" },
   { id: "service-installed", label: "VPWS Service Installed" },
 ];
+/** PE3's own control plane — it advertises and learns VPWS-500, with no Ethernet Segment or Single-Active role. */
+const PE3_CONTROL_STAGES: ProcessingStage[] = [
+  { id: "adevi-advertised", label: "A-D Per-EVI Advertised" },
+  { id: "remote-discovered", label: "Remote Endpoint Discovered" },
+  { id: "service-installed", label: "VPWS Service Installed" },
+];
 const PE1_PE2_FORWARD_STAGES: ProcessingStage[] = [
   { id: "ac-ingress", label: "Access Circuit Ingress" },
   { id: "service-lookup", label: "Service Lookup (VPWS-500)" },
@@ -175,16 +181,25 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
     if (hop) return hopToTrace(device, hop, moment.stages, moment.activeStageId, state);
   }
 
-  const controlEnd = stepIndex("act2-intro");
+  // Everything before the first customer frame is control plane — Act 2 opens with A-D signaling, not forwarding.
+  const controlEnd = stepIndex("cea-sends-frame");
+  const routes = state.perEviAdRoutes;
+  const serviceUp = state.vpwsService?.status === "up";
   if (device === "PE1" || device === "PE2") {
     if (i < controlEnd) {
       const base: DeviceProcessingTrace = { deviceId: device, stages: CONTROL_PIPELINE_STAGES, completedStageIds: [] };
-      const adIndex = stepIndex(device === "PE1" ? "pe1-advertises-adevi" : "pe2-advertises-adevi");
       const electionIndex = stepIndex("single-active-election");
       if (i < electionIndex) return { ...base, activeStageId: "es-configured", completedStageIds: [] };
-      if (i < adIndex) return { ...base, activeStageId: "election", completedStageIds: ["es-configured"] };
-      if (i < stepIndex("vpws-route-discovery")) return { ...base, activeStageId: "adevi-advertised", completedStageIds: ["es-configured", "election"] };
-      return { ...base, completedStageIds: allIds(CONTROL_PIPELINE_STAGES) };
+      if (currentStepId === "single-active-election") return { ...base, activeStageId: "election", completedStageIds: ["es-configured"] };
+      if (currentStepId === (device === "PE1" ? "pe1-advertises-adevi" : "pe2-advertises-adevi")) return { ...base, activeStageId: "adevi-advertised", completedStageIds: ["es-configured", "election"] };
+      // Not this device's moment — show only the progress the scenario state actually records.
+      const own = routes[device];
+      const done = ["es-configured"];
+      if (state.election.primaryPe) done.push("election");
+      if (own && !own.withdrawn) done.push("adevi-advertised");
+      if (discoverVpwsEndpoint(routes, device)) done.push("remote-discovered");
+      if (serviceUp) done.push("service-installed");
+      return { ...base, completedStageIds: done };
     }
     if (device === "PE1" && state.pe1AcFailed) {
       return { deviceId: device, stages: PE1_PE2_FORWARD_STAGES, completedStageIds: [], lookupType: ACTION_LOOKUP_TYPE.AC_UNAVAILABLE, reason: ACTION_REASON.AC_UNAVAILABLE };
@@ -195,10 +210,22 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
     return { ...base, completedStageIds: allIds(PE1_PE2_FORWARD_STAGES) };
   }
 
-  // PE3
+  // PE3 — the remote VPWS endpoint: never a CE-A Ethernet Segment member, never in that Single-Active election.
   if (i < controlEnd) {
-    const base: DeviceProcessingTrace = { deviceId: "PE3", stages: CONTROL_PIPELINE_STAGES, completedStageIds: [] };
-    return { ...base, activeStageId: "es-configured", completedStageIds: [] };
+    const base: DeviceProcessingTrace = { deviceId: "PE3", stages: PE3_CONTROL_STAGES, completedStageIds: [] };
+    const own = routes.PE3;
+    const remote = discoverVpwsEndpoint(routes, "PE3");
+    if (currentStepId === "pe3-advertises-adevi") return { ...base, activeStageId: "adevi-advertised", completedStageIds: [...(remote ? ["remote-discovered"] : []), ...(serviceUp ? ["service-installed"] : [])] };
+    if (currentStepId === "vpws-route-discovery") {
+      return serviceUp
+        ? { ...base, activeStageId: "service-installed", completedStageIds: ["adevi-advertised", "remote-discovered"] }
+        : { ...base, activeStageId: "remote-discovered", completedStageIds: own ? ["adevi-advertised"] : [] };
+    }
+    const done: string[] = [];
+    if (own && !own.withdrawn) done.push("adevi-advertised");
+    if (remote) done.push("remote-discovered");
+    if (serviceUp) done.push("service-installed");
+    return { ...base, completedStageIds: done };
   }
   const base: DeviceProcessingTrace = { deviceId: "PE3", stages: PE3_EGRESS_STAGES, completedStageIds: [] };
   const delivered = state.journey.some((h) => h.device === "PE3" && h.action === "POP_SERVICE");
