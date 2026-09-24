@@ -324,6 +324,7 @@ export default function EvpnArpNdDemo() {
   };
 
   const handleRestart = () => {
+    setAutoPlay(false);
     engine.restart();
     setCameraMode("overview");
     setEnteredDeviceId(undefined);
@@ -454,7 +455,7 @@ export default function EvpnArpNdDemo() {
                 links={links3D}
                 activePacket={inDeviceMode ? undefined : activePacket3D}
                 floodCopies={inDeviceMode ? undefined : floodCopies3D}
-                onSelectFloodCopy={setSelectedFloodCopyId}
+                onSelectFloodCopy={(id) => { setSelectedFloodCopyId(id); setSelectedLinkId(undefined); }}
                 selectedFloodCopyId={selectedFloodCopyId}
                 regions={regions3D}
                 onSelectNode={(id) => { setSelectedNodeId(id as EvpnArpNdDeviceId); setSelectedLinkId(undefined); setSelectedFloodCopyId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
@@ -669,11 +670,11 @@ export default function EvpnArpNdDemo() {
                 links={links3D}
                 activePacket={inDeviceMode ? undefined : activePacket3D}
                 floodCopies={inDeviceMode ? undefined : floodCopies3D}
-                onSelectFloodCopy={setSelectedFloodCopyId}
+                onSelectFloodCopy={(id) => { setSelectedFloodCopyId(id); setSelectedLinkId(undefined); }}
                 selectedFloodCopyId={selectedFloodCopyId}
                 regions={regions3D}
                 onSelectNode={(id) => { setSelectedNodeId(id as EvpnArpNdDeviceId); setSelectedLinkId(undefined); setSelectedFloodCopyId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
-                onSelectLink={(id) => setSelectedLinkId(id)}
+                onSelectLink={(id) => { setSelectedLinkId(id); setSelectedFloodCopyId(undefined); }}
                 onFocusLink={setFocusedObject}
                 selectedLinkId={selectedLinkId}
                 onSelectPacket={() => setPacketSelected(true)}
@@ -800,6 +801,8 @@ export default function EvpnArpNdDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
+                  setSelectedFloodCopyId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = evpnArpNdSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
