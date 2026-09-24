@@ -39,11 +39,12 @@ import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, NodeExplanation } from "@/components/network3d/types";
 import type { PacketVisual } from "@/lib/sim-engine/types";
-import { LessonGuideDialog } from "@/components/lesson/LessonGuideDialog";
+import { LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
 import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
 import { explainNode } from "./explain";
 import { focusIndicesFor, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
 import { FIRST_CONNECTION_GUIDE_SECTIONS, FirstConnectionGuideContent } from "./LessonGuideContent";
+import { ARP_DEEP_DIVE_SECTIONS, ArpDeepDiveContent } from "./ArpDeepDiveContent";
 import { FirstConnection2DView } from "./FirstConnection2DView";
 import { STEP_BRIEFING, packetCalloutFor, type StepBriefing } from "./presentation";
 
@@ -72,6 +73,11 @@ function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number
 }
 
 const TCP_STATES = ["CLOSED", "SYN_SENT", "SYN_RECEIVED", "ESTABLISHED"];
+
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "ARP in the Laptop → Server journey", sections: FIRST_CONNECTION_GUIDE_SECTIONS, content: <FirstConnectionGuideContent /> },
+  { id: "arp", label: "ARP Deep Dive", hint: "How ARP works in general", sections: ARP_DEEP_DIVE_SECTIONS, content: <ArpDeepDiveContent /> },
+];
 
 type SceneDimension = "3d" | "2d";
 
@@ -836,9 +842,7 @@ export default function FirstConnectionDemo() {
         />
       )}
 
-      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="ARP & Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" sections={FIRST_CONNECTION_GUIDE_SECTIONS}>
-        <FirstConnectionGuideContent />
-      </LessonGuideDialog>
+      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="ARP & Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={GUIDE_TABS} />
     </div>
   );
 }
