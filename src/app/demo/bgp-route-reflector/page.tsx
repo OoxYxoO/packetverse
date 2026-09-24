@@ -525,6 +525,7 @@ export default function BgpRouteReflectorDemo() {
   };
 
   const handleRestart = () => {
+    setAutoPlay(false);
     awardedRef.current = false;
     autoSwitchedRef.current = false;
     engine.restart();
@@ -1203,6 +1204,34 @@ export default function BgpRouteReflectorDemo() {
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
                 <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
               </>
+            ) : currentStep?.id === "repair-challenge" ? (
+              // Same priority as a question — these two steps gate advancement via
+              // `requiresState`, so Focus Mode must surface the challenge itself.
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
+                <ChoiceChallenge
+                  prompt="Choose the correct repair for RR2's session with PE3:"
+                  options={REPAIR_OPTIONS}
+                  correctId="make-client"
+                  attempt={state.repairAttempt}
+                  wrongFeedback={WRONG_FEEDBACK}
+                  successMessage="✓ PE3 reconfigured as RR2's client — route reflected."
+                  onTry={(choice) => engine.act({ choice })}
+                />
+              </>
+            ) : currentStep?.id === "challenge-select" ? (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
+                <ChoiceChallenge
+                  prompt="Pick a Route Reflector redesign for the 6-PE network:"
+                  options={CHALLENGE_OPTIONS}
+                  correctId="two-rr-peered"
+                  attempt={state.challengeChoice !== undefined ? { choice: state.challengeChoice, correct: state.challengeSucceeded === true } : undefined}
+                  wrongFeedback={CHALLENGE_WRONG_FEEDBACK}
+                  successMessage={state.challengeCheck ? `✓ All ${CHALLENGE_PES.length} PEs covered — session count ${state.challengeCheck.sessionCount} (was ${fullMeshSessionCount(CHALLENGE_PES.length)}).` : "✓ Design validated."}
+                  onTry={(choice) => engine.act({ choice })}
+                />
+              </>
             ) : selectedLinkDetail ? (
               <LinkDetailPanel
                 detail={selectedLinkDetail}
@@ -1317,6 +1346,7 @@ export default function BgpRouteReflectorDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = rrSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
