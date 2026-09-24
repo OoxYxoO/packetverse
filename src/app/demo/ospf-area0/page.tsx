@@ -4,6 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
+import { resolveBriefing } from "@/components/lesson/briefing";
+import { PROTOCOL_HEX, packetCallout } from "@/components/lesson/packetCallout";
+import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
+import { OSPF_BRIEFING_NOTES, OSPF_BRIEFING_PHASES } from "./briefing";
 import { OSPF_LESSON_SECTIONS, OspfLessonGuideContent } from "./LessonGuideContent";
 import { OSPF_DEEP_DIVE_SECTIONS, OspfDeepDiveContent } from "./DeepDiveContent";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -24,7 +29,6 @@ import {
   type RouterId,
 } from "@/lib/sim-engine/scenarios/ospfArea0";
 import { GraphTopologyViewer, type GraphEdge, type GraphEdgeState } from "@/components/network/GraphTopologyViewer";
-import { GraphPacket } from "@/components/network/GraphPacket";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { ProtocolStateMachine } from "@/components/protocol/ProtocolStateMachine";
 import { LSDBViewer } from "@/components/protocol/LSDBViewer";
@@ -84,6 +88,12 @@ const GUIDE_TABS: LessonGuideTab[] = [
   { id: "lesson", label: "This Lesson", hint: "The Area 0 diamond, step by step", sections: OSPF_LESSON_SECTIONS, content: <OspfLessonGuideContent /> },
   { id: "deep", label: "OSPF Deep Dive", hint: "How OSPF works in general", sections: OSPF_DEEP_DIVE_SECTIONS, content: <OspfDeepDiveContent /> },
 ];
+
+/** Readable 3D bubble for the in-flight message (see ActivePacket3D.callout). */
+const withCallout = (p: ActivePacket3D | undefined): ActivePacket3D | undefined => (p ? { ...p, callout: packetCallout(p.packet) } : undefined);
+/** Third bubble line in 2D: where the message is going. */
+const packetScope = (p: PacketVisual) => (p.broadcast ? "multicast 224.0.0.5" : `${p.from} → ${p.to}`);
+const FLOOD_CALLOUT = { title: "LSU flood", color: PROTOCOL_HEX.OSPF };
 
 export default function OspfArea0Demo() {
   const { engine, snapshot } = useScenarioEngine<OspfState>(createOspfState(), ospfSteps);
@@ -581,6 +591,34 @@ export default function OspfArea0Demo() {
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Change cost to continue" : "Next Step →";
 
+  const briefing = currentStep ? resolveBriefing(currentStep.id, currentStep.label, OSPF_BRIEFING_PHASES, OSPF_BRIEFING_NOTES) : undefined;
+
+  /** 2D is overview-only — leaving 3D exits device mode so the panels match what is shown. */
+  function handleViewModeChange(v: typeof viewMode) {
+    setViewMode(v);
+    if (v !== "3d") {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  const selectNode2D = (id: string) => {
+    setSelectedNodeId(id as RouterId);
+    setPacketSelected(false);
+    setSelectedLinkId(undefined);
+    setInspectorSurface("device");
+    setHistoricalIndex(undefined);
+  };
+
+  const graph2D = (focus?: boolean) => (
+    <div className={focus ? "h-full [&>div]:!h-full [&>div]:rounded-none [&>div]:border-0" : undefined}>
+      <GraphTopologyViewer onNodeClick={focus ? selectNode2D : undefined} nodes={nodes} edges={edges} activeNodeIds={activeNodeIds} bestPathEdgeIds={viewMode === "logical" ? bestPathEdgeIds : []}>
+              {activePacket && packetFrom && packetTo && <GraphPacketBubble packet={activePacket} from={packetFrom} to={packetTo} scope={packetScope(activePacket)} />}
+            </GraphTopologyViewer>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
@@ -632,7 +670,7 @@ export default function OspfArea0Demo() {
             { value: "3d", label: "3D Explore" },
           ]}
           value={viewMode}
-          onChange={setViewMode}
+          onChange={handleViewModeChange}
         />
         {viewMode === "3d" && (
           <>
@@ -715,8 +753,8 @@ export default function OspfArea0Demo() {
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
-                activePacket={inDeviceMode ? undefined : dataPacket3D ? (showDataPlane ? dataPacket3D : undefined) : showControlPlane ? activePacket3D : undefined}
-                floodCopies={!inDeviceMode && showControlPlane ? floodCopies : []}
+                activePacket={inDeviceMode ? undefined : dataPacket3D ? (showDataPlane ? withCallout(dataPacket3D) : undefined) : showControlPlane ? withCallout(activePacket3D) : undefined}
+                floodCopies={!inDeviceMode && showControlPlane ? floodCopies.map((c) => ({ ...c, callout: FLOOD_CALLOUT })) : []}
                 onSelectFloodCopy={(id) => {
                   setSelectedFloodCopyId(id);
                   setPacketSelected(false);
@@ -914,21 +952,23 @@ export default function OspfArea0Demo() {
               )}
             </>
           ) : (
-            <GraphTopologyViewer nodes={nodes} edges={edges} activeNodeIds={activeNodeIds} bestPathEdgeIds={viewMode === "logical" ? bestPathEdgeIds : []}>
-              {activePacket && packetFrom && packetTo && <GraphPacket packet={activePacket} from={packetFrom} to={packetTo} />}
-            </GraphTopologyViewer>
+            <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+              {focusMode ? <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" /> : graph2D()}
+            </TopologyFrame>
           )}
 
-          {!isComplete && currentStep && (
-            <GlassPanel strong className="p-6">
-              <div className="mb-2 flex items-center gap-2">
-                <Badge tone="muted">
-                  Step {index + 1} / {totalSteps}
-                </Badge>
-                <span className="text-xs text-pv-text-faint">{currentStep.label}</span>
-              </div>
-              <p className="text-sm leading-relaxed text-pv-text">{currentStep.narrative}</p>
-            </GlassPanel>
+          {!isComplete && currentStep && briefing && (
+            <MissionBriefingCard
+              stepNumber={index + 1}
+              totalSteps={totalSteps}
+              title={currentStep.label}
+              phase={briefing.phase}
+              objective={briefing.objective}
+              context={currentStep.narrative}
+              doingNow={briefing.doingNow}
+              takeaway={briefing.takeaway}
+              questionPending={questionActive}
+            />
           )}
 
           {!isComplete && currentStep?.question && (
@@ -1046,50 +1086,42 @@ export default function OspfArea0Demo() {
           toolbar={
             <>
               <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
-              <TopologyModeSwitcher
-                options={[
-                  { value: "overview", label: "Overview" },
-                  { value: "device", label: "Device" },
-                  { value: "packetFollow", label: "Packet Follow" },
-                  { value: "spf", label: "SPF Analysis" },
-                  { value: "freeOrbit", label: "Free Orbit" },
-                ]}
-                value={cameraMode}
-                onChange={handleCameraModeChange}
-              />
+              <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={viewMode === "3d" ? "3d" : "2d"} onChange={(v) => handleViewModeChange(v === "3d" ? "3d" : viewMode === "3d" ? "physical" : viewMode)} />
+              {viewMode === "3d" && (
+                <TopologyModeSwitcher
+                  options={[
+                    { value: "overview", label: "Overview" },
+                    { value: "device", label: "Device" },
+                    { value: "packetFollow", label: "Packet Follow" },
+                    { value: "spf", label: "SPF Analysis" },
+                    { value: "freeOrbit", label: "Free Orbit" },
+                  ]}
+                  value={cameraMode}
+                  onChange={handleCameraModeChange}
+                />
+              )}
               {inDeviceMode && (
                 <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />
               )}
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">
-                  Step {index + 1} / {totalSteps}
-                </Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label}</span>
-              </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Prediction pending — answer in the panel to continue
-                </span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            currentStep && briefing ? (
+              <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={briefing.objective} questionPending={questionActive} />
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Lesson complete</span>
+            )
           }
           canvas={
+            viewMode !== "3d" ? (
+              graph2D(true)
+            ) : (
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
-                activePacket={inDeviceMode ? undefined : dataPacket3D ? (showDataPlane ? dataPacket3D : undefined) : showControlPlane ? activePacket3D : undefined}
-                floodCopies={!inDeviceMode && showControlPlane ? floodCopies : []}
+                activePacket={inDeviceMode ? undefined : dataPacket3D ? (showDataPlane ? withCallout(dataPacket3D) : undefined) : showControlPlane ? withCallout(activePacket3D) : undefined}
+                floodCopies={!inDeviceMode && showControlPlane ? floodCopies.map((c) => ({ ...c, callout: FLOOD_CALLOUT })) : []}
                 onSelectFloodCopy={(id) => {
                   setSelectedFloodCopyId(id);
                   setPacketSelected(false);
@@ -1131,6 +1163,7 @@ export default function OspfArea0Demo() {
                 }
               />
             </div>
+            )
           }
           inspector={
             currentStep?.question ? (
@@ -1297,7 +1330,7 @@ export default function OspfArea0Demo() {
                 followPacket={cameraMode === "packetFollow"}
                 onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
                 view3D={viewMode === "3d"}
-                onToggleView3D={() => setViewMode((v) => (v === "3d" ? "physical" : "3d"))}
+                onToggleView3D={() => handleViewModeChange(viewMode === "3d" ? "physical" : "3d")}
               />
             </div>
           }

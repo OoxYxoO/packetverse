@@ -11,7 +11,7 @@ import { CameraController3D } from "./CameraController3D";
 import { DeviceInteriorScene3D } from "./DeviceInteriorScene3D";
 import { HopCallout3D } from "./HopCallout3D";
 import { THEME } from "./theme";
-import type { ActivePacket3D, DeviceInterfaceData, DeviceProcessingTrace, FocusTarget3D, Link3DData, Node3DData, PacketStackFrame, Region3DData } from "./types";
+import type { ActivePacket3D, DeviceInterfaceData, DeviceProcessingTrace, FocusTarget3D, Link3DData, Node3DData, PacketCallout3D, PacketStackFrame, Region3DData } from "./types";
 
 interface DeviceViewProps {
   deviceLabel: string;
@@ -35,6 +35,8 @@ export interface FloodCopy3D {
   id: string;
   fromId: string;
   toId: string;
+  /** Optional readable bubble for this copy — see `ActivePacket3D.callout`. */
+  callout?: PacketCallout3D;
 }
 
 interface NetworkScene3DProps {
@@ -136,7 +138,7 @@ export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSele
                 const from = positionById.get(c.fromId);
                 const to = positionById.get(c.toId);
                 if (!from || !to) return null;
-                return <Packet3D key={c.id} id={c.id} from={from} to={to} color={THEME.warning} duration={1.6} onSelect={() => onSelectFloodCopy?.(c.id)} selected={selectedFloodCopyId === c.id} />;
+                return <Packet3D key={c.id} id={c.id} from={from} to={to} color={THEME.warning} duration={1.6} onSelect={() => onSelectFloodCopy?.(c.id)} selected={selectedFloodCopyId === c.id} callout={c.callout} />;
               })}
             </>
           ) : (
