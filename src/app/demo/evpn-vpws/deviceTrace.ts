@@ -158,11 +158,15 @@ const SIGNATURE_MOMENT: Record<string, { device: "PE1" | "PE2" | "PE3"; action: 
     { device: "PE3", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
     { device: "PE2", action: "POP_SERVICE", stages: PE3_EGRESS_STAGES, activeStageId: "forward-ce" },
   ],
+  // restore-pe1-ac re-elects PE1 before the MTU fault, so verify-repair's ingress is always PE1.
   "verify-repair": [
     { device: "PE1", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
-    { device: "PE2", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
+    { device: "PE3", action: "POP_SERVICE", stages: PE3_EGRESS_STAGES, activeStageId: "forward-ce" },
   ],
-  "challenge-resend": [{ device: "PE2", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" }],
+  "challenge-resend": [
+    { device: "PE2", action: "SERVICE_LOOKUP", stages: PE1_PE2_FORWARD_STAGES, activeStageId: "service-lookup" },
+    { device: "PE3", action: "POP_SERVICE", stages: PE3_EGRESS_STAGES, activeStageId: "forward-ce" },
+  ],
 };
 
 export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpwsState, currentStepId: string): DeviceProcessingTrace {
