@@ -322,7 +322,9 @@ export default function BgpEnterpriseDemo() {
   // selectedNodeId > effectiveDeviceId > activeDeviceId. Decoupled from
   // `inDeviceMode` so a plain node click (no "Enter Device") already
   // shows that router's Hop Inspector inside Focus Mode.
-  const focusInspectDeviceId = (selectedNodeId ?? effectiveDeviceId ?? activeDeviceId) as RouterId | undefined;
+  // DEST (AS65030) is a topology node, not a lesson-modeled router — it has no trace or interfaces, so a DEST selection never becomes the Hop Inspector target.
+  const selectedRouterId = selectedNodeId && DEVICE_ROUTERS.includes(selectedNodeId as RouterId) ? (selectedNodeId as RouterId) : undefined;
+  const focusInspectDeviceId = (selectedRouterId ?? effectiveDeviceId ?? activeDeviceId) as RouterId | undefined;
   const focusTrace =
     focusInspectDeviceId && dataPacketAtRouter === focusInspectDeviceId && dataPacketNextRouter
       ? dataForwardTrace(focusInspectDeviceId, dataPacketNextRouter)
@@ -598,6 +600,7 @@ export default function BgpEnterpriseDemo() {
   };
 
   const handleRestart = () => {
+    setAutoPlay(false);
     awardedRef.current = false;
     engine.restart();
     setCameraMode("overview");
@@ -1316,6 +1319,20 @@ export default function BgpEnterpriseDemo() {
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Current Prediction</p>
                 <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />
               </>
+            ) : currentStep?.id === "challenge" ? (
+              // Same priority as a question — this step gates advancement via
+              // `requiresState`, so Focus Mode must surface the challenge itself.
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Engineer Challenge</p>
+                <ChallengeControl
+                  options={LOCAL_PREF_OPTIONS}
+                  triedValue={state.challengeLocalPref}
+                  succeeded={state.challengeSucceeded}
+                  bestIsp={state.bgpTables.R1.find((p) => p.best)?.isp}
+                  bestCost={state.bgpTables.R1.find((p) => p.best)?.attrs.localPref}
+                  onTry={(localPref) => engine.act({ localPref })}
+                />
+              </>
             ) : selectedLinkDetail ? (
               <LinkDetailPanel
                 detail={selectedLinkDetail}
@@ -1430,6 +1447,7 @@ export default function BgpEnterpriseDemo() {
                   }
                   setHistoricalIndex(entry.index);
                   setFocusedObject(undefined);
+                  setSelectedLinkId(undefined);
                   const histState = engine.getStateAt(entry.index);
                   const histStep = bgpSteps[entry.index];
                   const histPacket = histStep && histState ? histStep.packet?.(histState) : undefined;
