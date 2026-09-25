@@ -22,7 +22,11 @@ import {
   type RouterId,
 } from "@/lib/sim-engine/scenarios/mplsLdp";
 import { GraphTopologyViewer, type GraphEdge } from "@/components/network/GraphTopologyViewer";
-import { GraphPacket } from "@/components/network/GraphPacket";
+import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
+import { resolveBriefing } from "@/components/lesson/briefing";
+import { bubblePacket } from "@/components/lesson/mplsStack";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { ProtocolStateMachine } from "@/components/protocol/ProtocolStateMachine";
 import { LibViewer, LfibViewer } from "@/components/protocol/LibLfibViewer";
@@ -53,6 +57,15 @@ import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus } from "@/components/network3d/types";
 import { PRIMARY_TRANSITION_ROUTER, deviceForStep, explainRouter, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { ldpCallout } from "./callout";
+import { LDP_BRIEFING_NOTES, LDP_BRIEFING_PHASES } from "./briefing";
+import { LDP_LESSON_SECTIONS, LdpLessonGuideContent } from "./LessonGuideContent";
+import { LDP_DEEP_DIVE_SECTIONS, LdpDeepDiveContent } from "./DeepDiveContent";
+
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "CE1 → PE1 → P1 → P2 → PE2 → CE2 · FEC 4.4.4.4/32", sections: LDP_LESSON_SECTIONS, content: <LdpLessonGuideContent /> },
+  { id: "deep", label: "MPLS & LDP Deep Dive", hint: "Labels, stacks and LDP in general", sections: LDP_DEEP_DIVE_SECTIONS, content: <LdpDeepDiveContent /> },
+];
 
 const DEVICE_ROUTERS: RouterId[] = ["PE1", "P1", "P2", "PE2"];
 
@@ -93,6 +106,7 @@ export default function MplsLdpDemo() {
   const [selectedLinkId, setSelectedLinkId] = useState<string | undefined>(undefined);
   const [packetSelected, setPacketSelected] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -156,7 +170,7 @@ export default function MplsLdpDemo() {
     return { id: e.id, a: e.a, b: e.b, label: e.label, active, onPath: st === "OPERATIONAL" };
   });
 
-  const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to, callout: ldpCallout(activePacket) } : undefined;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
   // Which router is actively processing right now — drives Follow-Packet auto-enter and the Hop Inspector's default target.
@@ -411,9 +425,41 @@ export default function MplsLdpDemo() {
   }));
   const focusIgp = state.igpRoutes[focusRouter];
 
+  const briefing = currentStep ? resolveBriefing(currentStep.id, currentStep.label, LDP_BRIEFING_PHASES, LDP_BRIEFING_NOTES) : undefined;
+
+  /** 2D is overview-only — leaving 3D exits device mode so the panels match what is shown. */
+  function handleViewModeChange(v: typeof viewMode) {
+    setViewMode(v);
+    if (v !== "3d") {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  const selectNode2D = (id: string) => {
+    setSelectedNodeId(id);
+    setPacketSelected(false);
+    setSelectedLinkId(undefined);
+    setInspectorSurface("device");
+    setHistoricalIndex(undefined);
+  };
+
+  const graph2D = (focus?: boolean) => (
+    <div className={focus ? "h-full [&>div]:!h-full [&>div]:rounded-none [&>div]:border-0" : undefined}>
+      <GraphTopologyViewer onNodeClick={focus ? selectNode2D : undefined} nodes={GRAPH_NODES} edges={edges} activeNodeIds={activeNodeIds} regions={GRAPH_REGIONS}>
+        {activePacket && packetFrom && packetTo && (() => {
+          const c = ldpCallout(activePacket);
+          return <GraphPacketBubble packet={bubblePacket(activePacket, c)} from={packetFrom} to={packetTo} title={c.title} scope={`${activePacket.from} → ${activePacket.to}`} />;
+        })()}
+      </GraphTopologyViewer>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
         <Badge tone="cyan" className="mb-3">
           MPLS · LDP · Label Switching (Transport Only)
         </Badge>
@@ -422,6 +468,9 @@ export default function MplsLdpDemo() {
           CE1 → PE1 → P1 → P2 → PE2 → CE2. Bring up LDP yourself, watch label bindings distribute upstream from PE2, then push, swap
           and pop a real label stack across the core.
         </p>
+      </div>
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="MPLS: Label Switching with LDP" subtitle="PE1 · P1 · P2 · PE2 · FEC 4.4.4.4/32" tabs={GUIDE_TABS} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -465,7 +514,7 @@ export default function MplsLdpDemo() {
             <button
               key={m}
               type="button"
-              onClick={() => setViewMode(m)}
+              onClick={() => handleViewModeChange(m)}
               className={clsx(
                 "rounded-full px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors",
                 viewMode === m ? "bg-pv-cyan/15 text-pv-cyan-soft" : "text-pv-text-faint hover:text-pv-text",
@@ -506,9 +555,9 @@ export default function MplsLdpDemo() {
         {/* MAIN COLUMN */}
         <div className="space-y-6">
           {viewMode === "physical" ? (
-            <GraphTopologyViewer nodes={GRAPH_NODES} edges={edges} activeNodeIds={activeNodeIds} regions={GRAPH_REGIONS}>
-              {activePacket && packetFrom && packetTo && <GraphPacket packet={activePacket} from={packetFrom} to={packetTo} />}
-            </GraphTopologyViewer>
+            <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+              {focusMode ? <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" /> : graph2D()}
+            </TopologyFrame>
           ) : viewMode === "labelFlow" ? (
             <LabelFlowView nodes={labelFlowNodes} />
           ) : (
@@ -632,16 +681,18 @@ export default function MplsLdpDemo() {
             <ForwardingDecisionCard router={lastHop.router} input={lastHop.input} lookup={lastHop.lookup} action={lastHop.action} output={lastHop.output} />
           )}
 
-          {!isComplete && currentStep && (
-            <GlassPanel strong className="p-6">
-              <div className="mb-2 flex items-center gap-2">
-                <Badge tone="muted">
-                  Step {index + 1} / {totalSteps}
-                </Badge>
-                <span className="text-xs text-pv-text-faint">{currentStep.label}</span>
-              </div>
-              <p className="text-sm leading-relaxed text-pv-text">{currentStep.narrative}</p>
-            </GlassPanel>
+          {!isComplete && currentStep && briefing && (
+            <MissionBriefingCard
+              stepNumber={index + 1}
+              totalSteps={totalSteps}
+              title={currentStep.label}
+              phase={briefing.phase}
+              objective={briefing.objective}
+              context={currentStep.narrative}
+              doingNow={briefing.doingNow}
+              takeaway={briefing.takeaway}
+              questionPending={questionActive}
+            />
           )}
 
           {!isComplete && currentStep?.question && (
@@ -783,43 +834,36 @@ export default function MplsLdpDemo() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
-              <TopologyModeSwitcher
-                options={[
-                  { value: "overview", label: "Overview" },
-                  { value: "device", label: "Device" },
-                  { value: "packetFollow", label: "Packet Follow" },
-                  { value: "freeOrbit", label: "Free Orbit" },
-                ]}
-                value={cameraMode}
-                onChange={handleCameraModeChange}
-              />
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
+              <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={viewMode === "3d" ? "3d" : "2d"} onChange={(v) => handleViewModeChange(v === "3d" ? "3d" : viewMode === "3d" ? "physical" : viewMode)} />
+              {viewMode === "3d" && (
+                <TopologyModeSwitcher
+                  options={[
+                    { value: "overview", label: "Overview" },
+                    { value: "device", label: "Device" },
+                    { value: "packetFollow", label: "Packet Follow" },
+                    { value: "freeOrbit", label: "Free Orbit" },
+                  ]}
+                  value={cameraMode}
+                  onChange={handleCameraModeChange}
+                />
+              )}
               {inDeviceMode && (
                 <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "Forwarding X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />
               )}
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">
-                  Step {index + 1} / {totalSteps}
-                </Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label}</span>
-              </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Prediction pending — answer in the panel to continue
-                </span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            currentStep && briefing ? (
+              <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={briefing.objective} questionPending={questionActive} />
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Lesson complete</span>
+            )
           }
           canvas={
+            viewMode !== "3d" ? (
+              graph2D(true)
+            ) : (
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
               <NetworkScene3D
                 nodes={nodes3D}
@@ -861,6 +905,7 @@ export default function MplsLdpDemo() {
                 }
               />
             </div>
+            )
           }
           inspector={
             currentStep?.question ? (
@@ -1021,7 +1066,8 @@ export default function MplsLdpDemo() {
                 followPacket={cameraMode === "packetFollow"}
                 onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
                 view3D={viewMode === "3d"}
-                onToggleView3D={() => setViewMode((v) => (v === "3d" ? "physical" : "3d"))}
+                onToggleView3D={() => handleViewModeChange(viewMode === "3d" ? "physical" : "3d")}
+
               />
             </div>
           }
