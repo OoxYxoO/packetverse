@@ -622,7 +622,7 @@ export const l3vpnSteps: ScenarioStep<L3VpnState>[] = [
   {
     id: "push-transport-label",
     label: "PE1: PUSH Transport Label",
-    narrative: "PE1 pushes the transport label on top — 102, from the LDP-built LFIB toward P1. The VPN label is now buried underneath, S=0.",
+    narrative: "PE1 pushes the transport label on top — 102, from the LDP-built LFIB toward P1. The VPN label is now underneath and remains the bottom of the stack (S=1); the new transport label on top has S=0.",
     packet: (state) => (state.packet ? mplsPacket("push-transport", "PE1", "P1", "PUSH Transport 102", "PUSH", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
