@@ -1080,7 +1080,7 @@ export const srv6PolicySteps: ScenarioStep<Srv6PolicyState>[] = [
     id: "r6-deliver",
     label: "R6 → RECEIVER6: Delivered",
     narrative: "Path taken: R1 → R3 → R5 → R6 → RECEIVER6 — the SR Policy's active candidate, not the ordinary IGP-shortest TOP path.",
-    packet: (state) => (state.packet ? policyPacket("r6-deliver", "R6", "RECEIVER6", "Decap + adjacency cross-connect to RECEIVER6", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? policyPacket("r6-dx6-input", "R6", "R6", "Stage shown: at R6 before End.DX6 decap — outer DA = R6 End.DX6, SL 0 (the input R6 decapsulates and cross-connects to RECEIVER6)", "END.DX6", state.packet) : undefined),
     run: (state) => ({ state: { ...state, journey: [...state.journey, { router: "R6", input: "IPv6 probe", lookup: "End.DX6: decapsulate, cross-connect to RECEIVER6", action: "DECAP_IPV6", output: "Delivered to RECEIVER6" }] }, events: [] }),
     whatChanged: () => ["Delivered R1 → R3 → R5 → R6 → RECEIVER6 via SR Policy CP-EXPLICIT — not the ordinary IGP-shortest TOP path"],
   },
