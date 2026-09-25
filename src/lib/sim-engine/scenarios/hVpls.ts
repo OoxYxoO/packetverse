@@ -1031,7 +1031,8 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
     id: "known-unicast-hierarchy-path",
     label: "Known Unicast, Hierarchically: MTU2 → PE2 → PE1 → MTU1 → CE1",
     narrative: `MTU2 learns ${CE_MAC.CE3} → AC: CE3, looks up ${CE_MAC.CE1}: REMOTE_UNICAST → SPOKE_PW: PE2 (already known). PE2 looks up ${CE_MAC.CE1}: known → MESH_PW: PE1 directly (not via PE3). PE1 looks up ${CE_MAC.CE1}: known → SPOKE_PW: MTU1. MTU1 looks up ${CE_MAC.CE1}: LOCAL_UNICAST → AC: CE1. Every hop is now a single, direct copy — no flooding anywhere on this path.`,
-    packet: (state) => (state.packet ? hvplsPacket("ce3-known-path", "MTU2", "MTU1", "Known unicast — spoke → mesh → spoke", "PUSH", state.packet) : undefined),
+    // Each PW segment (spoke → mesh → spoke) carries its own labels, so the packet shows the first real segment; the journey covers the rest.
+    packet: (state) => (state.packet ? hvplsPacket("ce3-known-path", "MTU2", "PE2", "Known unicast — spoke segment MTU2 → PE2", "PUSH", buildVplsLabelStack(state.packet.frame, allocateSpokeReceiveLabel("PE2", "MTU2"), transportLabelToward("PE2"))) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const { fdb: fdbMtu2 } = learnSourceMac(fdbFor(state, "MTU2"), CE_MAC.CE3, { kind: "AC", peer: "CE3" });
@@ -1171,7 +1172,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
     id: "signature-fault-visual",
     label: "PE1 Cannot Relay — Because It Thinks This Is A Mesh Port",
     narrative: `PE1 learns ${CE_MAC.CE1} on what it now believes is a MESH_PW, looks up ${CE_MAC.CE3}: UNKNOWN_UNICAST. Raw egress = [MESH_PW: PE2, MESH_PW: PE3] (both classified as mesh; PE1's OWN spoke-facing port is also now misclassified as MESH_PW). Ingress kind = MESH_PW → hierarchical split horizon strips EVERY mesh-classified port from egress, including PE2 and PE3. Final egress = []. Decision: SPLIT_HORIZON_BLOCKED. No remote site receives this frame — not because any pseudowire is down, but because PE1's OWN classification of its spoke made the correct SPOKE → MESH rule inapplicable.`,
-    packet: (state) => (state.packet ? hvplsPacket("fault-pe1-in", "MTU1", "PE1", "Spoke label lookup (misclassified)", "SPOKE", state.packet) : undefined),
+    packet: (state) => (state.packet ? hvplsPacket("fault-pe1-in", "MTU1", "PE1", "Spoke label lookup (misclassified)", "SPOKE", buildVplsLabelStack(state.packet.frame, allocateSpokeReceiveLabel("PE1", "MTU1"), transportLabelToward("PE1"))) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const { fdb } = learnSourceMac(fdbFor(state, "PE1"), CE_MAC.CE1, { kind: state.spokeRoleByPe.PE1, peer: "MTU1" });
@@ -1182,7 +1183,8 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const final = applyHierarchicalSplitHorizon(raw, ingress);
       const decision = classifyHvplsForwardingDecision(lookup, raw, final);
       const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Ingress classified as ${ingress.kind} (should be SPOKE_PW); egress [${raw.map(portLabel).join(", ")}] → [${final.map(portLabel).join(", ") || "(none)"}]`, action: "MESH_SPLIT_HORIZON_BLOCK" as JourneyAction, output: `${CE_MAC.CE3} unreachable via PE1 — no remote site receives this frame`, ingressPeer: "MTU1" as RouterId }];
-      return { state: { ...state, packetAt: "PE1", journey, fdb: { ...state.fdb, PE1: fdb }, lastDecision: decision }, events: [{ type: "PACKET_DROPPED", stepId: "signature-fault-visual", timestamp: Date.now(), message: "PE1 cannot relay its own misclassified spoke onto the mesh — every mesh-classified port is excluded, including the spoke itself" }] };
+      const afterPop = processCoreTransportLabel(buildVplsLabelStack(state.packet.frame, allocateSpokeReceiveLabel("PE1", "MTU1"), transportLabelToward("PE1")), "IMPLICIT_NULL");
+      return { state: { ...state, packet: afterPop, packetAt: "PE1", journey, fdb: { ...state.fdb, PE1: fdb }, lastDecision: decision }, events: [{ type: "PACKET_DROPPED", stepId: "signature-fault-visual", timestamp: Date.now(), message: "PE1 cannot relay its own misclassified spoke onto the mesh — every mesh-classified port is excluded, including the spoke itself" }] };
     },
     whatChanged: () => ["Decision: SPLIT_HORIZON_BLOCKED — no remote site receives the frame"],
   },
@@ -1245,7 +1247,7 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
     id: "verify-spoke-to-mesh-restored",
     label: "PE1: SPOKE → MESH Works Again",
     narrative: `PE1's ingress port toward MTU1 is now correctly classified SPOKE_PW. Split horizon no longer restricts it — PE1 floods to both mesh peers again.`,
-    packet: (state) => (state.packet ? hvplsPacket("verify-pe1-flood", "MTU1", "PE1", "Spoke label lookup (repaired)", "SPOKE", state.packet) : undefined),
+    packet: (state) => (state.packet ? hvplsPacket("verify-pe1-flood", "MTU1", "PE1", "Spoke label lookup (repaired)", "SPOKE", buildVplsLabelStack(state.packet.frame, allocateSpokeReceiveLabel("PE1", "MTU1"), transportLabelToward("PE1"))) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const { fdb } = learnSourceMac(fdbFor(state, "PE1"), CE_MAC.CE1, { kind: "SPOKE_PW", peer: "MTU1" });
@@ -1255,7 +1257,8 @@ export const hVplsSteps: ScenarioStep<HvplsState>[] = [
       const raw = computeVplsEgressSet(ports, ingress, lookup);
       const final = applyHierarchicalSplitHorizon(raw, ingress);
       const journey = [...state.journey, { device: "PE1" as RouterId, input: `label ${allocateSpokeReceiveLabel("PE1", "MTU1")}`, lookup: `Ingress correctly classified SPOKE_PW; egress [${raw.map(portLabel).join(", ")}]`, action: "SPOKE_INGRESS" as JourneyAction, output: `Flood to: ${final.map(portLabel).join(", ")}`, ingressPeer: "MTU1" as RouterId }];
-      return { state: { ...state, packetAt: "PE1", journey, fdb: { ...state.fdb, PE1: fdb }, floodCopies: [{ id: "fc-v-pe1-pe2", fromId: "PE1", toId: "PE2" }, { id: "fc-v-pe1-pe3", fromId: "PE1", toId: "PE3" }] }, events: [] };
+      const afterPop = processCoreTransportLabel(buildVplsLabelStack(state.packet.frame, allocateSpokeReceiveLabel("PE1", "MTU1"), transportLabelToward("PE1")), "IMPLICIT_NULL");
+      return { state: { ...state, packet: afterPop, packetAt: "PE1", journey, fdb: { ...state.fdb, PE1: fdb }, floodCopies: [{ id: "fc-v-pe1-pe2", fromId: "PE1", toId: "PE2" }, { id: "fc-v-pe1-pe3", fromId: "PE1", toId: "PE3" }] }, events: [] };
     },
     whatChanged: () => ["PE1 floods to both mesh peers again — the repair, not a relaxed split-horizon rule, fixed this"],
   },
