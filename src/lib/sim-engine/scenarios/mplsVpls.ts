@@ -100,8 +100,8 @@ export interface MplsPacketState {
 }
 function pushLabel(pkt: MplsPacketState, value: number, purpose: LabelPurpose): MplsPacketState {
   const wasEmpty = pkt.labels.length === 0;
-  const rest = pkt.labels.map((l) => ({ ...l, bottomOfStack: false }));
-  return { ...pkt, labels: [{ value, bottomOfStack: wasEmpty, purpose }, ...rest] };
+  // Existing labels keep their S bits: only the label pushed onto an empty stack is bottom-of-stack.
+  return { ...pkt, labels: [{ value, bottomOfStack: wasEmpty, purpose }, ...pkt.labels.map((l) => ({ ...l }))] };
 }
 function swapTopLabel(pkt: MplsPacketState, value: number): MplsPacketState {
   if (pkt.labels.length === 0) return pkt;
@@ -109,8 +109,9 @@ function swapTopLabel(pkt: MplsPacketState, value: number): MplsPacketState {
   return { ...pkt, labels: [{ ...top, value }, ...rest] };
 }
 function popTopLabel(pkt: MplsPacketState): MplsPacketState {
+  // Remaining labels keep their S bits unchanged.
   const [, ...rest] = pkt.labels;
-  return { ...pkt, labels: rest.map((l, i) => (i === 0 ? { ...l, bottomOfStack: true } : l)) };
+  return { ...pkt, labels: rest.map((l) => ({ ...l })) };
 }
 export type LabelBindingValue = number | "IMPLICIT_NULL";
 export function fmtLabel(v: LabelBindingValue): string {
