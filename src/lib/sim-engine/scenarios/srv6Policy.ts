@@ -1043,12 +1043,8 @@ export const srv6PolicySteps: ScenarioStep<Srv6PolicyState>[] = [
     id: "r3-execute-endx",
     label: "R3: Execute End.X",
     narrative: `End.X performs the SAME segment advancement as End: Segments Left 1 → 0, DA → ${R6_DX6_SID}. The DA is NOT rewritten to R5's address — forwarding is forced via the bound adjacency R3→R5.`,
-    packet: (state) => {
-      if (!state.packet) return undefined;
-      const entry = entryFor(state, "R3", FUNCTION.END_X);
-      const outcome = processSrv6EndpointBehavior(entry, state.packet.outer.daHextets, state.packet.outer.srh, state.packet.inner, EMPTY_VRFS);
-      return policyPacket("r3-endx", "R3", "R3", "End.X: SL 1→0, DA R3→R6", "END.X", { ...state.packet, outer: { ...state.packet.outer, daHextets: outcome.newDaHextets!, srh: outcome.newSrh } });
-    },
+    // run() already executed this endpoint behavior; the engine renders packet() from that POST-run state, so show it as-is (never execute the behavior a second time).
+    packet: (state) => (state.packet ? policyPacket("r3-endx", "R3", "R3", "End.X: SL 1→0, DA R3→R6", "END.X", state.packet) : undefined),
     run: (state) => {
       const entry = entryFor(state, "R3", FUNCTION.END_X);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, EMPTY_VRFS);
@@ -1197,7 +1193,7 @@ export const srv6PolicySteps: ScenarioStep<Srv6PolicyState>[] = [
     id: "failover-transit",
     label: "R1 → R3 → R4 → R6 → RECEIVER6",
     narrative: "R3's plain End SID completes and advances toward R6; ordinary IPv6 FIB (with R3-R5 down) now takes R3→R4→R6; R6's End.DX6 decapsulates and delivers to RECEIVER6.",
-    packet: (state) => (state.packet ? policyPacket("failover-deliver", "R3", "RECEIVER6", "Delivered via CP-DYNAMIC's new path", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? policyPacket("failover-stage", "R3", "R6", "Stage shown: after R3 End (DA → R6 End.DX6, SL 0), before R6 End.DX6 decap — CP-DYNAMIC path R3 → R4 → R6", "FIB", state.packet) : undefined),
     run: (state) => {
       const r3 = entryFor(state, "R3", FUNCTION.END);
       const outcome = processSrv6EndpointBehavior(r3, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, EMPTY_VRFS);
@@ -1308,7 +1304,7 @@ export const srv6PolicySteps: ScenarioStep<Srv6PolicyState>[] = [
     id: "repaired-transit",
     label: "R1 → R3 (End.X, R3→R5) → R5 → R6 → RECEIVER6",
     narrative: "R3's End.X forces the R3→R5 adjacency exactly as originally engineered; R6's End.DX6 decapsulates and delivers.",
-    packet: (state) => (state.packet ? policyPacket("repaired-deliver", "R3", "RECEIVER6", "Delivered via restored CP-EXPLICIT", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? policyPacket("repaired-stage", "R3", "R6", "Stage shown: after R3 End.X (DA → R6 End.DX6, SL 0, via adjacency R3→R5), before R6 End.DX6 decap — restored CP-EXPLICIT", "END.X", state.packet) : undefined),
     run: (state) => {
       const r3 = entryFor(state, "R3", FUNCTION.END_X);
       const outcome = processSrv6EndpointBehavior(r3, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, EMPTY_VRFS);
