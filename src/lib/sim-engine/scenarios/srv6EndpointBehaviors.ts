@@ -1124,7 +1124,7 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "dx6-deliver",
     label: "R6 → CE6: Cross-Connect, No Tenant Lookup",
     narrative: `The exposed inner IPv6 packet (dst ${fmtIpv6(CUST6_HOST_HEXTETS)}) is sent DIRECTLY to CE6 via the bound adjacency — R6 never performs an IPv6 routing-table lookup for it. The SID itself identified where the exposed traffic goes.`,
-    packet: (state) => (state.packet ? endpointPacket("dx6-deliver", "R6", "CE6", "Decap + adjacency cross-connect to CE6", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? endpointPacket("dx6-predecap", "R6", "R6", "Stage shown: at R6 before End.DX6 decap — outer DA = R6 End.DX6; the inner IPv6 packet will be cross-connected to CE6", "END.DX6", state.packet) : undefined),
     run: (state) => ({ state: { ...state, journey: [...state.journey, { router: "R6", input: fmtIpv6(CUST6_HOST_HEXTETS), lookup: "End.DX6: decapsulate, cross-connect to adjacency CE6 — no tenant table consulted", action: "DECAP_IPV6", output: "Delivered to CE6" }] }, events: [] }),
     whatChanged: () => ["Delivered to CE6 by fixed adjacency — End.DX6 never performed a routing-table lookup on the exposed inner IPv6 packet"],
   },
@@ -1158,7 +1158,7 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "dx4-r6-match-deliver",
     label: "R6: Execute End.DX4 — Decap + Fixed Adjacency",
     narrative: "Final-segment check passes, inner payload is IPv4 as expected. Decapsulate, then send DIRECTLY to CE4-A via the bound adjacency — no VRF route lookup is required by this behavior.",
-    packet: (state) => (state.packet ? endpointPacket("dx4-deliver", "R6", "CE4-A", "Decap + adjacency cross-connect to CE4-A", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? endpointPacket("dx4-predecap", "R6", "R6", "Stage shown: at R6 before End.DX4 decap — outer DA = R6 End.DX4; the inner IPv4 packet will be cross-connected to CE4-A", "END.DX4", state.packet) : undefined),
     run: (state) => {
       const entry = findEntry(state, "R6", FUNCTION.END_DX4);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, state.vrfs);
@@ -1206,7 +1206,7 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "dt6-r6-deliver",
     label: "R6: Execute End.DT6 — Decap + VRF-CUST6 Lookup",
     narrative: `Final-segment and payload checks pass. Decapsulate, associate the exposed packet with VRF-CUST6, then perform an IPv6 lookup for ${fmtIpv6(CUST6_HOST_HEXTETS)} — VRF-CUST6's single route resolves to CE6.`,
-    packet: (state) => (state.packet ? endpointPacket("dt6-deliver", "R6", "CE6", "Decap + VRF-CUST6 lookup → CE6", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? endpointPacket("dt6-predecap", "R6", "R6", "Stage shown: at R6 before End.DT6 decap — outer DA = R6 End.DT6; the exposed IPv6 packet will be looked up in VRF-CUST6", "END.DT6", state.packet) : undefined),
     run: (state) => {
       const entry = findEntry(state, "R6", FUNCTION.END_DT6);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, state.vrfs);
@@ -1231,7 +1231,7 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "dt4-a-transit-deliver",
     label: "R1 → R6 → VRF-CUST4 Lookup → CE4-A",
     narrative: "Ordinary transit to R6, then: decapsulate, associate with VRF-CUST4, look up 10.10.1.5 → matches 10.10.1.0/24 → CE4-A.",
-    packet: (state) => (state.packet ? endpointPacket("dt4-a-deliver", "R6", "CE4-A", "Decap + VRF-CUST4 lookup → CE4-A", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? endpointPacket("dt4-a-predecap", "R6", "R6", "Stage shown: at R6 before End.DT4 decap — outer DA = R6 End.DT4; inner IPv4 10.10.1.5 will be looked up in VRF-CUST4", "END.DT4", state.packet) : undefined),
     run: (state) => {
       const entry = findEntry(state, "R6", FUNCTION.END_DT4);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, state.vrfs);
@@ -1258,7 +1258,7 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "dt4-b-transit-deliver",
     label: "R1 → R6 → VRF-CUST4 Lookup → CE4-B",
     narrative: "Decapsulate, associate with VRF-CUST4, look up 10.10.2.8 → matches 10.10.2.0/24 → CE4-B. The exact same End.DT4 SID just resolved to a different CE.",
-    packet: (state) => (state.packet ? endpointPacket("dt4-b-deliver", "R6", "CE4-B", "Decap + VRF-CUST4 lookup → CE4-B", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? endpointPacket("dt4-b-predecap", "R6", "R6", "Stage shown: at R6 before End.DT4 decap — same outer DA = R6 End.DT4 (same Service SID); inner IPv4 10.10.2.8 will be looked up in VRF-CUST4", "END.DT4", state.packet) : undefined),
     run: (state) => {
       const entry = findEntry(state, "R6", FUNCTION.END_DT4);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, state.vrfs);
@@ -1322,7 +1322,7 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "dx2-deliver",
     label: "R6 → CE-L2: L2 Cross-Connect",
     narrative: "The exposed Ethernet frame (CE-A-MAC → CE-B-MAC) is sent directly out ge-0/0/7 toward CE-L2 — no destination-MAC bridge-table lookup, no flooding decision. This is exactly the DX cross-connect pattern, just for an Ethernet payload.",
-    packet: (state) => (state.packet ? endpointPacket("dx2-deliver", "R6", "CE-L2", "Decap + OIF cross-connect to CE-L2", "L2-XC", state.packet) : undefined),
+    packet: (state) => (state.packet ? endpointPacket("dx2-predecap", "R6", "R6", "Stage shown: at R6 before End.DX2 decap — outer DA = R6 End.DX2; the exposed Ethernet frame will be cross-connected via the bound OIF", "END.DX2", state.packet) : undefined),
     run: (state) => ({ state: { ...state, journey: [...state.journey, { router: "R6", input: "CE-A-MAC → CE-B-MAC", lookup: "End.DX2: decapsulate, cross-connect to OIF ge-0/0/7 — no MAC table consulted", action: "L2_CROSS_CONNECT", output: "Delivered to CE-L2" }] }, events: [] }),
     whatChanged: () => ["Delivered to CE-L2 by fixed OIF — basic End.DX2 never performs a generic destination-MAC bridge-table lookup"],
   },
@@ -1411,7 +1411,7 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "fault-wrong-delivery",
     label: "R6: Delivered To The WRONG CE",
     narrative: `The SID is now bound to End.DX4 — a FIXED adjacency, CE4-A. Regardless of the customer destination (10.10.2.8, which belongs to CE4-B's prefix), End.DX4 sends it to CE4-A. VRF-CUST4 is never consulted.`,
-    packet: (state) => (state.packet ? endpointPacket("fault-wrong", "R6", "CE4-A", "End.DX4 (misconfigured) — WRONG CE, no VRF lookup", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? endpointPacket("fault-predecap", "R6", "R6", "Stage shown: at R6 before misconfigured End.DX4 decap — this SID is wrongly bound to fixed adjacency CE4-A; VRF-CUST4 will not be consulted", "END.DX4", state.packet) : undefined),
     run: (state) => {
       const entry = findEntry(state, "R6", FUNCTION.END_DX4);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, state.vrfs);
@@ -1468,7 +1468,7 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "repaired-deliver",
     label: "R6: End.DT4 — VRF-CUST4 Lookup → CE4-B",
     narrative: "Decapsulate, associate with VRF-CUST4, look up 10.10.2.8 → matches 10.10.2.0/24 → CE4-B. Repair verified end to end with a real resend, not merely \"binding restored.\"",
-    packet: (state) => (state.packet ? endpointPacket("repaired-deliver", "R6", "CE4-B", "Decap + VRF-CUST4 lookup → CE4-B — repair verified", "DECAP", state.packet) : undefined),
+    packet: (state) => (state.packet ? endpointPacket("repaired-predecap", "R6", "R6", "Stage shown: at R6 before restored End.DT4 decap — outer DA = R6 End.DT4; inner IPv4 10.10.2.8 will be looked up in VRF-CUST4", "END.DT4", state.packet) : undefined),
     run: (state) => {
       const entry = findEntry(state, "R6", FUNCTION.END_DT4);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, state.vrfs);
