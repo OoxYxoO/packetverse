@@ -51,11 +51,11 @@ export function explainNode(state: SrMplsState, nodeId: RouterId, currentStepId:
     if (state.fault && hop?.action === "INVALID_SID") currentAction = "Attempted to impose an active segment it cannot execute — the top SID is owned by R3, not R1. Dropped before forwarding.";
     else if (hop) currentAction = `${hop.lookup} → ${hop.action}.`;
     else if (i >= 0) currentAction = "Headend — imposes whatever segment list operations has configured.";
-    return { ...base, controlPlaneRole: "Headend. Builds the segment list and imposes the full MPLS label stack once, at ingress.", dataPlaneRole: "Never recomputes anything per packet — the label stack it pushes is exactly the segment list it was given.", currentAction, packetBefore: hop?.input, packetAfter: hop?.output, tables: [sidTable] };
+    return { ...base, controlPlaneRole: "Headend. Builds the segment list and imposes the full MPLS label stack once, at ingress.", dataPlaneRole: "Never recomputes anything per packet — it pushes the segment list it was given, except a first Node SID whose target is its direct neighbor: R1 is that SID's penultimate hop, so PHP completes it at R1 and it is never imposed.", currentAction, packetBefore: hop?.input, packetAfter: hop?.output, tables: [sidTable] };
   }
   if (nodeId === "R6") {
     const currentAction = hop ? `${hop.lookup} → ${hop.action}.` : "Idle — no packet delivered yet at this point in the timeline.";
-    return { ...base, controlPlaneRole: "Node-SID target for every segment list in this lesson.", dataPlaneRole: "Never recomputes CSPF or a segment list — pops its own label if it's still on top, or simply delivers if already bare.", currentAction, packetBefore: hop?.input, packetAfter: hop?.output, tables: [sidTable] };
+    return { ...base, controlPlaneRole: "Node-SID target for every segment list in this lesson.", dataPlaneRole: "Never recomputes CSPF or a segment list — it advertises its Node SID with implicit-null, so the penultimate hop pops that label and R6 receives the bare IP packet to deliver.", currentAction, packetBefore: hop?.input, packetAfter: hop?.output, tables: [sidTable] };
   }
   if (nodeId === "R3") {
     let currentAction = "Ordinary transit router unless it is the active segment's target or owner.";

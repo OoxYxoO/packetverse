@@ -405,14 +405,14 @@ export interface MplsPacketState {
   dstIp: string;
   labels: MplsLabel[];
 }
+/** RFC 3032: existing labels keep their S bits; only a label pushed onto an empty stack is the bottom (S=1). */
 function pushLabel(pkt: MplsPacketState, value: number, purpose: "segment" | "repair"): MplsPacketState {
-  const wasEmpty = pkt.labels.length === 0;
-  const rest = pkt.labels.map((l) => ({ ...l, bottomOfStack: false }));
-  return { ...pkt, labels: [{ value, bottomOfStack: wasEmpty, purpose }, ...rest] };
+  return { ...pkt, labels: [{ value, bottomOfStack: pkt.labels.length === 0, purpose }, ...pkt.labels] };
 }
+/** Removes only the top label — the remaining labels' S bits are already correct and are never rewritten. */
 function popTopLabel(pkt: MplsPacketState): MplsPacketState {
   const [, ...rest] = pkt.labels;
-  return { ...pkt, labels: rest.map((l, i) => (i === 0 ? { ...l, bottomOfStack: true } : l)) };
+  return { ...pkt, labels: rest };
 }
 
 // ---------------------------------------------------------------------------
@@ -1156,7 +1156,7 @@ export const srTiLfaSteps: ScenarioStep<SrTiLfaState>[] = [
     id: "verify-push",
     label: "R1 → R2: Send + Push",
     narrative: "A fresh packet, pushed with R6's Node SID exactly as always.",
-    packet: () => ({ id: "verify-ip", protocol: "IP", from: "R1", to: "R1", summary: `Classified toward R6 Node SID ${R6_NODE_SID}`, layers: [ipLayer(HOST_BEHIND_R1, HOST_BEHIND_R6)] }),
+    packet: (state) => (state.packet ? mplsPacket("verify-push", "R1", "R2", `PUSH R6 Node SID ${R6_NODE_SID}`, "PUSH", state.packet) : undefined),
     run: (state) => {
       const withLabel = pushLabel({ srcIp: HOST_BEHIND_R1, dstIp: HOST_BEHIND_R6, labels: [] }, R6_NODE_SID, "segment");
       const journey = [{ router: "R1" as RouterId, input: "IP", lookup: "Impose R6 Node SID", action: "PUSH", output: `label ${R6_NODE_SID}` }];
@@ -1180,10 +1180,11 @@ export const srTiLfaSteps: ScenarioStep<SrTiLfaState>[] = [
     id: "verify-deliver",
     label: "R3 Completes, R5 Relays, R6 Delivers",
     narrative: "R3 is the repair point — the repair segment completes there, exposing R6's Node SID. R3 forwards via its own shortest path to R6 (through R5), R5 relays normally, and R6 delivers. Verified: the repair genuinely reaches the destination this time.",
-    packet: (state) => (state.packet ? { id: "verify-delivered", protocol: "IP", from: "R6", to: "R6", summary: "Delivered via corrected TI-LFA repair", layers: buildPacketLayers(popTopLabel(state.packet)) } : undefined),
+    packet: (state) => (state.packet ? { id: "verify-delivered", protocol: "IP", from: "R6", to: "R6", summary: "Delivered via corrected TI-LFA repair", layers: buildPacketLayers(state.packet) } : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
-      const afterPop = popTopLabel(state.packet);
+      // R3 pops the repair segment; R6 (the R6 Node SID target — no PHP is modeled in this lesson) removes 16006 on delivery.
+      const afterPop = popTopLabel(popTopLabel(state.packet));
       const journey = [
         ...state.journey,
         { router: "R3" as RouterId, input: "repair segment", lookup: "Self is repair segment target", action: "POP_REPAIR", output: `original SID ${R6_NODE_SID} now active` },

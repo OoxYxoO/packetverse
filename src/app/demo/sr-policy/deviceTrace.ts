@@ -62,7 +62,7 @@ const UNAVAILABLE_PIPELINE: ProcessingStage[] = [
 const LOOKUP_TYPE_BY_ACTION: Partial<Record<FwdAction, string>> = {
   PUSH: "SR-TE Forwarding State",
   CONTINUE: "Active SID Lookup — Node SID",
-  POP: "Active SID Lookup — Segment Target",
+  POP: "Active SID Lookup — PHP (implicit-null)",
   POP_AND_FORWARD_ADJ: "Active SID Lookup — Adjacency SID",
   IP_FORWARD: "IP Delivery",
   POLICY_SELECT: "SR Policy Steering / Resolution",
@@ -84,7 +84,7 @@ function nextHopFor(hop: JourneyHop, state: SrPolicyState): { id?: RouterId; lab
   if (!nextRouter || nextRouter === hop.router) return {};
   return { id: nextRouter, label: nextRouter };
 }
-/** Walks backward past any of the router's OWN earlier entries (several steps here push more than one hop for the same router in a single batch — e.g. R3's Node-SID POP immediately followed by its own Adj-SID POP_AND_FORWARD_ADJ, or R6's final-segment POP immediately followed by its own IP_FORWARD delivery) to find the true previous, DIFFERENT router — a naive `journey[idx-1]` would otherwise report the router as its own predecessor. */
+/** Walks backward past any of the router's OWN earlier entries (a step may record more than one hop in a single batch, and a router can appear in consecutive entries) to find the true previous, DIFFERENT router — a naive `journey[idx-1]` would otherwise report the router as its own predecessor. */
 function prevRouterFor(hop: JourneyHop, state: SrPolicyState): RouterId | undefined {
   const idx = state.journey.indexOf(hop);
   for (let i = idx - 1; i >= 0; i--) {
