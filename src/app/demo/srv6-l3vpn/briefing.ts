@@ -1,0 +1,46 @@
+import type { BriefingPhaseDef, BriefingStepNote } from "@/components/lesson/briefing";
+
+/** Mission Briefing framing for SRv6 L3VPN — presentation only; the scenario's label/narrative stay the source of truth. Phase objectives also show on question/repair steps, so they never state an answer. */
+export const SRV6L_BRIEFING_PHASES: BriefingPhaseDef[] = [
+  { phase: { label: "Mission", tone: "cyan" }, objective: "Find out exactly what an SRv6 data plane changes in L3VPN.", steps: ["intro", "predict-problem", "mental-model", "predict-continuity"] },
+  { phase: { label: "Topology", tone: "ospf" }, objective: "Meet the PEs, the plain-IPv6 core and the provider identities.", steps: ["topology-intro", "roles-intro", "infra-vs-locator", "predict-infra-vs-locator"] },
+  { phase: { label: "VRF, RD, RT", tone: "bgp" }, objective: "Set up VRF CUST-A and its customer routes.", steps: ["vrf-intro", "rd-intro", "predict-rd", "rt-intro", "predict-rt", "customer-routes-ipv4", "customer-routes-ipv6"] },
+  { phase: { label: "Service SIDs", tone: "violet" }, objective: "Allocate per-VRF Service SIDs and see how BGP carries them.", steps: ["service-sid-intro", "per-vrf-shared-sid", "predict-shared-sid", "bgp-prefix-sid-intro", "srv6-l3-service-tlv", "predict-nexthop-vs-sid"] },
+  { phase: { label: "Build the route", tone: "bgp" }, objective: "Build PE2's VPN route field by field and advertise it.", steps: ["route-create", "route-add-rd", "route-attach-rt", "route-attach-servicesid", "mpbgp-advertise-ipv4"] },
+  { phase: { label: "Install checks", tone: "warning" }, objective: "Run PE1's install checks on the received route.", steps: ["predict-rt-import", "rt-import-check", "bgp-nexthop-resolve", "service-sid-resolve", "route-installed", "second-prefix-same-sid"] },
+  { phase: { label: "Data plane", tone: "ip" }, objective: "Send CE1's traffic across the SRv6 core.", steps: ["send-ce1-ce2", "pe1-vrf-lookup", "pe1-encapsulate", "predict-no-srh", "p1-transit", "predict-p-routers", "p2-transit", "pe2-local-sid-match", "pe2-dt4-execute", "send-ce1-ce3", "pe2-dt4-execute-ce3", "predict-same-sid-diff-ce"] },
+  { phase: { label: "Reverse + IPv6", tone: "cyan" }, objective: "Run the reverse direction and the IPv6 VPN.", steps: ["pe1-advertises-ce1", "send-ce2-ce1", "ipv6-vpn-intro", "send-ce1-ce2-ipv6", "pe2-dt6-execute", "dual-stack-recap"] },
+  { phase: { label: "Labs", tone: "violet" }, objective: "Compare SID types and explore what blocks route installation.", steps: ["per-vrf-vs-per-ce-lab", "predict-dt4-vs-dx4", "service-sid-not-vpn-route", "service-sid-not-nexthop", "transposition-preview", "sr-policy-integration-preview", "predict-policy-plus-service", "rt-mismatch-lab", "missing-service-tlv-lab"] },
+  { phase: { label: "Fault", tone: "danger" }, objective: "CUST-A traffic stops while BGP still looks healthy. Locate the failing layer.", steps: ["break-intro", "fault-injected", "incident", "predict-fault-usability", "trouble-question", "diagnostic-layers"] },
+  { phase: { label: "Repair", tone: "warning" }, objective: "Apply the one fix for the layer you identified.", steps: ["repair-challenge"] },
+  { phase: { label: "Verify", tone: "success" }, objective: "Prove the repair restored the data plane.", steps: ["verify-dataplane"] },
+  { phase: { label: "Complete", tone: "success" }, objective: "Review what SRv6 changed in L3VPN, and what it kept.", steps: ["mpls-vs-srv6-comparison", "complete"] },
+];
+
+export const SRV6L_BRIEFING_NOTES: Partial<Record<string, BriefingStepNote>> = {
+  "infra-vs-locator": { doingNow: "PE2: BGP loopback 2001:db8:ffff::2 and SRv6 locator 2001:db8:100:2::/64 are separate identities." },
+  "rd-intro": { doingNow: "RDs: PE1 65000:1, PE2 65000:2." },
+  "rt-intro": { doingNow: "CUST-A exports and imports RT 65000:100." },
+  "service-sid-intro": { doingNow: "PE2: End.DT4 2001:db8:100:2:13:: and End.DT6 2001:db8:100:2:12::, both table CUST-A." },
+  "route-add-rd": { doingNow: "Route: 65000:2:10.20.1.0/24." },
+  "route-attach-rt": { doingNow: "RT 65000:100; BGP next hop 2001:db8:ffff::2 (PE2's loopback, not a SID)." },
+  "route-attach-servicesid": { doingNow: "Prefix-SID → SRv6 L3 Service TLV: 2001:db8:100:2:13:: (End.DT4)." },
+  "mpbgp-advertise-ipv4": { doingNow: "Control plane: one MP-BGP UPDATE carries RD, RT, next hop and the Service SID." },
+  "bgp-nexthop-resolve": { doingNow: "PE1 resolves 2001:db8:ffff::2 through the IPv6 IGP." },
+  "service-sid-resolve": { doingNow: "PE1 resolves the Service SID through PE2's locator route 2001:db8:100:2::/64." },
+  "route-installed": { takeaway: "Installed only after RT import, next hop and Service SID all pass." },
+  "send-ce1-ce2": { doingNow: "CE1 sends a plain IPv4 packet to 10.20.1.10." },
+  "pe1-vrf-lookup": { doingNow: "PE1 looks the destination up in VRF CUST-A, not the global table." },
+  "pe1-encapsulate": { doingNow: "Outer DA = PE2 End.DT4 Service SID 2001:db8:100:2:13::." },
+  "p1-transit": { doingNow: "P1 forwards on PE2's locator with its ordinary IPv6 FIB." },
+  "p2-transit": { doingNow: "P2: the same plain IPv6 forwarding toward PE2." },
+  "pe2-local-sid-match": { doingNow: "PE2's Local SID Table: End.DT4, table CUST-A." },
+  "pe2-dt4-execute": { doingNow: "Shown: the customer IPv4 packet after PE2's End.DT4 decap, CUST-A lookup → CE2." },
+  "pe2-dt4-execute-ce3": { doingNow: "Shown: after decap, the same Service SID's CUST-A lookup sends 10.20.2.10 to CE3." },
+  "send-ce2-ce1": { doingNow: "Outer DA = PE1's own End.DT4 SID 2001:db8:100:1:13::." },
+  "send-ce1-ce2-ipv6": { doingNow: "Outer provider IPv6 (DA = PE2 End.DT6) wraps the inner customer IPv6 packet." },
+  "pe2-dt6-execute": { doingNow: "Shown: the customer IPv6 packet after End.DT6 decap, CUST-A IPv6 lookup → CE2." },
+  "fault-injected": { doingNow: "PE2's locator route is withdrawn; PE2's loopback and BGP session stay up.", takeaway: "This is not a PE2-down or BGP failure." },
+  "repair-challenge": { doingNow: "Choose the fix for the layer you identified." },
+  "verify-dataplane": { doingNow: "Resend CE1 → 10.20.2.10 to prove the data plane end to end." },
+};
