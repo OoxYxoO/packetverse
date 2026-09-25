@@ -1,0 +1,48 @@
+import type { BriefingPhaseDef, BriefingStepNote } from "@/components/lesson/briefing";
+
+/** Mission Briefing framing for the SR Flex-Algo lesson — presentation only; the scenario's label/narrative stay the source of truth. Phase objectives also show on question/repair steps, so they never state an answer. */
+export const FLEX_BRIEFING_PHASES: BriefingPhaseDef[] = [
+  { phase: { label: "Mission", tone: "cyan" }, objective: "Have the IGP compute a second shortest-path topology alongside the normal one.", steps: ["intro", "recap-known", "mental-model", "topology-intro"] },
+  { phase: { label: "Algorithm 0", tone: "ospf" }, objective: "Establish the default algorithm and its path to R6.", steps: ["algo0-explain", "predict-algo0-is-flexalgo", "node-sid-recap", "send-algo0-1", "r1-push-algo0", "r2-forward-algo0", "r4-forward-algo0", "r6-deliver-algo0"] },
+  { phase: { label: "FAD", tone: "violet" }, objective: "Define Flex-Algo 128 and the metric it optimizes.", steps: ["flex-algo-intro", "flex-algo-not-a-vlan", "fad-intro", "fad-128-defined", "link-metrics-separate", "topology-metrics-table", "signature-comparison"] },
+  { phase: { label: "Per-algo SPF", tone: "mpls" }, objective: "See how every participating router computes the algorithm itself.", steps: ["algorithm-spf-intro", "sr-policy-distinction", "predict-sr-policy-color", "distributed-computation-explain", "fad-propagation", "fad-consistency"] },
+  { phase: { label: "Algorithm SID", tone: "mpls" }, objective: "Give R6's prefix an algorithm-specific Prefix-SID.", steps: ["algo128-prefix-sid-intro", "algo128-sid-compute", "sid-table-enhanced", "predict-same-prefix-diff-path", "critical-sid-concept"] },
+  { phase: { label: "Forwarding", tone: "success" }, objective: "Send traffic toward the Algorithm-128 SID and follow it.", steps: ["send-algo128-1", "r1-push-algo128", "r3-forward-algo128", "r5-forward-algo128", "r6-deliver-algo128"] },
+  { phase: { label: "Constraints", tone: "warning" }, objective: "Add an affinity constraint to the definition.", steps: ["affinity-intro", "fad128-exclude-blue", "affinity-constraint-eval", "predict-affinity-vs-metric", "metric-vs-affinity-explain"] },
+  { phase: { label: "Views & tables", tone: "cyan" }, objective: "Compare the two algorithms' topologies, routes and LFIB entries.", steps: ["topology-view-intro", "algorithm-rib-intro", "lfib-intro"] },
+  { phase: { label: "Lab", tone: "violet" }, objective: "Change metrics and attributes and watch the algorithm recompute.", steps: ["flex-algo-lab-intro", "metric-experiment", "link-attribute-experiment", "same-algo-changing-path", "predict-fixed-path", "predict-metric-change-path", "sr-policy-flexalgo-tiein", "ti-lfa-flexalgo-tiein"] },
+  { phase: { label: "Fault", tone: "danger" }, objective: "Algorithm-128 traffic misbehaves while Algorithm 0 is healthy. Find out why.", steps: ["troubleshooting-intro", "fault-injection", "diagnostic-ladder"] },
+  { phase: { label: "Repair", tone: "warning" }, objective: "Apply the one fix that completes the Algorithm-128 topology.", steps: ["repair-challenge"] },
+  { phase: { label: "Verify", tone: "success" }, objective: "Prove the repair with a real Algorithm-128 packet.", steps: ["repaired-recompute", "verify-send-algo128", "verify-push", "verify-r3-transit", "verify-deliver"] },
+  { phase: { label: "Challenge", tone: "violet" }, objective: "Confirm every piece of the LOW-LATENCY topology.", steps: ["engineer-challenge-intro", "engineer-challenge-confirm"] },
+  { phase: { label: "Complete", tone: "success" }, objective: "Review FADs, per-algorithm SPF and algorithm-specific SIDs.", steps: ["complete"] },
+];
+
+export const FLEX_BRIEFING_NOTES: Partial<Record<string, BriefingStepNote>> = {
+  "topology-intro": { doingNow: "IGP: top R1-R2, R2-R4, R4-R6 = 10 each; bottom R1-R3, R3-R5, R5-R6 = 20 each." },
+  "predict-algo0-is-flexalgo": { doingNow: "Think about what defines Algorithm 0 and what defines a Flex-Algo." },
+  "node-sid-recap": { doingNow: "R6's Algorithm-0 Prefix-SID: 16000 + 0 + 6 = 16006." },
+  "r1-push-algo0": { doingNow: "Data plane: R1 pushes 16006 S1 toward R2." },
+  "r6-deliver-algo0": { takeaway: "Algorithm 0 (IGP metric) follows R1 → R2 → R4 → R6." },
+  "flex-algo-intro": { takeaway: "\"LOW-LATENCY\" is a friendly name; 128 is the algorithm identifier." },
+  "fad-128-defined": { doingNow: "Control plane: FAD 128 — metric type DELAY, no affinity yet." },
+  "topology-metrics-table": { doingNow: "Top: IGP 30 / delay 90. Bottom: IGP 60 / delay 15." },
+  "signature-comparison": { takeaway: "Same destination, different algorithm, different path." },
+  "predict-sr-policy-color": { doingNow: "Compare where each number lives and who computes with it." },
+  "fad-propagation": { doingNow: "Control plane: the IGP floods the FAD and link attributes to every router." },
+  "algo128-sid-compute": { doingNow: "R6's Algorithm-128 Prefix-SID: 16000 + 100 + 6 = 16106." },
+  "predict-same-prefix-diff-path": { doingNow: "Think about what an algorithm-specific SID asks each router to compute." },
+  "r1-push-algo128": { doingNow: "Data plane: R1 pushes 16106 S1 toward R3 — a different LFIB entry from 16006." },
+  "r3-forward-algo128": { doingNow: "R3 uses its own Algorithm-128 (delay) SPF toward R6." },
+  "r6-deliver-algo128": { takeaway: "Algorithm 128 (delay) follows R1 → R3 → R5 → R6." },
+  "fad128-exclude-blue": { doingNow: "Control plane: FAD 128 now also excludes BLUE links." },
+  "predict-affinity-vs-metric": { doingNow: "Compare \"which links may be used\" with \"what each link costs\"." },
+  "lfib-intro": { doingNow: "R1 LFIB: 16006 → next hop R2 (Algo 0); 16106 → next hop R3 (Algo 128)." },
+  "predict-fixed-path": { doingNow: "Recall what a Flex-Algo actually defines." },
+  "predict-metric-change-path": { doingNow: "Recall what the algorithm recomputes from." },
+  "troubleshooting-intro": { doingNow: "Physical links, IGP neighbors and Algorithm-0 forwarding are healthy." },
+  "diagnostic-ladder": { doingNow: "Walk the Algorithm-128 layers: definition, participation, continuity, forwarding." },
+  "repair-challenge": { doingNow: "Pick the change that addresses the root cause you found, not a symptom." },
+  "verify-push": { doingNow: "Data plane: R1 pushes 16106 S1 toward R3." },
+  "verify-deliver": { takeaway: "The low-delay Algorithm-128 path is back: R1 → R3 → R5 → R6." },
+};
