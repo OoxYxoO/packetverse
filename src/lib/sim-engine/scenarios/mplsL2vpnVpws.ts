@@ -92,8 +92,8 @@ export interface MplsPacketState {
 }
 function pushLabel(pkt: MplsPacketState, value: number, purpose: LabelPurpose): MplsPacketState {
   const wasEmpty = pkt.labels.length === 0;
-  const rest = pkt.labels.map((l) => ({ ...l, bottomOfStack: false }));
-  return { ...pkt, labels: [{ value, bottomOfStack: wasEmpty, purpose }, ...rest] };
+  // Existing labels keep their S bits: only the label pushed onto an empty stack is bottom-of-stack.
+  return { ...pkt, labels: [{ value, bottomOfStack: wasEmpty, purpose }, ...pkt.labels.map((l) => ({ ...l }))] };
 }
 function swapTopLabel(pkt: MplsPacketState, value: number): MplsPacketState {
   if (pkt.labels.length === 0) return pkt;
@@ -101,8 +101,9 @@ function swapTopLabel(pkt: MplsPacketState, value: number): MplsPacketState {
   return { ...pkt, labels: [{ ...top, value }, ...rest] };
 }
 function popTopLabel(pkt: MplsPacketState): MplsPacketState {
+  // Remaining labels keep their S bits unchanged.
   const [, ...rest] = pkt.labels;
-  return { ...pkt, labels: rest.map((l, i) => (i === 0 ? { ...l, bottomOfStack: true } : l)) };
+  return { ...pkt, labels: rest.map((l) => ({ ...l })) };
 }
 
 /** Local copy of the IMPLICIT_NULL sentinel — same per-file convention as mplsLdp.ts. Never render numeric label 3 on wire. */
@@ -783,8 +784,8 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     packet: (state) => (state.packet ? vpwsPacket("p2-p1-rev", "P2", "P1", "SWAP transport label", "SWAP", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
-      const packet = swapTopLabel(state.packet, 10);
-      const journey = [...state.journey, { device: "P2" as RouterId, input: "label 100", lookup: "Transport forwarding table — outer label only", action: "SWAP_TRANSPORT" as JourneyAction, output: "label 10 (transport), inner PW label untouched" }];
+      const packet = swapTopLabel(state.packet, 101);
+      const journey = [...state.journey, { device: "P2" as RouterId, input: "label 100", lookup: "Transport forwarding table — outer label only", action: "SWAP_TRANSPORT" as JourneyAction, output: "label 101 (transport), inner PW label untouched" }];
       return { state: { ...state, packetAt: "P1", packet, journey }, events: [] };
     },
   },
@@ -796,7 +797,7 @@ export const mplsL2vpnVpwsSteps: ScenarioStep<MplsL2vpnVpwsState>[] = [
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const packet = popTopLabel(state.packet);
-      const journey = [...state.journey, { device: "P1" as RouterId, input: "label 10", lookup: "Transport forwarding table — PE1 signaled implicit-null", action: "POP_TRANSPORT" as JourneyAction, output: "PW label only" }];
+      const journey = [...state.journey, { device: "P1" as RouterId, input: "label 101", lookup: "Transport forwarding table — PE1 signaled implicit-null", action: "POP_TRANSPORT" as JourneyAction, output: "PW label only" }];
       return { state: { ...state, packetAt: "PE1", packet, journey }, events: [] };
     },
   },
