@@ -18,13 +18,16 @@ import {
   TI_LFA_LIFECYCLE_INFO,
   buildSidDatabase,
   buildSrTiLfaCliCommands,
+  computeAdjSidLabel,
   computePostConvergencePath,
   createSrTiLfaState,
   deriveNodeSidLabel,
   determineProtectionReadiness,
   linkIdsOnPath,
+  NODE_SID_INDEX,
   srTiLfaSteps,
   validateRepairList,
+  type RepairSegmentSpec,
   type RouterId,
   type SrTiLfaState,
   type TiLfaComputation,
@@ -91,6 +94,20 @@ const WRONG_FEEDBACK: Record<string, string> = {
   "increase-policy-preference": "This isn't an SR Policy candidate-preference problem. TI-LFA local repair at R2 is a completely different mechanism from SR Policy candidate fallback.",
   "restart-mpls-forwarding": "MPLS forwarding is doing exactly what it was told — the repair COMPUTATION itself is stale (computed before the R2-R3 metric change), not the forwarding engine.",
 };
+
+/**
+ * A repair segment's real SID. A Node SID comes from its target; an Adj-SID comes from the segment's own
+ * adjacency identity (`adjId` = "adj-<owner>-<neighbor>", as deriveMinimalRepairSegments() builds it) via the
+ * scenario's computeAdjSidLabel() — never from the segment's position in the list.
+ */
+function repairSegmentSid(s: RepairSegmentSpec): { sid: number; owner?: RouterId } {
+  if (s.type === "NODE") return { sid: deriveNodeSidLabel(s.target) };
+  const m = /^adj-(R\d+)-(R\d+)$/.exec(s.adjId ?? "");
+  const owner = m?.[1] as RouterId | undefined;
+  const neighbor = m?.[2] as RouterId | undefined;
+  if (!owner || !neighbor || !(owner in NODE_SID_INDEX) || !(neighbor in NODE_SID_INDEX)) throw new Error(`ADJ repair segment without a valid adjacency id: ${s.adjId ?? "none"}`);
+  return { sid: computeAdjSidLabel(owner, neighbor), owner };
+}
 
 export default function SrTiLfaDemo() {
   const { engine, snapshot } = useScenarioEngine<SrTiLfaState>(createSrTiLfaState(), srTiLfaSteps);
@@ -165,17 +182,20 @@ export default function SrTiLfaDemo() {
 
   const toSegmentRows = (comp: TiLfaComputation | undefined, activeLabel?: number): SegmentListRow[] => {
     if (!comp) return [];
-    return comp.repairSegments.map((s) => ({
-      order: s.order,
-      sid: s.type === "NODE" ? deriveNodeSidLabel(s.target) : 24000 + s.order,
-      type: s.type,
-      owner: s.type === "ADJ" ? comp.postConvergencePath?.[s.order] : undefined,
-      target: s.target,
-      scope: s.type === "NODE" ? "GLOBAL" : "LOCAL",
-      active: activeLabel !== undefined && (s.type === "NODE" ? deriveNodeSidLabel(s.target) : 24000 + s.order) === activeLabel,
-      completed: false,
-      explanation: s.type === "NODE" ? `Reach ${s.target} via its own current shortest path — matches the desired sub-path exactly, so a Node SID alone suffices.` : `Force the specific hop to ${s.target} — the natural shortest path from here does not match the desired safe sub-path.`,
-    }));
+    return comp.repairSegments.map((s) => {
+      const { sid, owner } = repairSegmentSid(s);
+      return {
+        order: s.order,
+        sid,
+        type: s.type,
+        owner,
+        target: s.target,
+        scope: s.type === "NODE" ? "GLOBAL" : "LOCAL",
+        active: activeLabel !== undefined && sid === activeLabel,
+        completed: false,
+        explanation: s.type === "NODE" ? `Reach ${s.target} via its own current shortest path — matches the desired sub-path exactly, so a Node SID alone suffices.` : `Force the specific hop to ${s.target} — the natural shortest path from here does not match the desired safe sub-path.`,
+      };
+    });
   };
   const activeRepairLabel = state.packet?.labels.find((l) => l.purpose === "repair")?.value;
   const linkSegmentRows = toSegmentRows(linkComp, activeRepairLabel);
@@ -812,7 +832,7 @@ export default function SrTiLfaDemo() {
               repairTarget="R5"
               segments={state.advMultiSidSegments.map((s) => ({
                 order: s.order,
-                sid: s.type === "NODE" ? deriveNodeSidLabel(s.target) : 24000 + s.order,
+                ...repairSegmentSid(s),
                 type: s.type,
                 target: s.target,
                 scope: s.type === "NODE" ? "GLOBAL" : "LOCAL",
