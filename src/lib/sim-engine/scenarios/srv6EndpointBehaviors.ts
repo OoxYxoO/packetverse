@@ -833,12 +833,8 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "policy-a-r3-end",
     label: "R3: Local SID Match — Execute End",
     narrative: `R3's Local SID Table matches ${R3_END.sidText} to behavior End. Execute: Segments Left 1 → 0, DA → ${R6_END.sidText}.`,
-    packet: (state) => {
-      if (!state.packet) return undefined;
-      const entry = findEntry(state, "R3", FUNCTION.END);
-      const outcome = processSrv6EndpointBehavior(entry, state.packet.outer.daHextets, state.packet.outer.srh, state.packet.inner, state.vrfs);
-      return endpointPacket("a-r3-end", "R3", "R3", "End: SL 1→0, DA R3→R6", "END", { ...state.packet, outer: { ...state.packet.outer, daHextets: outcome.newDaHextets!, srh: outcome.newSrh } });
-    },
+    // run() already executed this endpoint behavior; the engine renders packet() from that POST-run state, so show it as-is (never execute the behavior a second time).
+    packet: (state) => (state.packet ? endpointPacket("a-r3-end", "R3", "R3", "End: SL 1→0, DA R3→R6", "END", state.packet) : undefined),
     run: (state) => {
       const entry = findEntry(state, "R3", FUNCTION.END);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, state.vrfs);
@@ -887,12 +883,8 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "policy-b-r3-endx",
     label: "R3: Local SID Match — Execute End.X",
     narrative: `R3's Local SID Table matches ${R3_END_X.sidText} to behavior End.X (adjacency: R4). End.X performs the SAME segment advancement as End: Segments Left 1 → 0, DA → ${R6_END.sidText}. The DA is NOT rewritten to R4's address.`,
-    packet: (state) => {
-      if (!state.packet) return undefined;
-      const entry = findEntry(state, "R3", FUNCTION.END_X);
-      const outcome = processSrv6EndpointBehavior(entry, state.packet.outer.daHextets, state.packet.outer.srh, state.packet.inner, state.vrfs);
-      return endpointPacket("b-r3-endx", "R3", "R3", "End.X: SL 1→0, DA R3→R6 (adjacency R4 bound)", "END.X", { ...state.packet, outer: { ...state.packet.outer, daHextets: outcome.newDaHextets!, srh: outcome.newSrh } });
-    },
+    // run() already executed this endpoint behavior; the engine renders packet() from that POST-run state, so show it as-is (never execute the behavior a second time).
+    packet: (state) => (state.packet ? endpointPacket("b-r3-endx", "R3", "R3", "End.X: SL 1→0, DA R3→R6 (adjacency R4 bound)", "END.X", state.packet) : undefined),
     run: (state) => {
       const entry = findEntry(state, "R3", FUNCTION.END_X);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, state.vrfs);
@@ -996,12 +988,8 @@ export const srv6EndpointSteps: ScenarioStep<Srv6EndpointState>[] = [
     id: "policy-c-r3-endt",
     label: "R3: Local SID Match — Execute End.T",
     narrative: `R3's Local SID Table matches ${R3_END_T.sidText} to behavior End.T (table: CORE-B). Same End mutation as always: Segments Left 1 → 0, DA → ${R6_END.sidText}. The NEXT lookup will use CORE-B, not MAIN.`,
-    packet: (state) => {
-      if (!state.packet) return undefined;
-      const entry = findEntry(state, "R3", FUNCTION.END_T);
-      const outcome = processSrv6EndpointBehavior(entry, state.packet.outer.daHextets, state.packet.outer.srh, state.packet.inner, state.vrfs);
-      return endpointPacket("c-r3-endt", "R3", "R3", "End.T: SL 1→0, DA R3→R6 (table CORE-B bound)", "END.T", { ...state.packet, outer: { ...state.packet.outer, daHextets: outcome.newDaHextets!, srh: outcome.newSrh } });
-    },
+    // run() already executed this endpoint behavior; the engine renders packet() from that POST-run state, so show it as-is (never execute the behavior a second time).
+    packet: (state) => (state.packet ? endpointPacket("c-r3-endt", "R3", "R3", "End.T: SL 1→0, DA R3→R6 (table CORE-B bound)", "END.T", state.packet) : undefined),
     run: (state) => {
       const entry = findEntry(state, "R3", FUNCTION.END_T);
       const outcome = processSrv6EndpointBehavior(entry, state.packet!.outer.daHextets, state.packet!.outer.srh, state.packet!.inner, state.vrfs);

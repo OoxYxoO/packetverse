@@ -839,11 +839,8 @@ export const srv6Steps: ScenarioStep<Srv6State>[] = [
     id: "r3-end-execute",
     label: "R3: Execute End",
     narrative: `Before: DA = ${R3_SID}, SL = 1. R3 executes End: decrement Segments Left (1 → 0), copy Segment List[0] into the IPv6 Destination Address. After: DA = ${R6_SID}, SL = 0.`,
-    packet: (state) => {
-      if (!state.packet?.srh) return undefined;
-      const result = executeEndBehavior(state.packet.daHextets, state.packet.srh);
-      return ipv6Packet("multi-r3-end", "R3", "R3", "End: SL 1→0, DA R3→R6", "END", { ...state.packet, daHextets: result.newDaHextets, srh: result.newSrh });
-    },
+    // run() already executed this endpoint behavior; the engine renders packet() from that POST-run state, so show it as-is (never execute the behavior a second time).
+    packet: (state) => (state.packet?.srh ? ipv6Packet("multi-r3-end", "R3", "R3", "End: SL 1→0, DA R3→R6", "END", state.packet) : undefined),
     run: (state) => {
       if (!state.packet?.srh) return { state, events: [] };
       const result = executeEndBehavior(state.packet.daHextets, state.packet.srh);
@@ -1029,11 +1026,8 @@ export const srv6Steps: ScenarioStep<Srv6State>[] = [
     id: "three-sid-r3-end",
     label: "R3: End — SL 2 → 1, DA → R5",
     narrative: `R3's Local SID Table matches. End: Segments Left 2 → 1, DA becomes Segment List[1] = ${R5_SID} (R5).`,
-    packet: (state) => {
-      if (!state.packet?.srh) return undefined;
-      const result = executeEndBehavior(state.packet.daHextets, state.packet.srh);
-      return ipv6Packet("three-r3-end", "R3", "R3", "End: SL 2→1, DA R3→R5", "END", { ...state.packet, daHextets: result.newDaHextets, srh: result.newSrh });
-    },
+    // run() already executed this endpoint behavior; the engine renders packet() from that POST-run state, so show it as-is (never execute the behavior a second time).
+    packet: (state) => (state.packet?.srh ? ipv6Packet("three-r3-end", "R3", "R3", "End: SL 2→1, DA R3→R5", "END", state.packet) : undefined),
     run: (state) => {
       if (!state.packet?.srh) return { state, events: [] };
       const result = executeEndBehavior(state.packet.daHextets, state.packet.srh);
@@ -1060,11 +1054,8 @@ export const srv6Steps: ScenarioStep<Srv6State>[] = [
     id: "three-sid-r5-end",
     label: "R5: End — SL 1 → 0, DA → R6",
     narrative: `R5's Local SID Table matches. End: Segments Left 1 → 0, DA becomes Segment List[0] = ${R6_SID} (R6).`,
-    packet: (state) => {
-      if (!state.packet?.srh) return undefined;
-      const result = executeEndBehavior(state.packet.daHextets, state.packet.srh);
-      return ipv6Packet("three-r5-end", "R5", "R5", "End: SL 1→0, DA R5→R6", "END", { ...state.packet, daHextets: result.newDaHextets, srh: result.newSrh });
-    },
+    // run() already executed this endpoint behavior; the engine renders packet() from that POST-run state, so show it as-is (never execute the behavior a second time).
+    packet: (state) => (state.packet?.srh ? ipv6Packet("three-r5-end", "R5", "R5", "End: SL 1→0, DA R5→R6", "END", state.packet) : undefined),
     run: (state) => {
       if (!state.packet?.srh) return { state, events: [] };
       const result = executeEndBehavior(state.packet.daHextets, state.packet.srh);
@@ -1243,11 +1234,8 @@ export const srv6Steps: ScenarioStep<Srv6State>[] = [
     id: "repaired-r3-end",
     label: "R3: Local SID Match — End Executes",
     narrative: `R3's Local SID Table now matches this DA again. End: Segments Left 1 → 0, DA → ${R6_SID}.`,
-    packet: (state) => {
-      if (!state.packet?.srh) return undefined;
-      const result = executeEndBehavior(state.packet.daHextets, state.packet.srh);
-      return ipv6Packet("repaired-r3-end", "R3", "R3", "End: SL 1→0, DA R3→R6", "END", { ...state.packet, daHextets: result.newDaHextets, srh: result.newSrh });
-    },
+    // run() already executed this endpoint behavior; the engine renders packet() from that POST-run state, so show it as-is (never execute the behavior a second time).
+    packet: (state) => (state.packet?.srh ? ipv6Packet("repaired-r3-end", "R3", "R3", "End: SL 1→0, DA R3→R6", "END", state.packet) : undefined),
     run: (state) => {
       if (!state.packet?.srh) return { state, events: [] };
       const result = executeEndBehavior(state.packet.daHextets, state.packet.srh);
