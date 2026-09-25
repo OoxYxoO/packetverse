@@ -33,7 +33,13 @@ import {
   type RouterId,
 } from "@/lib/sim-engine/scenarios/l2vpnEvolution";
 import { GraphTopologyViewer } from "@/components/network/GraphTopologyViewer";
-import { GraphPacket } from "@/components/network/GraphPacket";
+import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
+import { resolveBriefing } from "@/components/lesson/briefing";
+import { bubblePacket } from "@/components/lesson/mplsStack";
+import { PROTOCOL_HEX } from "@/components/lesson/packetCallout";
+import { floodCopyTitle, frameDstMac, l2vpnCallout } from "@/components/lesson/l2vpnCallout";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { ForwardingDecisionCard } from "@/components/protocol/ForwardingDecisionCard";
 import { EthernetFdbViewer } from "@/components/protocol/EthernetFdbViewer";
@@ -63,6 +69,14 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { DEVICE_ROUTERS, PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { EVO_BRIEFING_NOTES, EVO_BRIEFING_PHASES } from "./briefing";
+import { EVO_LESSON_SECTIONS, EvoLessonGuideContent } from "./LessonGuideContent";
+import { EVO_DEEP_DIVE_SECTIONS, EvoDeepDiveContent } from "./DeepDiveContent";
+
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "CUST-A · VPWS → VPLS → BGP-VPLS → H-VPLS → EVPN", sections: EVO_LESSON_SECTIONS, content: <EvoLessonGuideContent /> },
+  { id: "deep", label: "L2VPN Evolution Deep Dive", hint: "Five architectures compared factually", sections: EVO_DEEP_DIVE_SECTIONS, content: <EvoDeepDiveContent /> },
+];
 
 type ViewMode = "physical" | "service";
 const CHALLENGE_REQUIREMENTS: Requirement[] = ["multipoint", "native-multihoming", "fast-mac-mobility", "control-plane-mac-ip"];
@@ -108,6 +122,7 @@ export default function L2vpnEvolutionDemo() {
   const [packetSelected, setPacketSelected] = useState(false);
   const [xrayMode, setXrayMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -230,12 +245,14 @@ export default function L2vpnEvolutionDemo() {
     active: activePacket ? (e.a === activePacket.from && e.b === activePacket.to) || (e.b === activePacket.from && e.a === activePacket.to) : false,
     onPath: bestPathEdgeIds.includes(e.id),
   }));
-  const activePacket3D: ActivePacket3D | undefined = activePacket && topologyNodeIds.has(activePacket.from) && topologyNodeIds.has(activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const activePacket3D: ActivePacket3D | undefined = activePacket && topologyNodeIds.has(activePacket.from) && topologyNodeIds.has(activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to, callout: l2vpnCallout(activePacket) } : undefined;
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   // Flood/replication (brief §21): each simultaneous PW copy PE1 creates
   // from one original customer frame, rendered via FloodCopy3D — never a
   // single shared multicast label, never a sequential per-PE animation.
-  const floodCopies3D: FloodCopy3D[] | undefined = state.floodCopies?.map((fc) => ({ id: fc.id, fromId: fc.fromPe, toId: fc.toPe }));
+  // The replicas belong to the architecture this step simulates; browsing another architecture's topology must not show a flood that architecture never performed.
+  const floodCopies3D: FloodCopy3D[] | undefined = selectedArchitecture === autoArchitecture ? state.floodCopies?.map((fc) => ({ id: fc.id, fromId: fc.fromPe, toId: fc.toPe })) : undefined;
+  const floodCopiesCallout3D = floodCopies3D?.map((c) => ({ ...c, callout: { title: floodCopyTitle(frameDstMac(activePacket ?? state.packet), c.toId), color: PROTOCOL_HEX.MPLS } }));
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
   const activeDeviceId = PRIMARY_TRANSITION_ROUTER[currentStep?.id ?? ""] ?? DEVICE_ROUTERS.find((r) => traceFor(r, state)?.activeStageId !== undefined);
@@ -559,13 +576,58 @@ export default function L2vpnEvolutionDemo() {
   const activeNodes3D = nodes3D;
   const activeEdges3D = links3D;
 
+  const briefing = currentStep ? resolveBriefing(currentStep.id, currentStep.label, EVO_BRIEFING_PHASES, EVO_BRIEFING_NOTES) : undefined;
+
+  /** 2D is overview-only — leaving 3D exits device mode so the panels match what is shown. */
+  function handleView3DChange(on: boolean) {
+    setViewMode3D(on);
+    if (!on) {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  /** Focus 2D node click: inspect that device, not the current hop. */
+  const selectNode2D = (id: string) => {
+    setSelectedNodeId(id as RouterId);
+    setPacketSelected(false);
+    setSelectedLinkId(undefined);
+    setInspectorSurface("device");
+    setHistoricalIndex(undefined);
+  };
+
+  // 2D draws replicas on the step that creates them, or while a packet is shown; an earlier flood that lingers in state is not redrawn on explanatory steps.
+  const prevState = index > 0 ? engine.getStateAt(index - 1) : undefined;
+  const floodIsCurrent = !!floodCopies3D?.length && (!!activePacket || prevState?.floodCopies !== state.floodCopies);
+
+  const graph2D = (focus?: boolean) => (
+    <div className={focus ? "h-full [&>div]:!h-full [&>div]:rounded-none [&>div]:border-0" : undefined}>
+      <GraphTopologyViewer nodes={topology.nodes} edges={topology.edges.map((e) => ({ ...e, state: "full" as const }))} activeNodeIds={activePacket ? [activePacket.from, activePacket.to] : []} bestPathEdgeIds={bestPathEdgeIds} onNodeClick={focus ? selectNode2D : (id) => setSelectedNodeId(id as RouterId)} onEdgeClick={(id) => setSelectedLinkId(id)}>
+        {activePacket && nodeById[activePacket.from] && nodeById[activePacket.to] && (() => {
+          const c = l2vpnCallout(activePacket);
+          return <GraphPacketBubble packet={bubblePacket(activePacket, c)} from={{ x: nodeById[activePacket.from].x, y: nodeById[activePacket.from].y }} to={{ x: nodeById[activePacket.to].x, y: nodeById[activePacket.to].y }} title={c.title} scope={`${activePacket.from} → ${activePacket.to}`} onSelect={() => setPacketSelected(true)} />;
+        })()}
+        {floodIsCurrent && floodCopies3D?.map((c) => {
+            const f = nodeById[c.fromId];
+            const t = nodeById[c.toId];
+            return f && t ? <GraphPacketBubble key={c.id} packet={activePacket ? { ...activePacket, id: c.id, protocol: "MPLS" } : { id: c.id, protocol: "MPLS", from: c.fromId, to: c.toId, summary: "", layers: [] }} from={{ x: f.x, y: f.y }} to={{ x: t.x, y: t.y }} compact title={floodCopyTitle(frameDstMac(activePacket ?? state.packet), c.toId)} /> : null;
+          })}
+      </GraphTopologyViewer>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
       <div className="mb-6 flex items-center justify-between">
         <Link href="/dashboard" className="text-sm text-pv-text-faint hover:text-pv-text">
           ← Dashboard
         </Link>
-        <Badge tone="violet">CUST-A · L2VPN Evolution Capstone</Badge>
+        <div className="flex items-center gap-3">
+          <Badge tone="violet">CUST-A · L2VPN Evolution Capstone</Badge>
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="L2VPN Evolution Capstone" subtitle="CUST-A · VPWS · LDP-VPLS · BGP-VPLS · H-VPLS · EVPN" tabs={GUIDE_TABS} />
       </div>
 
       <h1 className="mb-2 text-2xl font-bold text-pv-text">L2VPN Evolution: VPWS → VPLS → BGP-VPLS → H-VPLS → EVPN</h1>
@@ -597,11 +659,23 @@ export default function L2vpnEvolutionDemo() {
         <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
           <div className="space-y-5">
             {/* Narrative */}
-            <GlassPanel strong className="p-5">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-pv-cyan-soft">{currentStep?.label}</h3>
-              <p className="text-sm leading-relaxed text-pv-text">{currentStep?.narrative}</p>
+            {currentStep && briefing && (
+              <MissionBriefingCard
+                stepNumber={index + 1}
+                totalSteps={totalSteps}
+                title={currentStep.label}
+                phase={briefing.phase}
+                objective={briefing.objective}
+                context={currentStep.narrative}
+                doingNow={briefing.doingNow}
+                takeaway={briefing.takeaway}
+                questionPending={questionActive}
+              />
+            )}
+            {whatChanged.length > 0 && (
+            <GlassPanel className="p-4">
               {whatChanged.length > 0 && (
-                <ul className="mt-3 space-y-1 border-t border-pv-border pt-3">
+                <ul className="space-y-1">
                   {whatChanged.map((w, i) => (
                     <li key={i} className="pv-mono text-[11px] text-pv-cyan-soft">
                       → {w}
@@ -610,12 +684,13 @@ export default function L2vpnEvolutionDemo() {
                 </ul>
               )}
             </GlassPanel>
+            )}
 
             {/* Toolbar */}
             <div className="flex flex-wrap items-center gap-3">
               <TopologyModeSwitcher options={ARCHITECTURES.map((a) => ({ value: a, label: ARCHITECTURE_LABEL[a] }))} value={selectedArchitecture} onChange={(v) => setSelectedArchitecture(v as Architecture)} tone="cyan" />
               {showServiceToggle && <TopologyModeSwitcher options={[{ value: "physical", label: "BGP Control" }, { value: "service", label: "Service Mesh" }]} value={viewMode} onChange={(v) => setViewMode(v as ViewMode)} tone="violet" />}
-              <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => setViewMode3D(v === "on")} tone="violet" />
+              <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => handleView3DChange(v === "on")} tone="violet" />
               {viewMode3D && (
                 <>
                   <TopologyModeSwitcher
@@ -656,7 +731,7 @@ export default function L2vpnEvolutionDemo() {
                       nodes={activeNodes3D}
                       links={activeEdges3D}
                       activePacket={inDeviceMode ? undefined : activePacket3D}
-                      floodCopies={inDeviceMode ? undefined : floodCopies3D}
+                      floodCopies={inDeviceMode ? undefined : floodCopiesCallout3D}
                       onSelectFloodCopy={setSelectedFloodCopyId}
                       selectedFloodCopyId={selectedFloodCopyId}
                       onSelectNode={(id) => {
@@ -764,20 +839,9 @@ export default function L2vpnEvolutionDemo() {
                 )}
               </>
             ) : (
-              <GlassPanel className="p-4">
-                <GraphTopologyViewer nodes={topology.nodes} edges={topology.edges.map((e) => ({ ...e, state: "full" as const }))} activeNodeIds={activePacket ? [activePacket.from, activePacket.to] : []} bestPathEdgeIds={bestPathEdgeIds} onNodeClick={(id) => setSelectedNodeId(id as RouterId)} onEdgeClick={(id) => setSelectedLinkId(id)}>
-                  {activePacket && nodeById[activePacket.from] && nodeById[activePacket.to] && (
-                    <GraphPacket packet={activePacket} from={{ x: nodeById[activePacket.from].x, y: nodeById[activePacket.from].y }} to={{ x: nodeById[activePacket.to].x, y: nodeById[activePacket.to].y }} onSelect={() => setPacketSelected(true)} />
-                  )}
-                </GraphTopologyViewer>
-
-                {!!state.floodCopies?.length && (
-                  <div className="mt-3 rounded-xl border border-pv-violet/30 bg-pv-violet/5 p-3">
-                    <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Flooding — Switch To 3D View To See Every Replica At Once</p>
-                    <p className="text-[11px] text-pv-text-muted">{state.floodCopies.map((fc) => `${fc.fromPe} → ${fc.toPe}`).join(", ")}</p>
-                  </div>
-                )}
-              </GlassPanel>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                {focusMode ? <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" /> : graph2D()}
+              </TopologyFrame>
             )}
 
             {!viewMode3D && packetSelected && activePacket && (
@@ -898,6 +962,10 @@ export default function L2vpnEvolutionDemo() {
             <>
               <TopologyModeSwitcher options={ARCHITECTURES.map((a) => ({ value: a, label: ARCHITECTURE_LABEL[a] }))} value={selectedArchitecture} onChange={(v) => setSelectedArchitecture(v as Architecture)} tone="cyan" />
               {showServiceToggle && <TopologyModeSwitcher options={[{ value: "physical", label: "BGP Control" }, { value: "service", label: "Service Mesh" }]} value={viewMode} onChange={(v) => setViewMode(v as ViewMode)} tone="violet" />}
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
+              <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={viewMode3D ? "3d" : "2d"} onChange={(v) => handleView3DChange(v === "3d")} />
+              {viewMode3D && (
+              <>
               <TopologyModeSwitcher
                 options={[
                   { value: "overview", label: "Overview" },
@@ -919,41 +987,27 @@ export default function L2vpnEvolutionDemo() {
                 </button>
               )}
               <TopologyModeSwitcher options={[{ value: "off", label: "Normal View" }, { value: "on", label: "X-Ray Packet View" }]} value={xrayMode ? "on" : "off"} onChange={(v) => setXrayMode(v === "on")} tone="violet" />
+              </>
+              )}
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">
-                  Step {Math.min(index + 1, totalSteps)} / {totalSteps}
-                </Badge>
-                <Badge tone="violet">{ARCHITECTURE_LABEL[selectedArchitecture]}</Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label ?? (isComplete ? "Complete" : "")}</span>
-              </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Prediction pending — answer in the panel to continue
-                </span>
-              ) : currentStep?.id === "repair-challenge" ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Engineer challenge pending — resolve the incident in the panel to continue
-                </span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            currentStep && briefing ? (
+              <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={`${ARCHITECTURE_LABEL[selectedArchitecture]} · ${briefing.objective}`} questionPending={questionActive} />
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Lesson complete</span>
+            )
           }
           canvas={
+            !viewMode3D ? (
+              graph2D(true)
+            ) : (
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
               <NetworkScene3D
                 nodes={activeNodes3D}
                 links={activeEdges3D}
                 activePacket={inDeviceMode ? undefined : activePacket3D}
-                floodCopies={inDeviceMode ? undefined : floodCopies3D}
+                floodCopies={inDeviceMode ? undefined : floodCopiesCallout3D}
                 onSelectFloodCopy={setSelectedFloodCopyId}
                 selectedFloodCopyId={selectedFloodCopyId}
                 onSelectNode={(id) => {
@@ -992,6 +1046,7 @@ export default function L2vpnEvolutionDemo() {
                 }
               />
             </div>
+            )
           }
           inspector={
             currentStep?.question ? (
@@ -1132,7 +1187,7 @@ export default function L2vpnEvolutionDemo() {
                 followPacket={cameraMode === "packetFollow"}
                 onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
                 view3D={viewMode3D}
-                onToggleView3D={() => setViewMode3D((v) => !v)}
+                onToggleView3D={() => handleView3DChange(!viewMode3D)}
               />
             </div>
           }

@@ -41,7 +41,13 @@ import {
 } from "@/lib/sim-engine/scenarios/bgpVpls";
 import { transportLabelFor } from "@/lib/sim-engine/scenarios/mplsVpls";
 import { GraphTopologyViewer } from "@/components/network/GraphTopologyViewer";
-import { GraphPacket } from "@/components/network/GraphPacket";
+import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
+import { resolveBriefing } from "@/components/lesson/briefing";
+import { bubblePacket } from "@/components/lesson/mplsStack";
+import { PROTOCOL_HEX } from "@/components/lesson/packetCallout";
+import { floodCopyTitle, frameDstMac, l2vpnCallout } from "@/components/lesson/l2vpnCallout";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { ForwardingDecisionCard } from "@/components/protocol/ForwardingDecisionCard";
 import { PacketJourneyTimeline } from "@/components/protocol/PacketJourneyTimeline";
@@ -78,6 +84,15 @@ import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import { bridgePortsSummary, explainNode } from "./explain";
 import { deviceForStep, interfacesFor, isHopStep, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { BGP_VPLS_BRIEFING_NOTES, BGP_VPLS_BRIEFING_PHASES } from "./briefing";
+import { BGP_VPLS_LESSON_SECTIONS, BgpVplsLessonGuideContent } from "./LessonGuideContent";
+import { BGP_VPLS_DEEP_DIVE_SECTIONS, BgpVplsDeepDiveContent } from "./DeepDiveContent";
+
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "PE1–PE3 via RR1 · VE IDs 1–3 · label blocks", sections: BGP_VPLS_LESSON_SECTIONS, content: <BgpVplsLessonGuideContent /> },
+  { id: "deep", label: "BGP-VPLS Deep Dive", hint: "RFC 4761 BGP-signaled VPLS in general", sections: BGP_VPLS_DEEP_DIVE_SECTIONS, content: <BgpVplsDeepDiveContent /> },
+];
+const calloutFor = (p: PacketVisual) => l2vpnCallout(p, { serviceName: "PW" });
 
 const DEVICE_ROUTERS: RouterId[] = ["CE1", "PE1", "P1", "P2", "P3", "PE2", "PE3", "CE2", "CE3", "RR1"];
 type TopoView = "physical" | "bgp-control" | "service" | "mac-learning";
@@ -127,6 +142,7 @@ export default function BgpVplsDemo() {
   const [packetSelected, setPacketSelected] = useState(false);
   const [xrayMode, setXrayMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -163,7 +179,6 @@ export default function BgpVplsDemo() {
   const showLabelBlockViewer = index >= STEP_IDX.labelBlockViewerPe1 && index < STEP_IDX.bgpTableNoMacs;
   const showPwMesh = index >= STEP_IDX.pwMeshUp;
   const showFdb = index >= STEP_IDX.bgpTableNoMacs && focusIsPe;
-  const showFloodNote = !!state.floodCopies && state.floodCopies.length > 0;
   const showComparison = index >= STEP_IDX.ldpVsBgpVpls && index < STEP_IDX.labelBlockExpansionIntro;
   const showLabelBlockLab = index >= STEP_IDX.labelBlockExpansionIntro && index < STEP_IDX.withdrawalIntro;
   const showRtLab = index >= STEP_IDX.withdrawalIntro;
@@ -221,13 +236,15 @@ export default function BgpVplsDemo() {
     active: activePacket ? (e.a === activePacket.from && e.b === activePacket.to) || (e.b === activePacket.from && e.a === activePacket.to) : false,
     onPath: bestPathEdgeIds.includes(e.id),
   }));
-  const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to, callout: calloutFor(activePacket) } : undefined;
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   // Two mutually-exclusive replication sources reuse the identical FloodCopy3D
   // mechanism (brief §14) — customer BUM flooding and BGP control-plane
   // fan-out (RR1 reflecting to its other clients) never occur at the same
   // time, but neither is ever animated as a fake sequential journey.
   const floodCopies3D: FloodCopy3D[] | undefined = state.floodCopies?.map((fc) => ({ id: fc.id, fromId: fc.fromPe, toId: fc.toPe })) ?? state.bgpFanout?.map((fc) => ({ id: fc.id, fromId: fc.fromId, toId: fc.toId }));
+  const floodCopyLabel = (c: { toId: string }) => state.floodCopies ? floodCopyTitle(state.packet?.frame.dstMac ?? frameDstMac(activePacket), c.toId) : `Reflected VPLS NLRI → ${c.toId}`;
+  const floodCopiesCallout3D = floodCopies3D?.map((c) => ({ ...c, callout: { title: floodCopyLabel(c), color: state.floodCopies ? PROTOCOL_HEX.MPLS : PROTOCOL_HEX.BGP } }));
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
   const activeDeviceId = DEVICE_ROUTERS.find((r) => traceFor(r, state, currentStep?.id ?? "").activeStageId !== undefined);
@@ -687,9 +704,52 @@ export default function BgpVplsDemo() {
     </GlassPanel>
   );
 
+  const briefing = currentStep ? resolveBriefing(currentStep.id, currentStep.label, BGP_VPLS_BRIEFING_PHASES, BGP_VPLS_BRIEFING_NOTES) : undefined;
+
+  /** 2D is overview-only — leaving 3D exits device mode so the panels match what is shown. */
+  function handleView3DChange(on: boolean) {
+    setViewMode3D(on);
+    if (!on) {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  const selectNode2D = (id: string) => {
+    setSelectedNodeId(id as RouterId);
+    setPacketSelected(false);
+    setSelectedLinkId(undefined);
+    setInspectorSurface("device");
+    setHistoricalIndex(undefined);
+  };
+
+  // 2D draws replicas on the step that creates them, or while a packet is shown; an earlier flood that lingers in state is not redrawn on explanatory steps.
+  const prevState = index > 0 ? engine.getStateAt(index - 1) : undefined;
+  const floodIsCurrent = !!floodCopies3D?.length && (!!activePacket || prevState?.floodCopies !== state.floodCopies || prevState?.bgpFanout !== state.bgpFanout);
+
+  const graph2D = (focus?: boolean) => (
+    <div className={focus ? "h-full [&>div]:!h-full [&>div]:rounded-none [&>div]:border-0" : undefined}>
+      <GraphTopologyViewer nodes={activeNodes} edges={activeEdges.map((e) => ({ ...e, state: "full" as const }))} activeNodeIds={activePacket ? [activePacket.from, activePacket.to] : []} bestPathEdgeIds={topoView === "physical" ? bestPathEdgeIds : activeEdges.map((e) => e.id)} onEdgeClick={(id) => setSelectedLinkId(id)} onNodeClick={focus ? selectNode2D : undefined}>
+        {activePacket && activeNodes.find((n) => n.id === activePacket.from) && activeNodes.find((n) => n.id === activePacket.to) && (() => {
+          const c = calloutFor(activePacket);
+          return <GraphPacketBubble packet={bubblePacket(activePacket, c)} from={activeNodes.find((n) => n.id === activePacket.from)!} to={activeNodes.find((n) => n.id === activePacket.to)!} title={c.title} scope={`${activePacket.from} → ${activePacket.to}`} />;
+        })()}
+        {floodIsCurrent && floodCopies3D?.map((c) => {
+          const f = activeNodes.find((n) => n.id === c.fromId);
+          const to = activeNodes.find((n) => n.id === c.toId);
+          const proto = state.floodCopies ? ("MPLS" as const) : ("BGP" as const);
+          // Copies are drawn from floodCopies themselves, so a flood step with no main packet (e.g. the broadcast flood) still shows every replica.
+          return f && to ? <GraphPacketBubble key={c.id} packet={activePacket ? { ...activePacket, id: c.id, protocol: proto } : { id: c.id, protocol: proto, from: c.fromId, to: c.toId, summary: "", layers: [] }} from={f} to={to} compact title={floodCopyLabel(c)} /> : null;
+        })}
+      </GraphTopologyViewer>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
         <Badge tone="cyan" className="mb-3">
           BGP-SIGNALED VPLS · RFC 4761 · AUTO-DISCOVERY · LABEL BLOCKS
         </Badge>
@@ -700,6 +760,9 @@ export default function BgpVplsDemo() {
           not EVPN: BGP never carries a customer MAC address, and the classic Ethernet data plane underneath —
           learning, flooding, split horizon — never changes.
         </p>
+      </div>
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="BGP-Signaled VPLS" subtitle="AS 65000 · RR1 · RT 65000:100 · VBO 1 / VBS 4" tabs={GUIDE_TABS} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -746,7 +809,7 @@ export default function BgpVplsDemo() {
           value={topoView}
           onChange={setTopoView}
         />
-        <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => setViewMode3D(v === "on")} tone="violet" />
+        <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => handleView3DChange(v === "on")} tone="violet" />
         {viewMode3D && (
           <>
             <TopologyModeSwitcher
@@ -788,7 +851,7 @@ export default function BgpVplsDemo() {
                 nodes={nodes3D}
                 links={links3D}
                 activePacket={inDeviceMode ? undefined : activePacket3D}
-                floodCopies={inDeviceMode ? undefined : floodCopies3D}
+                floodCopies={inDeviceMode ? undefined : floodCopiesCallout3D}
                 onSelectFloodCopy={setSelectedFloodCopyId}
                 selectedFloodCopyId={selectedFloodCopyId}
                 onSelectNode={(id) => {
@@ -898,18 +961,10 @@ export default function BgpVplsDemo() {
             </>
           ) : (
             <>
-              <GraphTopologyViewer nodes={activeNodes} edges={activeEdges.map((e) => ({ ...e, state: "full" as const }))} activeNodeIds={activePacket ? [activePacket.from, activePacket.to] : []} bestPathEdgeIds={topoView === "physical" ? bestPathEdgeIds : activeEdges.map((e) => e.id)} onEdgeClick={(id) => setSelectedLinkId(id)}>
-                {activePacket && activeNodes.find((n) => n.id === activePacket.from) && activeNodes.find((n) => n.id === activePacket.to) && (
-                  <GraphPacket packet={activePacket} from={activeNodes.find((n) => n.id === activePacket.from)!} to={activeNodes.find((n) => n.id === activePacket.to)!} />
-                )}
-              </GraphTopologyViewer>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                {focusMode ? <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" /> : graph2D()}
+              </TopologyFrame>
 
-              {showFloodNote && (
-                <GlassPanel className="p-4">
-                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-pv-violet">2D Overview Doesn&apos;t Animate Simultaneous Copies</h4>
-                  <p className="text-xs text-pv-text-muted">Switch to 3D View to watch every replica travel independently at the same time — customer BUM floods and BGP control-plane fan-out alike.</p>
-                </GlassPanel>
-              )}
 
               {selectedLinkId && !lastHop && linkDetailFor(selectedLinkId, state) && <LinkDetailPanel detail={linkDetailFor(selectedLinkId, state)!} onClose={() => setSelectedLinkId(undefined)} />}
 
@@ -917,16 +972,18 @@ export default function BgpVplsDemo() {
             </>
           )}
 
-          {!isComplete && currentStep && (
-            <GlassPanel strong className="p-6">
-              <div className="mb-2 flex items-center gap-2">
-                <Badge tone="muted">
-                  Step {index + 1} / {totalSteps}
-                </Badge>
-                <span className="text-xs text-pv-text-faint">{currentStep.label}</span>
-              </div>
-              <p className="text-sm leading-relaxed text-pv-text">{currentStep.narrative}</p>
-            </GlassPanel>
+          {!isComplete && currentStep && briefing && (
+            <MissionBriefingCard
+              stepNumber={index + 1}
+              totalSteps={totalSteps}
+              title={currentStep.label}
+              phase={briefing.phase}
+              objective={briefing.objective}
+              context={currentStep.narrative}
+              doingNow={briefing.doingNow}
+              takeaway={briefing.takeaway}
+              questionPending={questionActive}
+            />
           )}
 
           {!isComplete && currentStep?.question && <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />}
@@ -1248,6 +1305,10 @@ export default function BgpVplsDemo() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
+              <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={viewMode3D ? "3d" : "2d"} onChange={(v) => handleView3DChange(v === "3d")} />
+              {viewMode3D && (
+              <>
               <TopologyModeSwitcher
                 options={[
                   { value: "overview", label: "Overview" },
@@ -1269,40 +1330,27 @@ export default function BgpVplsDemo() {
                 </button>
               )}
               <TopologyModeSwitcher options={[{ value: "off", label: "Normal View" }, { value: "on", label: "X-Ray Packet View" }]} value={xrayMode ? "on" : "off"} onChange={(v) => setXrayMode(v === "on")} tone="violet" />
+              </>
+              )}
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">
-                  Step {Math.min(index + 1, totalSteps)} / {totalSteps}
-                </Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label ?? (isComplete ? "Complete" : "")}</span>
-              </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Prediction pending — answer in the panel to continue
-                </span>
-              ) : currentStep?.id === "repair-challenge" ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Engineer challenge pending — repair the RT in the panel to continue
-                </span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            currentStep && briefing ? (
+              <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={briefing.objective} questionPending={questionActive} />
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Lesson complete</span>
+            )
           }
           canvas={
+            !viewMode3D ? (
+              graph2D(true)
+            ) : (
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
                 activePacket={inDeviceMode ? undefined : activePacket3D}
-                floodCopies={inDeviceMode ? undefined : floodCopies3D}
+                floodCopies={inDeviceMode ? undefined : floodCopiesCallout3D}
                 onSelectFloodCopy={setSelectedFloodCopyId}
                 selectedFloodCopyId={selectedFloodCopyId}
                 onSelectNode={(id) => {
@@ -1341,6 +1389,7 @@ export default function BgpVplsDemo() {
                 }
               />
             </div>
+            )
           }
           inspector={
             currentStep?.question ? (
@@ -1480,7 +1529,7 @@ export default function BgpVplsDemo() {
                 followPacket={cameraMode === "packetFollow"}
                 onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
                 view3D={viewMode3D}
-                onToggleView3D={() => setViewMode3D((v) => !v)}
+                onToggleView3D={() => handleView3DChange(!viewMode3D)}
               />
             </div>
           }
