@@ -319,13 +319,14 @@ export interface MplsPacketState {
   dstIp: string;
 }
 
+/** RFC 3032: existing labels keep their S bits; only a label pushed onto an empty stack is the bottom (S=1). */
 function pushLabel(pkt: MplsPacketState, value: LabelValue): MplsPacketState {
-  const labels = pkt.labels.map((l) => ({ ...l, bottomOfStack: false }));
-  return { ...pkt, labels: [{ value, purpose: "segment", bottomOfStack: labels.length === 0 }, ...labels] };
+  return { ...pkt, labels: [{ value, purpose: "segment", bottomOfStack: pkt.labels.length === 0 }, ...pkt.labels] };
 }
+/** Removes only the top label — the remaining labels' S bits are already correct and are never rewritten. */
 function popTopLabel(pkt: MplsPacketState): MplsPacketState {
   const [, ...rest] = pkt.labels;
-  return { ...pkt, labels: rest.map((l, i) => ({ ...l, bottomOfStack: i === rest.length - 1 })) };
+  return { ...pkt, labels: rest };
 }
 
 export type FwdAction = "PUSH" | "CONTINUE" | "POP" | "POP_AND_FORWARD_ADJ" | "IP_FORWARD" | "INVALID_SID";
@@ -530,7 +531,7 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
     id: "r1-push-node-sid",
     label: "R1: PUSH Node SID R6",
     narrative: `R1 imposes the Node SID label ${R6_LABEL}.`,
-    packet: (state) => (state.packet ? mplsPacket("push-node-1", "R1", "R2", "impose Node SID R6", "PUSH", pushLabel(state.packet, R6_LABEL)) : undefined),
+    packet: (state) => (state.packet ? mplsPacket("push-node-1", "R1", "R2", "impose Node SID R6", "PUSH", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const pkt = pushLabel(state.packet, R6_LABEL);
@@ -548,7 +549,7 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
     id: "r4-pop-php",
     label: "R4: POP (PHP)",
     narrative: "R4 is the penultimate hop toward R6 — R6 signaled implicit-null, so R4 pops before forwarding (standard penultimate-hop popping).",
-    packet: (state) => (state.packet ? mplsPacket("php-1", "R4", "R6", "penultimate-hop pop", "POP", popTopLabel(state.packet)) : undefined),
+    packet: (state) => (state.packet ? mplsPacket("php-1", "R4", "R6", "penultimate-hop pop", "POP", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       return { state: { ...state, packet: popTopLabel(state.packet), packetAt: "R6", journey: [...state.journey, { router: "R4", input: fmtLabel(R6_LABEL), lookup: "Primary LFIB: PHP (implicit-null from R6)", action: "POP", output: "IP (unlabeled)" }] }, events: [] };
@@ -599,7 +600,7 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
     id: "r1-push-node-sid-2",
     label: "R1: PUSH Node SID R6 (Unchanged Instruction)",
     narrative: `R1 imposes the exact same label, ${R6_LABEL}.`,
-    packet: (state) => (state.packet ? mplsPacket("push-node-2", "R1", "R3", "impose Node SID R6", "PUSH", pushLabel(state.packet, R6_LABEL)) : undefined),
+    packet: (state) => (state.packet ? mplsPacket("push-node-2", "R1", "R3", "impose Node SID R6", "PUSH", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       return { state: { ...state, packet: pushLabel(state.packet, R6_LABEL), packetAt: "R3", journey: [...state.journey, { router: "R1", input: "IP", lookup: "Segment list: [R6 Node SID] (unchanged)", action: "PUSH", output: fmtLabel(R6_LABEL) }] }, events: [] };
@@ -616,7 +617,7 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
     id: "r5-pop-php-2",
     label: "R5: POP (PHP)",
     narrative: "R5 is now the penultimate hop toward R6.",
-    packet: (state) => (state.packet ? mplsPacket("php-2", "R5", "R6", "penultimate-hop pop", "POP", popTopLabel(state.packet)) : undefined),
+    packet: (state) => (state.packet ? mplsPacket("php-2", "R5", "R6", "penultimate-hop pop", "POP", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       return { state: { ...state, packet: popTopLabel(state.packet), packetAt: "R6", journey: [...state.journey, { router: "R5", input: fmtLabel(R6_LABEL), lookup: "Primary LFIB: PHP (implicit-null from R6)", action: "POP", output: "IP (unlabeled)" }] }, events: [] };
@@ -695,40 +696,29 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
   {
     id: "send-steered-packet",
     label: "Impose The Segment List",
-    narrative: `R1 imposes all three labels in order: [${R3_LABEL}, ${R3_R5_ADJ_SID.label}, ${R6_LABEL}] — the active instruction (R3 Node SID) is on top.`,
+    narrative: `The segment list is [${R3_LABEL}, ${R3_R5_ADJ_SID.label}, ${R6_LABEL}] — the active instruction (R3 Node SID) first. R1 is directly connected to R3, and R3 advertises its Prefix-SID with implicit-null (PHP), so R1 is the penultimate hop for ${R3_LABEL}: the R3 Node SID is completed by PHP at R1 and never crosses the R1 → R3 wire.`,
     packet: () => ({ id: "ip-steer", protocol: "IP", from: "R1", to: "R1", summary: "Packet classified for the R3→R5-forcing segment list", layers: [ipLayer(HOST_BEHIND_R1, HOST_BEHIND_R6)] }),
     run: (state) => ({ state: { ...state, packet: { labels: [], srcIp: HOST_BEHIND_R1, dstIp: HOST_BEHIND_R6 }, packetAt: "R1", journey: [] }, events: [] }),
   },
   {
     id: "r1-push-segments",
-    label: "R1: PUSH Full Segment Stack",
-    narrative: "R1 imposes all three labels at once — this is what \"a segment list\" physically is: one MPLS label stack, imposed one time, encoding an ordered list of instructions.",
-    packet: (state) => {
-      if (!state.packet) return undefined;
-      let pkt = pushLabel(state.packet, R6_LABEL);
-      pkt = pushLabel(pkt, R3_R5_ADJ_SID.label);
-      pkt = pushLabel(pkt, R3_LABEL);
-      return mplsPacket("push-steer", "R1", "R3", "impose full segment stack", "PUSH", pkt);
-    },
+    label: "R1: PUSH The Segment Stack",
+    narrative: `This is what "a segment list" physically is: one MPLS label stack, imposed one time, encoding an ordered list of instructions. R1 is the penultimate hop for the first segment (${R3_LABEL}, implicit-null from R3), so it imposes only what R3 must read: ${R3_R5_ADJ_SID.label} on top, ${R6_LABEL} at the bottom.`,
+    packet: (state) => (state.packet ? mplsPacket("push-steer", "R1", "R3", `impose segment stack (${R3_LABEL} completed by PHP at R1)`, "PUSH", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
-      let pkt = pushLabel(state.packet, R6_LABEL);
-      pkt = pushLabel(pkt, R3_R5_ADJ_SID.label);
-      pkt = pushLabel(pkt, R3_LABEL);
-      return { state: { ...state, packet: pkt, packetAt: "R3", journey: [...state.journey, { router: "R1", input: "IP", lookup: `Segment list: [${R3_LABEL}, ${R3_R5_ADJ_SID.label}, ${R6_LABEL}]`, action: "PUSH", output: `${fmtLabel(R3_LABEL)} / ${fmtLabel(R3_R5_ADJ_SID.label)} / ${fmtLabel(R6_LABEL)}` }] }, events: [] };
+      const pkt = pushLabel(pushLabel(state.packet, R6_LABEL), R3_R5_ADJ_SID.label);
+      return { state: { ...state, packet: pkt, packetAt: "R3", journey: [...state.journey, { router: "R1", input: "IP", lookup: `Segment list: [${R3_LABEL}, ${R3_R5_ADJ_SID.label}, ${R6_LABEL}]; R1 is penultimate hop for ${R3_LABEL} (implicit-null from R3) — PHP, not imposed`, action: "PUSH", output: `${fmtLabel(R3_R5_ADJ_SID.label)} / ${fmtLabel(R6_LABEL)}` }] }, events: [] };
     },
   },
   {
     id: "r3-node-sid-complete",
     label: "R3: Node SID R3 Completes",
-    narrative: `R3 recognizes itself as the target of the active segment (${R3_LABEL}). For this segment list, no PHP applies to the R3 Node SID — R3 pops its own label on arrival, completing the first segment. The Adj-SID is now the active instruction.`,
-    packet: (state) => (state.packet ? mplsPacket("r3-node-complete", "R3", "R3", "Node SID R3 self-completes", "POP", popTopLabel(state.packet)) : undefined),
+    narrative: `The packet has reached R3, the target of the first segment (${R3_LABEL}). That segment already completed through PHP at R1 (implicit-null from R3), so no label is popped here — the packet arrives with R3's own Adj-SID ${R3_R5_ADJ_SID.label} on top. The Adj-SID is now the active instruction.`,
+    packet: (state) => (state.packet ? mplsPacket("r3-node-complete", "R3", "R3", `Node SID R3 completed via PHP at R1 — ${R3_R5_ADJ_SID.label} active`, "ARRIVED", state.packet) : undefined),
     run: (state) => {
       if (!state.packet || !state.segmentList) return { state, events: [] };
-      return {
-        state: { ...state, packet: popTopLabel(state.packet), segmentList: advanceSegmentList(state.segmentList), journey: [...state.journey, { router: "R3", input: fmtLabel(R3_LABEL), lookup: "Active SID = R3 Node SID; R3 is the target — segment completes on arrival", action: "POP", output: fmtLabel(R3_R5_ADJ_SID.label) }] },
-        events: [],
-      };
+      return { state: { ...state, segmentList: advanceSegmentList(state.segmentList) }, events: [] };
     },
     whatChanged: () => ["Segment 1 (R3 Node SID): completed", "Segment 2 (R3→R5 Adj-SID): now active"],
   },
@@ -736,7 +726,7 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
     id: "r3-execute-adjsid",
     label: "R3: Execute Local Adjacency SID",
     narrative: `The active SID's owner is R3 itself, and its type is adjacency — R3 resolves the specified adjacency (R3→R5), pops its own label, and sends over that exact link, not via any shortest-path lookup. The next segment (R6 Node SID) becomes active.`,
-    packet: (state) => (state.packet ? mplsPacket("r3-adj-exec", "R3", "R5", "resolve R3→R5 adjacency", "POP_AND_FORWARD_ADJ", popTopLabel(state.packet)) : undefined),
+    packet: (state) => (state.packet ? mplsPacket("r3-adj-exec", "R3", "R5", "resolve R3→R5 adjacency", "POP_AND_FORWARD_ADJ", state.packet) : undefined),
     run: (state) => {
       if (!state.packet || !state.segmentList) return { state, events: [] };
       return {
@@ -748,26 +738,29 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
   },
   {
     id: "r5-continue",
-    label: "R5: CONTINUE Toward R6",
-    narrative: "Once the Adj-SID is completed, the next active segment is the R6 Node SID. R5 → R6 follows the ordinary IGP shortest path from R5 — which happens to be one hop.",
-    packet: (state) => (state.packet ? mplsPacket("r5-continue", "R5", "R6", "forward toward R6 (unchanged)", "CONTINUE", state.packet) : undefined),
-    run: (state) => ({ state: { ...state, packetAt: "R6", journey: [...state.journey, { router: "R5", input: fmtLabel(R6_LABEL), lookup: "Active SID = R6 Node SID; shortest path is directly connected", action: "CONTINUE", output: fmtLabel(R6_LABEL) }] }, events: [] }),
+    label: "R5: POP (PHP) Toward R6",
+    narrative: `Once the Adj-SID is completed, the next active segment is the R6 Node SID. R5's shortest path to R6 is the direct link, so R5 is the penultimate hop — R6 advertised implicit-null, so R5 pops ${R6_LABEL} before forwarding, exactly as in every other flow to R6.`,
+    packet: (state) => (state.packet ? mplsPacket("r5-continue", "R5", "R6", "penultimate-hop pop", "POP", state.packet) : undefined),
+    run: (state) => {
+      if (!state.packet) return { state, events: [] };
+      return { state: { ...state, packet: popTopLabel(state.packet), packetAt: "R6", journey: [...state.journey, { router: "R5", input: fmtLabel(R6_LABEL), lookup: "Active SID = R6 Node SID; directly connected — PHP (implicit-null from R6)", action: "POP", output: "IP (unlabeled)" }] }, events: [] };
+    },
   },
   {
     id: "r6-pop-node-sid",
     label: "R6: Node SID R6 Completes",
-    narrative: "R6 recognizes itself as the target and pops its own last remaining label (no-PHP for this segment list), exposing the IP packet.",
-    packet: (state) => (state.packet ? mplsPacket("r6-pop", "R6", "R6", "final segment self-completes", "POP", popTopLabel(state.packet)) : undefined),
+    narrative: `R6 receives the exposed IP packet. Its Node SID segment (${R6_LABEL}) already completed through PHP at R5, so there is no label left for R6 to pop — every segment instruction has now been executed.`,
+    packet: (state) => (state.packet ? { id: "r6-pop", protocol: "IP", from: "R6", to: "R6", summary: `R6 receives IP — Node SID ${R6_LABEL} completed via PHP at R5`, layers: buildPacketLayers(state.packet) } : undefined),
     run: (state) => {
       if (!state.packet || !state.segmentList) return { state, events: [] };
-      return { state: { ...state, packet: popTopLabel(state.packet), segmentList: advanceSegmentList(state.segmentList), journey: [...state.journey, { router: "R6", input: fmtLabel(R6_LABEL), lookup: "Active SID = R6 Node SID; R6 is the target", action: "POP", output: "IP (unlabeled)" }] }, events: [] };
+      return { state: { ...state, segmentList: advanceSegmentList(state.segmentList) }, events: [] };
     },
     whatChanged: () => ["Segment 3 (R6 Node SID): completed — all segments executed"],
   },
   {
     id: "r6-deliver-steered",
     label: "R6 Delivers — Steered Path",
-    narrative: "R6 delivers the packet. Path taken: R1 → R3 → R5 → R6. R1→R3: R3 Node SID. R3→R5: Adj-SID owned by R3. R5→R6: R6 Node SID.",
+    narrative: "R6 delivers the packet. Path taken: R1 → R3 → R5 → R6. R1→R3: R3 Node SID (completed by PHP at R1). R3→R5: Adj-SID owned by R3. R5→R6: R6 Node SID (completed by PHP at R5).",
     packet: (state) => (state.packet ? { id: "delivered-steer", protocol: "IP", from: "R6", to: "R6", summary: "Delivered via steered segment list", layers: buildPacketLayers(state.packet) } : undefined),
     run: (state) => ({ state: { ...state, journey: [...state.journey, { router: "R6", input: "IP", lookup: "IP delivery", action: "IP_FORWARD", output: "Delivered" }] }, events: [] }),
     whatChanged: () => ["Delivered R1 → R3 → R5 → R6 — the R3→R5 link was used despite not being the IGP shortest path"],
@@ -831,15 +824,11 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
     id: "fault-r1-invalid",
     label: "R1: Active SID Not Owned Here",
     narrative: `R1 attempts to impose the active segment (${R3_R5_ADJ_SID.label}, owned by R3). Its own LFIB has no entry for executing a foreign local Adj-SID as an instruction — this SID exists in the domain, but not here.`,
-    packet: (state) => {
-      if (!state.packet) return undefined;
-      const pkt = pushLabel(pushLabel(state.packet, R6_LABEL), R3_R5_ADJ_SID.label);
-      return mplsPacket("fault-drop", "R1", "R1", "active SID not owned/valid here", "INVALID_SID", pkt);
-    },
+    packet: (state) => (state.packet ? { id: "fault-drop", protocol: "IP", from: "R1", to: "R1", summary: `INVALID_SID: dropped at R1 before imposition — active SID ${R3_R5_ADJ_SID.label} is owned by R3`, layers: buildPacketLayers(state.packet) } : undefined),
     run: (state) => {
       const validation = state.segmentList ? validateSegmentList(state.segmentList, "R1") : { valid: true };
       return {
-        state: { ...state, fault: { reason: validation.reason ?? "Invalid segment list." }, journey: [...state.journey, { router: "R1", input: fmtLabel(R3_R5_ADJ_SID.label), lookup: `Local LFIB: no entry — owner=R3, scope=LOCAL, not valid at R1`, action: "INVALID_SID", output: "DROPPED" }] },
+        state: { ...state, fault: { reason: validation.reason ?? "Invalid segment list." }, journey: [...state.journey, { router: "R1", input: "IP", lookup: `Active SID ${R3_R5_ADJ_SID.label}: local LFIB has no entry — owner=R3, scope=LOCAL, not valid at R1`, action: "INVALID_SID", output: "DROPPED" }] },
         events: [{ type: "MPLS_LSP_CHANGED", stepId: "fault-r1-invalid", timestamp: Date.now(), message: "Segment list rejected at R1 — active Adj-SID not owned here" }],
       };
     },
@@ -864,7 +853,7 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
   {
     id: "repaired-send",
     label: "Send With The Correct Segment List",
-    narrative: `Correct stack: [${R3_LABEL}, ${R3_R5_ADJ_SID.label}, ${R6_LABEL}].`,
+    narrative: `Correct segment list: [${R3_LABEL}, ${R3_R5_ADJ_SID.label}, ${R6_LABEL}] — R3 Node SID first, so R3 is reached before its local Adj-SID is read.`,
     packet: () => ({ id: "ip-repaired", protocol: "IP", from: "R1", to: "R1", summary: "Packet classified for the corrected segment list", layers: [ipLayer(HOST_BEHIND_R1, HOST_BEHIND_R6)] }),
     run: (state) => ({
       state: { ...state, segmentList: buildSegmentList([{ type: "NODE", target: "R3" }, { type: "ADJ", adjId: R3_R5_ADJ_SID.id }, { type: "NODE", target: "R6" }], state.prefixSids, state.adjSids), packet: { labels: [], srcIp: HOST_BEHIND_R1, dstIp: HOST_BEHIND_R6 }, packetAt: "R1", journey: [], fault: undefined },
@@ -874,37 +863,29 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
   {
     id: "repaired-r1-push",
     label: "R1: PUSH Correct Stack",
-    narrative: "R1 imposes the correct three labels, active segment on top.",
-    packet: (state) => {
-      if (!state.packet) return undefined;
-      let pkt = pushLabel(state.packet, R6_LABEL);
-      pkt = pushLabel(pkt, R3_R5_ADJ_SID.label);
-      pkt = pushLabel(pkt, R3_LABEL);
-      return mplsPacket("repaired-push", "R1", "R3", "impose corrected segment stack", "PUSH", pkt);
-    },
+    narrative: `R1 imposes the corrected stack. The first segment (${R3_LABEL}) is completed by PHP at R1 — R1 is R3's penultimate hop — so the wire carries ${R3_R5_ADJ_SID.label} on top and ${R6_LABEL} at the bottom.`,
+    packet: (state) => (state.packet ? mplsPacket("repaired-push", "R1", "R3", `impose corrected segment stack (${R3_LABEL} completed by PHP at R1)`, "PUSH", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
-      let pkt = pushLabel(state.packet, R6_LABEL);
-      pkt = pushLabel(pkt, R3_R5_ADJ_SID.label);
-      pkt = pushLabel(pkt, R3_LABEL);
-      return { state: { ...state, packet: pkt, packetAt: "R3", journey: [...state.journey, { router: "R1", input: "IP", lookup: `Segment list: [${R3_LABEL}, ${R3_R5_ADJ_SID.label}, ${R6_LABEL}]`, action: "PUSH", output: `${fmtLabel(R3_LABEL)} / ${fmtLabel(R3_R5_ADJ_SID.label)} / ${fmtLabel(R6_LABEL)}` }] }, events: [] };
+      const pkt = pushLabel(pushLabel(state.packet, R6_LABEL), R3_R5_ADJ_SID.label);
+      return { state: { ...state, packet: pkt, packetAt: "R3", journey: [...state.journey, { router: "R1", input: "IP", lookup: `Segment list: [${R3_LABEL}, ${R3_R5_ADJ_SID.label}, ${R6_LABEL}]; R1 is penultimate hop for ${R3_LABEL} (implicit-null from R3) — PHP, not imposed`, action: "PUSH", output: `${fmtLabel(R3_R5_ADJ_SID.label)} / ${fmtLabel(R6_LABEL)}` }] }, events: [] };
     },
   },
   {
     id: "repaired-r3-complete",
     label: "R3: Node SID R3 Completes",
-    narrative: "R3 is the target of the active segment and completes it on arrival.",
-    packet: (state) => (state.packet ? mplsPacket("repaired-r3-complete", "R3", "R3", "Node SID R3 self-completes", "POP", popTopLabel(state.packet)) : undefined),
+    narrative: `R3 is the target of the first segment, which already completed through PHP at R1 — no label is popped here. The packet arrives with R3's own Adj-SID ${R3_R5_ADJ_SID.label} active on top.`,
+    packet: (state) => (state.packet ? mplsPacket("repaired-r3-complete", "R3", "R3", `Node SID R3 completed via PHP at R1 — ${R3_R5_ADJ_SID.label} active`, "ARRIVED", state.packet) : undefined),
     run: (state) => {
       if (!state.packet || !state.segmentList) return { state, events: [] };
-      return { state: { ...state, packet: popTopLabel(state.packet), segmentList: advanceSegmentList(state.segmentList), journey: [...state.journey, { router: "R3", input: fmtLabel(R3_LABEL), lookup: "Active SID = R3 Node SID; R3 is the target", action: "POP", output: fmtLabel(R3_R5_ADJ_SID.label) }] }, events: [] };
+      return { state: { ...state, segmentList: advanceSegmentList(state.segmentList) }, events: [] };
     },
   },
   {
     id: "repaired-r3-adj",
     label: "R3: Execute Local Adjacency SID",
     narrative: "This time, R3 legitimately owns the active Adj-SID — it resolves R3→R5 and forwards over that exact link.",
-    packet: (state) => (state.packet ? mplsPacket("repaired-r3-adj", "R3", "R5", "resolve R3→R5 adjacency", "POP_AND_FORWARD_ADJ", popTopLabel(state.packet)) : undefined),
+    packet: (state) => (state.packet ? mplsPacket("repaired-r3-adj", "R3", "R5", "resolve R3→R5 adjacency", "POP_AND_FORWARD_ADJ", state.packet) : undefined),
     run: (state) => {
       if (!state.packet || !state.segmentList) return { state, events: [] };
       return { state: { ...state, packet: popTopLabel(state.packet), packetAt: "R5", segmentList: advanceSegmentList(state.segmentList), journey: [...state.journey, { router: "R3", input: fmtLabel(R3_R5_ADJ_SID.label), lookup: "SID owner = R3 (local); type = adjacency; resolve R3→R5", action: "POP_AND_FORWARD_ADJ", output: `${fmtLabel(R6_LABEL)} → via R3→R5` }] }, events: [] };
@@ -912,19 +893,22 @@ export const srMplsSteps: ScenarioStep<SrMplsState>[] = [
   },
   {
     id: "repaired-r5-continue",
-    label: "R5: CONTINUE Toward R6",
-    narrative: "R5 forwards the final segment toward R6.",
-    packet: (state) => (state.packet ? mplsPacket("repaired-r5-continue", "R5", "R6", "forward toward R6 (unchanged)", "CONTINUE", state.packet) : undefined),
-    run: (state) => ({ state: { ...state, packetAt: "R6", journey: [...state.journey, { router: "R5", input: fmtLabel(R6_LABEL), lookup: "Active SID = R6 Node SID; shortest path is directly connected", action: "CONTINUE", output: fmtLabel(R6_LABEL) }] }, events: [] }),
+    label: "R5: POP (PHP) Toward R6",
+    narrative: `R5 is the penultimate hop toward R6 for the final segment — it pops ${R6_LABEL} (implicit-null from R6) and forwards the IP packet.`,
+    packet: (state) => (state.packet ? mplsPacket("repaired-r5-continue", "R5", "R6", "penultimate-hop pop", "POP", state.packet) : undefined),
+    run: (state) => {
+      if (!state.packet) return { state, events: [] };
+      return { state: { ...state, packet: popTopLabel(state.packet), packetAt: "R6", journey: [...state.journey, { router: "R5", input: fmtLabel(R6_LABEL), lookup: "Active SID = R6 Node SID; directly connected — PHP (implicit-null from R6)", action: "POP", output: "IP (unlabeled)" }] }, events: [] };
+    },
   },
   {
     id: "repaired-r6-pop",
     label: "R6: Final Segment Completes",
-    narrative: "R6 pops its own last label, exposing the IP packet.",
-    packet: (state) => (state.packet ? mplsPacket("repaired-r6-pop", "R6", "R6", "final segment self-completes", "POP", popTopLabel(state.packet)) : undefined),
+    narrative: `R6 receives the exposed IP packet — its Node SID segment (${R6_LABEL}) already completed through PHP at R5. All segments are executed.`,
+    packet: (state) => (state.packet ? { id: "repaired-r6-pop", protocol: "IP", from: "R6", to: "R6", summary: `R6 receives IP — Node SID ${R6_LABEL} completed via PHP at R5`, layers: buildPacketLayers(state.packet) } : undefined),
     run: (state) => {
       if (!state.packet || !state.segmentList) return { state, events: [] };
-      return { state: { ...state, packet: popTopLabel(state.packet), segmentList: advanceSegmentList(state.segmentList), journey: [...state.journey, { router: "R6", input: fmtLabel(R6_LABEL), lookup: "Active SID = R6 Node SID; R6 is the target", action: "POP", output: "IP (unlabeled)" }] }, events: [] };
+      return { state: { ...state, segmentList: advanceSegmentList(state.segmentList) }, events: [] };
     },
   },
   {
