@@ -781,7 +781,7 @@ export const srTiLfaSteps: ScenarioStep<SrTiLfaState>[] = [
   {
     id: "protection-ready",
     label: "Protection READY",
-    narrative: "Primary: ACTIVE. TI-LFA repair (R2-R4): READY. Repair traffic: NONE. Repair segment list: [R5 Node SID] under [R6 Node SID].",
+    narrative: "Primary: ACTIVE. TI-LFA repair (R2-R4): READY. Repair traffic: NONE. Repair segment list: [R5 Node SID] on top of [R6 Node SID].",
     run: (state) => ({ state: { ...state, linkProtectionLifecycle: "READY" }, events: [{ type: "MPLS_LABEL_INSTALLED", stepId: "protection-ready", timestamp: Date.now(), message: "TI-LFA link protection READY" }] }),
   },
   {
@@ -876,7 +876,7 @@ export const srTiLfaSteps: ScenarioStep<SrTiLfaState>[] = [
   {
     id: "r3-transit-normal",
     label: "R3: Ordinary Transit",
-    narrative: "R3 simply processes the active top SID (R3's own Node SID) using normal SR forwarding. R3 does not know why R2 pushed a repair segment, what failed, or anything about TI-LFA's computation — it just forwards toward whichever SID is active, exactly like any other transit hop.",
+    narrative: "R3 processes the active top SID — R5's Node SID (16005), the repair segment — using ordinary SR forwarding toward R5. R3 does not need to know why R2 imposed the repair segment, what failed, or how TI-LFA computed it; it simply forwards toward the currently active SID like any normal SR transit router.",
     packet: (state) => (state.packet ? mplsPacket("r3-transit", "R3", "R5", "FORWARD", "FORWARD", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
