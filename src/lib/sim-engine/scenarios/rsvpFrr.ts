@@ -162,8 +162,8 @@ export interface MplsPacketState {
 function pushLabel(pkt: MplsPacketState, value: number, purpose: "transport" | "bypass"): MplsPacketState {
   const wasEmpty = pkt.labels.length === 0;
   const newTop: MplsLabel = { value, bottomOfStack: wasEmpty, purpose };
-  const rest = pkt.labels.map((l) => ({ ...l, bottomOfStack: false }));
-  return { ...pkt, labels: [newTop, ...rest] };
+  // Existing labels keep their S bits: only the label pushed onto an empty stack is bottom-of-stack.
+  return { ...pkt, labels: [newTop, ...pkt.labels.map((l) => ({ ...l }))] };
 }
 function swapTopLabel(pkt: MplsPacketState, value: number): MplsPacketState {
   if (pkt.labels.length === 0) return pkt;
@@ -171,8 +171,9 @@ function swapTopLabel(pkt: MplsPacketState, value: number): MplsPacketState {
   return { ...pkt, labels: [{ ...top, value }, ...rest] };
 }
 function popTopLabel(pkt: MplsPacketState): MplsPacketState {
+  // Remaining labels keep their S bits unchanged.
   const [, ...rest] = pkt.labels;
-  return { ...pkt, labels: rest.map((l, i) => (i === 0 ? { ...l, bottomOfStack: true } : l)) };
+  return { ...pkt, labels: rest.map((l) => ({ ...l })) };
 }
 
 /** Downstream-assigned label allocation, generic over any path array (brief §19/§20). Position-from-egress: egress = implicit-null (PHP), position 1 = a real value, position 2 = a different real value, ... */
