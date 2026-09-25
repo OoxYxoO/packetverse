@@ -1138,6 +1138,12 @@ export const mplsVplsSteps: ScenarioStep<MplsVplsState>[] = [
     packet: (state) => (state.packet ? vplsPacket("fault-pe2-in", "P2", "PE2", "PW label lookup", "PW", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
+      // PE1's flood copy toward PE2 crosses the core exactly like the healthy
+      // copy: PE2's receive label + transport toward PE2, P1 swaps, P2 PHPs —
+      // so the PW-label lookup at PE2 sees PE2's own receive label alone.
+      const pushed = buildVplsLabelStack(state.packet.frame, allocatePwReceiveLabel("PE2", "PE1"), transportLabelFor("P1", "PE2"));
+      const afterP1 = processCoreTransportLabel(pushed, transportLabelFor("P2", "PE2"));
+      const atPe2 = processCoreTransportLabel(afterP1, "IMPLICIT_NULL");
       const { fdb } = learnSourceMac(fdbFor(state, "PE2"), CE_MAC.CE1, { kind: "PW", peer: "PE1" });
       const ports = portsFor(state, "PE2");
       const ingress: FdbPort = { kind: "PW", peer: "PE1" };
@@ -1146,7 +1152,7 @@ export const mplsVplsSteps: ScenarioStep<MplsVplsState>[] = [
       const final = applySplitHorizon(raw, ingress);
       const decision = classifyForwardingDecision(lookup, raw, final);
       const journey = [...state.journey, { device: "PE2" as RouterId, input: `label ${allocatePwReceiveLabel("PE2", "PE1")}`, lookup: `Egress set: [${raw.map(portLabel).join(", ")}] → split horizon strips PW ports → [${final.map(portLabel).join(", ")}]`, action: "SPLIT_HORIZON_BLOCK" as JourneyAction, output: `${CE_MAC.CE3} unreachable via PE2 — CE3 never sees this frame` }];
-      return { state: { ...state, packetAt: "PE2", journey, fdb: { ...state.fdb, PE2: fdb }, lastDecision: decision }, events: [{ type: "PACKET_DROPPED", stepId: "signature-fault-visual", timestamp: Date.now(), message: "PE2 cannot relay PW-ingress frame onto PW: PE3 — split horizon" }] };
+      return { state: { ...state, packet: atPe2, packetAt: "PE2", journey, fdb: { ...state.fdb, PE2: fdb }, lastDecision: decision }, events: [{ type: "PACKET_DROPPED", stepId: "signature-fault-visual", timestamp: Date.now(), message: "PE2 cannot relay PW-ingress frame onto PW: PE3 — split horizon" }] };
     },
     whatChanged: () => ["Decision: SPLIT_HORIZON_BLOCKED — CE3 does not receive the frame"],
   },
