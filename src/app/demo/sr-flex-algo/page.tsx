@@ -33,7 +33,13 @@ import {
   type SrFlexAlgoState,
 } from "@/lib/sim-engine/scenarios/srFlexAlgo";
 import { GraphTopologyViewer } from "@/components/network/GraphTopologyViewer";
-import { GraphPacket } from "@/components/network/GraphPacket";
+import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
+import { resolveBriefing } from "@/components/lesson/briefing";
+import { bubblePacket } from "@/components/lesson/mplsStack";
+import { srCallout } from "@/components/lesson/srCallout";
+import type { PacketVisual } from "@/lib/sim-engine/types";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { ForwardingDecisionCard } from "@/components/protocol/ForwardingDecisionCard";
 import { PacketJourneyTimeline } from "@/components/protocol/PacketJourneyTimeline";
@@ -67,6 +73,14 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { FLEX_BRIEFING_NOTES, FLEX_BRIEFING_PHASES } from "./briefing";
+import { FLEX_LESSON_SECTIONS, FlexAlgoLessonGuideContent } from "./LessonGuideContent";
+import { FLEX_DEEP_DIVE_SECTIONS, FlexAlgoDeepDiveContent } from "./DeepDiveContent";
+
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "Algo 0 vs Algo 128 (delay, exclude BLUE) · 16006 / 16106", sections: FLEX_LESSON_SECTIONS, content: <FlexAlgoLessonGuideContent /> },
+  { id: "deep", label: "Flex-Algo Deep Dive", hint: "Flexible Algorithm in general", sections: FLEX_DEEP_DIVE_SECTIONS, content: <FlexAlgoDeepDiveContent /> },
+];
 
 const DEVICE_ROUTERS: RouterId[] = ["R1", "R2", "R3", "R4", "R5", "R6"];
 type TopoView = "physical" | "algo0" | "flexalgo128";
@@ -108,6 +122,7 @@ export default function SrFlexAlgoDemo() {
   const [packetSelected, setPacketSelected] = useState(false);
   const [xrayMode, setXrayMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection (mirrors mpls-ldp's "Historical Timeline Inspection Fix") — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -218,7 +233,15 @@ export default function SrFlexAlgoDemo() {
     active: activePacket ? (e.a === activePacket.from && e.b === activePacket.to) || (e.b === activePacket.from && e.a === activePacket.to) : false,
     onPath: topoView === "physical" ? bestPathEdgeIds.includes(e.id) : !!highlightPath && linkIdsOnPath(highlightPath, state.links).includes(e.id),
   }));
-  const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
+  const sidMeaning = (label: string) => {
+    for (const algorithm of [0, 128] as AlgorithmId[]) {
+      const router = ALL_ROUTERS.find((r) => deriveAlgoNodeSidLabel(r, algorithm) === Number(label));
+      if (router) return `${router} Prefix-SID, Algo ${algorithm}`;
+    }
+    return undefined;
+  };
+  const calloutFor = (p: PacketVisual) => srCallout(p, sidMeaning);
+  const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to, callout: calloutFor(activePacket) } : undefined;
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
@@ -499,9 +522,60 @@ export default function SrFlexAlgoDemo() {
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : currentStep?.requiresState && !canAdvance ? "Apply the correct fix to continue" : "Next Step →";
 
+  const briefing = currentStep ? resolveBriefing(currentStep.id, currentStep.label, FLEX_BRIEFING_PHASES, FLEX_BRIEFING_NOTES) : undefined;
+
+  /** 2D is overview-only — leaving 3D exits device mode so the panels match what is shown. */
+  function handleView3DChange(on: boolean) {
+    setViewMode3D(on);
+    if (!on) {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  const selectNode2D = (id: string) => {
+    setSelectedNodeId(id as RouterId);
+    setPacketSelected(false);
+    setSelectedLinkId(undefined);
+    setInspectorSurface("device");
+    setHistoricalIndex(undefined);
+  };
+
+  const graph2D = (focus?: boolean) => (
+    <div className={focus ? "relative h-full [&>div]:!h-full [&>div]:rounded-none [&>div]:border-0" : "relative"}>
+      <GraphTopologyViewer
+                  nodes={nodes}
+                  edges={GRAPH_EDGES.map((e) => {
+                    const link = BASE_LINKS.find((l) => l.id === e.id)!;
+                    const isEligible = topoView !== "flexalgo128" || algo128.eligibleLinks.includes(e.id);
+                    const cost = topoView === "algo0" ? link.igpMetric : topoView === "flexalgo128" ? link.delayMetric : undefined;
+                    return { ...e, state: isEligible ? ("full" as const) : ("down" as const), cost };
+                  })}
+                  activeNodeIds={activePacket ? [activePacket.from, activePacket.to] : []}
+                  bestPathEdgeIds={topoView === "physical" ? bestPathEdgeIds : highlightPath ? linkIdsOnPath(highlightPath, state.links) : []}
+                  onEdgeClick={(id) => setSelectedLinkId(id)} onNodeClick={focus ? selectNode2D : undefined}
+                >
+        {activePacket && (() => {
+          const from = nodes.find((n) => n.id === activePacket.from);
+          const to = nodes.find((n) => n.id === activePacket.to);
+          if (!from || !to) return null;
+          const c = calloutFor(activePacket);
+          return <GraphPacketBubble packet={bubblePacket(activePacket, c)} from={from} to={to} title={c.title} scope={`${activePacket.from} → ${activePacket.to}`} onSelect={() => setPacketSelected(true)} />;
+        })()}
+      </GraphTopologyViewer>
+        <p className="pointer-events-none absolute left-3 top-3 z-10 max-w-[70%] rounded-lg border border-pv-border bg-pv-bg/85 px-2.5 py-1.5 text-[10.5px] leading-relaxed text-pv-text-muted">
+          <span className="font-semibold text-pv-success">Algo 0</span> {algo0.path ? algo0.path.join(" → ") : "no path"}{algo0.totalMetric !== undefined ? ` · IGP ${algo0.totalMetric}` : ""}
+          <br />
+          <span className="font-semibold text-pv-violet">Algo 128</span> {algo128.path ? algo128.path.join(" → ") : "no path"}{algo128.totalMetric !== undefined ? ` · ${algo128.metricType.toLowerCase()} ${algo128.totalMetric}` : ""}
+        </p>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
         <Badge tone="cyan" className="mb-3">
           SR-MPLS FLEX-ALGO · FAD · AFFINITIES · ALGORITHM-SPECIFIC SIDs
         </Badge>
@@ -512,6 +586,9 @@ export default function SrFlexAlgoDemo() {
           every participating router calculate its own algorithm-specific SPF — and its own algorithm-specific
           Prefix-SID for the exact same destination.
         </p>
+      </div>
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SR Flex-Algo" subtitle="Algorithm 0 · Flex-Algo 128 (DELAY, exclude BLUE) · R6 SIDs 16006 / 16106" tabs={GUIDE_TABS} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -557,7 +634,7 @@ export default function SrFlexAlgoDemo() {
           value={topoView}
           onChange={setTopoView}
         />
-        <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => setViewMode3D(v === "on")} tone="violet" />
+        <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => handleView3DChange(v === "on")} tone="violet" />
         {viewMode3D && (
           <>
             <TopologyModeSwitcher
@@ -711,22 +788,9 @@ export default function SrFlexAlgoDemo() {
             </>
           ) : (
             <>
-              <GraphTopologyViewer
-                nodes={nodes}
-                edges={GRAPH_EDGES.map((e) => {
-                  const link = BASE_LINKS.find((l) => l.id === e.id)!;
-                  const isEligible = topoView !== "flexalgo128" || algo128.eligibleLinks.includes(e.id);
-                  const cost = topoView === "algo0" ? link.igpMetric : topoView === "flexalgo128" ? link.delayMetric : undefined;
-                  return { ...e, state: isEligible ? ("full" as const) : ("down" as const), cost };
-                })}
-                activeNodeIds={activePacket ? [activePacket.from, activePacket.to] : []}
-                bestPathEdgeIds={topoView === "physical" ? bestPathEdgeIds : highlightPath ? linkIdsOnPath(highlightPath, state.links) : []}
-                onEdgeClick={(id) => setSelectedLinkId(id)}
-              >
-                {activePacket && nodes.find((n) => n.id === activePacket.from) && nodes.find((n) => n.id === activePacket.to) && (
-                  <GraphPacket packet={activePacket} from={nodes.find((n) => n.id === activePacket.from)!} to={nodes.find((n) => n.id === activePacket.to)!} />
-                )}
-              </GraphTopologyViewer>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                {focusMode ? <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" /> : graph2D()}
+              </TopologyFrame>
 
               {selectedLinkId && !lastHop && linkDetailFor(selectedLinkId, state) && <LinkDetailPanel detail={linkDetailFor(selectedLinkId, state)!} onClose={() => setSelectedLinkId(undefined)} />}
 
@@ -734,16 +798,18 @@ export default function SrFlexAlgoDemo() {
             </>
           )}
 
-          {!isComplete && currentStep && (
-            <GlassPanel strong className="p-6">
-              <div className="mb-2 flex items-center gap-2">
-                <Badge tone="muted">
-                  Step {index + 1} / {totalSteps}
-                </Badge>
-                <span className="text-xs text-pv-text-faint">{currentStep.label}</span>
-              </div>
-              <p className="text-sm leading-relaxed text-pv-text">{currentStep.narrative}</p>
-            </GlassPanel>
+          {!isComplete && currentStep && briefing && (
+            <MissionBriefingCard
+              stepNumber={index + 1}
+              totalSteps={totalSteps}
+              title={currentStep.label}
+              phase={briefing.phase}
+              objective={briefing.objective}
+              context={currentStep.narrative}
+              doingNow={briefing.doingNow}
+              takeaway={briefing.takeaway}
+              questionPending={questionActive}
+            />
           )}
 
           {!isComplete && currentStep?.question && <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />}
@@ -1001,6 +1067,10 @@ export default function SrFlexAlgoDemo() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
+              <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={viewMode3D ? "3d" : "2d"} onChange={(v) => handleView3DChange(v === "3d")} />
+              {viewMode3D && (
+              <>
               <TopologyModeSwitcher
                 options={[
                   { value: "overview", label: "Overview" },
@@ -1029,30 +1099,21 @@ export default function SrFlexAlgoDemo() {
                   Auto-Enter Devices
                 </button>
               )}
+              </>
+              )}
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">
-                  Step {index + 1} / {totalSteps}
-                </Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label}</span>
-              </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Prediction pending — answer in the panel to continue
-                </span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            currentStep && briefing ? (
+              <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={briefing.objective} questionPending={questionActive} />
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Lesson complete</span>
+            )
           }
           canvas={
+            !viewMode3D ? (
+              graph2D(true)
+            ) : (
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
               <NetworkScene3D
                 nodes={nodes3D}
@@ -1092,6 +1153,7 @@ export default function SrFlexAlgoDemo() {
                 }
               />
             </div>
+            )
           }
           inspector={
             currentStep?.question ? (
@@ -1253,6 +1315,8 @@ export default function SrFlexAlgoDemo() {
                 speed={speed as PlaySpeed}
                 onSpeedChange={setSpeed}
                 followPacket={cameraMode === "packetFollow"}
+                view3D={viewMode3D}
+                onToggleView3D={() => handleView3DChange(!viewMode3D)}
                 onToggleFollowPacket={() => {
                   const next = cameraMode === "packetFollow" ? "overview" : "packetFollow";
                   setCameraMode(next);
