@@ -15,8 +15,10 @@ import {
   PROTECTED_LINK,
   PROTECTED_NODE,
   computePreConvergenceFib,
+  isEndXRepairSid,
   srv6TiLfaSteps,
   validateRepairPath,
+  type RepairInstructionSid,
   type RouterId,
   type Srv6TiLfaState,
   type TiLfaRepairPath,
@@ -90,6 +92,14 @@ function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number
 const PRE_CONVERGENCE_STEPS = new Set(["p3-pre-failure-route", "predict-p3-route", "naive-fail-injected", "naive-forward-p1-p3", "naive-p3-stale-fib", "naive-loop-p3-p1", "predict-naive-loop", "naive-loop-explained"]);
 const REPAIR_SPACES_STEPS = new Set(["p-space-intro", "p-space-compute", "extended-p-space-intro", "extended-p-space-compute", "q-space-intro", "q-space-compute", "select-repair-node", "node-protection-compute"]);
 const REPAIR_PROGRAM_STEPS = new Set(["repair-anatomy-intro", "why-p4-endx", "globally-routed-adjacency", "usd-intro", "predict-usd", "repair-list-derive", "h-encaps-intro", "predict-no-srh", "protection-ready", "node-protection-repair-list"]);
+/** One wording for a repair SID: a real End.X names its bound adjacency; a plain End SID is only routed toward its owner and binds no adjacency. */
+function describeRepairSid(s: RepairInstructionSid): { summary: string; purpose: string; shortPurpose: string } {
+  const flavors = s.flavors.join("+");
+  return isEndXRepairSid(s)
+    ? { summary: `End.X+${flavors} → adjacency ${s.adjacency}`, purpose: `Forces the exposed packet to adjacency ${s.adjacency} — never rewrites the packet's own destination.`, shortPurpose: `Adjacency → ${s.adjacency}` }
+    : { summary: `End+${flavors} · routed toward ${s.owner} (no bound adjacency)`, purpose: `Ordinary IPv6 reachability toward ${s.owner} — no forced adjacency.`, shortPurpose: `Routed toward ${s.owner} · no bound adjacency` };
+}
+
 const RECOVERY_STEPS = new Set(["phases-intro", "precompute-intro", "igp-converging", "plr-converged", "repair-released", "post-convergence-forwarding", "loop-free-recap"]);
 
 export default function Srv6TiLfaDemo() {
@@ -129,7 +139,7 @@ export default function Srv6TiLfaDemo() {
   const nodeProtectionLabStart = srv6TiLfaSteps.findIndex((s) => s.id === "node-protection-intro");
   const nodeProtectionLabEnd = srv6TiLfaSteps.findIndex((s) => s.id === "srlg-preview");
   const inNodeProtectionLab = index >= nodeProtectionLabStart && index <= nodeProtectionLabEnd;
-  const activeRepair: TiLfaRepairPath | undefined = state.activeMode === "NODE" || (inNodeProtectionLab && !!state.nodeRepair) ? (state.nodeRepair ?? state.linkRepair) : state.linkRepair;
+  const activeRepair: TiLfaRepairPath<RepairInstructionSid> | undefined = state.activeMode === "NODE" || (inNodeProtectionLab && !!state.nodeRepair) ? (state.nodeRepair ?? state.linkRepair) : state.linkRepair;
 
   const nodes = GRAPH_NODES.map((n) => {
     if (topoView === "preConvergence" && (n.id === "P3" || n.id === "P4")) return { ...n, subLabel: state.failureKnownAt[n.id as RouterId] ? "converged" : "STALE FIB" };
@@ -334,7 +344,7 @@ export default function Srv6TiLfaDemo() {
                 { id: "post-spf", label: "Post-Convergence SPF", content: <RowsTab rows={[{ label: "Path", value: state.linkRepair?.postConvergencePath?.join(" → ") ?? "not yet computed" }]} /> },
                 { id: "pq", label: "P/Q Spaces", content: <RowsTab rows={[{ label: "P-Space", value: state.linkRepair?.pSpace.join(", ") ?? "—" }, { label: "Extended P-Space", value: state.linkRepair?.extendedPSpace.join(", ") ?? "—" }, { label: "Q-Space", value: state.linkRepair?.qSpace.join(", ") ?? "—" }]} /> },
                 { id: "protection", label: "TI-LFA Protection", content: <RowsTab rows={[{ label: "State", value: readiness?.valid ? "READY" : "STALE" }, { label: "Repair node", value: state.linkRepair?.repairNode ?? "none" }]} /> },
-                { id: "repair-list", label: "Repair List", content: <RowsTab rows={(state.linkRepair?.repairList.sids ?? []).map((s) => ({ label: s.sidText, value: `${s.behavior}+${s.flavors.join(",")} → ${s.adjacency}` }))} /> },
+                { id: "repair-list", label: "Repair List", content: <RowsTab rows={(state.linkRepair?.repairList.sids ?? []).map((s) => ({ label: s.sidText, value: describeRepairSid(s).summary }))} /> },
                 { id: "failure", label: "Failure Detection", content: <RowsTab rows={[{ label: "P1-P2", value: state.failedLinkIds.includes(PROTECTED_LINK) ? "DOWN (detected)" : "UP" }]} /> },
               ] satisfies DeviceExplorerTab[])
             : []),
@@ -433,7 +443,7 @@ export default function Srv6TiLfaDemo() {
       <Srv6RepairListViewer
         protectedResource={activeRepair.protectedResource}
         outgoingInterface={activeRepair.outgoingInterface ? `P1 → ${activeRepair.outgoingInterface}` : undefined}
-        sids={activeRepair.repairList.sids.map((s) => ({ sid: s.sidText, owner: s.owner, behavior: s.behavior, adjacency: s.adjacency, flavors: s.flavors, purpose: `Forces the exposed packet to adjacency ${s.adjacency} — never rewrites the packet's own destination.` }))}
+        sids={activeRepair.repairList.sids.map((s) => ({ sid: s.sidText, owner: s.owner, behavior: s.behavior, adjacency: s.adjacency, flavors: s.flavors, purpose: describeRepairSid(s).purpose }))}
       />
     </div>
   );
@@ -782,7 +792,7 @@ export default function Srv6TiLfaDemo() {
               title={`${focusRouter === "P1" ? "P1" : "PacketVerse"} — Repair Path`}
               protectedResource={activeRepair.protectedResource}
               outgoingInterface={activeRepair.outgoingInterface ? `P1 → ${activeRepair.outgoingInterface}` : undefined}
-              sids={activeRepair.repairList.sids.map((s) => ({ sid: s.sidText, owner: s.owner, behavior: s.behavior, adjacency: s.adjacency, flavors: s.flavors, purpose: `Adjacency → ${s.adjacency}` }))}
+              sids={activeRepair.repairList.sids.map((s) => ({ sid: s.sidText, owner: s.owner, behavior: s.behavior, adjacency: s.adjacency, flavors: s.flavors, purpose: describeRepairSid(s).shortPurpose }))}
             />
           )}
 
