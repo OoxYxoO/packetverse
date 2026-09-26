@@ -1,7 +1,7 @@
 import type { PacketLayer, PacketVisual, ScenarioStep } from "../types";
 import { buildSrv6Sid, fmtIpv6, hextetsEqual, type Hextets } from "./srv6Foundations";
 import { FUNCTION, type InnerPayload } from "./srv6EndpointBehaviors";
-import { PE2_DT4_SID } from "./srv6L3vpn";
+import { PE2_DT4_SID, PE1_SR_SOURCE as VPN_PE1_SOURCE } from "./srv6L3vpn";
 
 /**
  * SRv6 Protection / TI-LFA (RFC 9855 — Topology Independent Fast Reroute
@@ -466,11 +466,21 @@ export interface RepairOuterState {
   daHextets: Hextets;
   srh?: SegmentRoutingHeader;
 }
-/** A SEPARATE, optional layer representing a pre-existing SRv6 VPN outer (e.g. from /demo/srv6-l3vpn) that TI-LFA repair wraps around whole — present only in the L3VPN nested-repair integration experiment; undefined for the plain infrastructure baseline. */
+/** What a pre-existing (nested) SRv6 outer IS — never inferred from its address. */
+export type NestedOuterRole = "L3VPN_SERVICE" | "GLOBAL_DT4_TRANSPORT";
+/**
+ * A SEPARATE, optional layer representing a pre-existing SRv6 outer that a
+ * TI-LFA repair (or a TE steering outer) wraps around whole: an SRv6 L3VPN
+ * service outer (DA = a VRF Service SID, e.g. from /demo/srv6-l3vpn) or a
+ * generic transport outer (DA = an egress PE's global-table End.DT4 SID).
+ * Undefined for the plain infrastructure baseline. The field keeps its
+ * historical name; `role` states which of the two it is.
+ */
 export interface VpnOuterState {
   srcText: string;
   daHextets: Hextets;
   daText: string;
+  role: NestedOuterRole;
 }
 export interface TiLfaPacketState {
   repairOuter?: RepairOuterState; // present only while TI-LFA repair is actively wrapping the packet
@@ -478,14 +488,21 @@ export interface TiLfaPacketState {
   inner?: InnerPayload; // the ultimate customer/infrastructure payload — always plain IP, never carries its own SRv6 SID
 }
 
+/** Source of the ORIGINAL protected packet — PE1 (the headend) originates it. Never used as a TI-LFA repair outer source. */
 export const PE1_SR_SOURCE = "2001:db8:110:1:0:0:0:c1";
+/** Per-node SR source address (`<locator>::c1`) — whichever node performs an H.Encaps owns that outer's source address. */
+export function srSourceFor(router: RouterId): string {
+  return fmtIpv6([...LOCATOR_HEXTETS4[router], 0, 0, 0, 0xc1]);
+}
+/** The PLR's own source for every TI-LFA repair outer — P1 performs the H.Encaps, so P1 (not PE1) owns it. */
+export const PLR_REPAIR_SOURCE = srSourceFor(PLR);
 
-/** Single-SID repair: no SRH at all — one segment fits entirely in the outer destination address. */
-export function encapsulateRepairSingleSid(repairSid: RepairSid, packet: TiLfaPacketState, srcText: string = PE1_SR_SOURCE): TiLfaPacketState {
+/** Single-SID repair: no SRH at all — one segment fits entirely in the outer destination address. `srcText` is REQUIRED: it must belong to the node actually performing this H.Encaps (the PLR for TI-LFA repair). */
+export function encapsulateRepairSingleSid(repairSid: RepairSid, packet: TiLfaPacketState, srcText: string): TiLfaPacketState {
   return { ...packet, repairOuter: { srcText, daHextets: repairSid.sidHextets } };
 }
 /** Two-SID repair, for the SRH-education lab only (§57-59) — real reversed-storage-order SRH, Segment List[0] = the FINAL segment. */
-export function encapsulateRepairMultiSid(sids: RepairSid[], packet: TiLfaPacketState, srcText: string = PE1_SR_SOURCE): TiLfaPacketState {
+export function encapsulateRepairMultiSid(sids: RepairSid[], packet: TiLfaPacketState, srcText: string): TiLfaPacketState {
   const n = sids.length;
   const storageOrder = [...sids].reverse();
   const segmentList: SrhSegment[] = storageOrder.map((s, i) => ({ index: i, sidHextets: s.sidHextets, sidText: s.sidText, ownerRouter: s.owner }));
@@ -525,7 +542,7 @@ export const MULTI_SID_INTERMEDIATE = buildRepairSid("P3", "P4"); // S1: a secon
 export const MULTI_SID_FINAL = buildRepairSid("P4", "P2"); // S2 / final segment
 export function buildMultiSidIllustration(): { sids: RepairSid[]; srh: SegmentRoutingHeader; outerDaHextets: Hextets } {
   const sids = [MULTI_SID_INTERMEDIATE, MULTI_SID_FINAL];
-  const pkt = encapsulateRepairMultiSid(sids, {});
+  const pkt = encapsulateRepairMultiSid(sids, {}, PLR_REPAIR_SOURCE);
   return { sids, srh: pkt.repairOuter!.srh!, outerDaHextets: pkt.repairOuter!.daHextets };
 }
 
@@ -536,8 +553,9 @@ export function buildMultiSidIllustration(): { sids: RepairSid[]; srh: SegmentRo
 // completely intact, and PE2 (not P4) is what later executes End.DT4.
 // ---------------------------------------------------------------------------
 
+/** `vpnSrcText` must belong to the INGRESS PE (PE1) that built this VPN packet — never the egress PE2. */
 export function buildNestedVpnServicePacket(inner: InnerPayload, vpnSrcText: string): TiLfaPacketState {
-  return { vpnOuter: { srcText: vpnSrcText, daHextets: PE2_DT4_SID.sidHextets, daText: PE2_DT4_SID.sidText }, inner };
+  return { vpnOuter: { srcText: vpnSrcText, daHextets: PE2_DT4_SID.sidHextets, daText: PE2_DT4_SID.sidText, role: "L3VPN_SERVICE" }, inner };
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +586,7 @@ function repairSrhLayer(srh: SegmentRoutingHeader): PacketLayer {
   return { name: `Repair SRH (SL=${srh.segmentsLeft}, LE=${srh.lastEntry})`, color: "var(--pv-proto-srh)", fields: [{ label: "Segments Left", value: String(srh.segmentsLeft) }, { label: "Last Entry", value: String(srh.lastEntry) }, ...srh.segmentList.map((s) => ({ label: `Segment List[${s.index}]`, value: `${s.sidText} (${s.ownerRouter})` }))] };
 }
 function vpnOuterLayer(o: VpnOuterState): PacketLayer {
+  if (o.role === "GLOBAL_DT4_TRANSPORT") return { name: "SRv6 Transport Outer IPv6 (pre-existing)", color: "var(--pv-proto-ipv6)", fields: [{ label: "Source Address", value: o.srcText }, { label: "Destination Address (global-table End.DT4 SID)", value: o.daText }] };
   return { name: "SRv6 L3VPN Outer IPv6 (pre-existing)", color: "var(--pv-proto-ipv6)", fields: [{ label: "Source Address", value: o.srcText }, { label: "Destination Address (Service SID)", value: o.daText }] };
 }
 function innerLayer(inner: InnerPayload): PacketLayer {
@@ -942,7 +961,7 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
   {
     id: "h-encaps-intro",
     label: "TI-LFA H.Encaps",
-    narrative: "When P1 detects the P1-P2 failure, the original packet is steered into the repair program using H.Encaps: OUTER IPv6 (SA = P1 SR source, DA = P4 End.X+USD repair SID) wrapping the INNER original PE1→PE2 packet, completely unmodified.",
+    narrative: `When P1 detects the P1-P2 failure, the original packet is steered into the repair program using H.Encaps: OUTER IPv6 (SA = P1's own SR source ${PLR_REPAIR_SOURCE}, DA = P4 End.X+USD repair SID) wrapping the INNER original PE1→PE2 packet — whose own source is still PE1 — completely unmodified.`,
   },
   {
     id: "predict-no-srh",
@@ -990,11 +1009,11 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     id: "p1-encaps-packet",
     label: "P1: H.Encaps The Repair",
     narrative: "P1 builds the repair outer: DA = P4 End.X+USD SID. No SRH — a single repair SID needs none. The original packet survives completely unmodified underneath.",
-    packet: (state) => (state.linkRepair?.repairList.sids[0] ? tiLfaPacket("repair-encap", "P1", "P3", "Repair outer added, original packet preserved", "H.Encaps", encapsulateRepairSingleSid(state.linkRepair.repairList.sids[0], baselinePacket())) : undefined),
+    packet: (state) => (state.packet?.repairOuter ? tiLfaPacket("repair-encap", "P1", "P3", "Repair outer added, original packet preserved", "H.Encaps", state.packet) : undefined),
     run: (state) => {
       const sid = state.linkRepair?.repairList.sids[0];
       if (!sid) return { state, events: [] };
-      const pkt = encapsulateRepairSingleSid(sid, baselinePacket());
+      const pkt = encapsulateRepairSingleSid(sid, baselinePacket(), PLR_REPAIR_SOURCE);
       const journey = [...state.journey, { router: "P1" as RouterId, input: "IPv6 (VRF-free, primary next hop down)", lookup: `Repair outgoing interface P1→${state.linkRepair!.outgoingInterface}; repair SID ${sid.sidText}`, action: "REPAIR_ENCAPSULATE" as TiLfaAction, output: "Repair outer added" }];
       return { state: { ...state, packet: pkt, packetAt: state.linkRepair!.outgoingInterface, journey }, events: [{ type: "SRV6_VPN_PACKET_ENCAPSULATED", stepId: "p1-encaps-packet", timestamp: Date.now(), message: "P1 H.Encaps the repair" }] };
     },
@@ -1041,12 +1060,8 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     id: "p4-usd-decap",
     label: "P4: USD Removes The Repair Outer",
     narrative: "USD strips the entire repair outer IPv6 header, exposing the original PE1→PE2 packet completely intact underneath — then forces it to adjacency J = P2, never rewriting the exposed packet's own destination.",
-    packet: (state) => {
-      const sid = state.linkRepair?.repairList.sids[0];
-      if (!sid || !state.packet) return undefined;
-      const outcome = executeEndXUsd(sid, state.packet);
-      return outcome.exposedPacket ? tiLfaPacket("p4-usd", "P4", "P2", "Repair outer removed — original packet restored", "USD DECAP", outcome.exposedPacket) : undefined;
-    },
+    // run() already executed End.X+USD — show its stored result (repair outer removed, forced toward P2).
+    packet: (state) => (state.packet && !state.packet.repairOuter ? tiLfaPacket("p4-usd", "P4", "P2", "Repair outer removed — original packet restored", "USD DECAP", state.packet) : undefined),
     run: (state) => {
       const sid = state.linkRepair?.repairList.sids[0];
       if (!sid || !state.packet) return { state, events: [] };
@@ -1105,7 +1120,7 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     id: "post-convergence-forwarding",
     label: "Normal Post-Convergence Forwarding",
     narrative: "A fresh packet now travels PE1 → P1 → P3 → P4 → P2 → PE2 via ordinary IPv6 FIB entries at every hop — no H.Encaps repair outer, no End.X+USD SID anywhere.",
-    packet: () => plainIpv6Packet("post-conv", "P1", "P3", "Ordinary post-convergence forwarding, no repair outer", PE1_SR_SOURCE, INFRA_ADDRESS_TEXT.PE2),
+    packet: (state) => (state.packet && state.packetAt === DESTINATION ? tiLfaPacket("post-conv", "P2", "PE2", "Stage shown: final post-convergence hop to PE2 — ordinary IPv6 forwarding, no TI-LFA repair outer", "FORWARD", state.packet) : undefined),
     run: (state) => {
       const post = computePostConvergencePath(state.links, PLR, DESTINATION, "LINK", PROTECTED_LINK);
       const journey: JourneyHop[] = (post?.path ?? []).slice(0, -1).map((r, i) => ({ router: r, input: "IPv6, DA=PE2", lookup: "Ordinary post-convergence IPv6 FIB", action: "IPV6_FIB_FORWARD" as TiLfaAction, output: `→ ${post!.path[i + 1]}` }));
@@ -1198,11 +1213,11 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     id: "wrong-repair-forwards",
     label: "P1 Encapsulates With The Wrong SID",
     narrative: "P1 pushes the WRONG repair outer: DA = a directly-routed P2 SID. Outgoing interface is still P1→P3 — that part was never the problem.",
-    packet: (state) => (state.linkRepair?.repairList.sids[0] ? tiLfaPacket("wrong-encap", "P1", "P3", "Wrong repair SID (directly routed to P2)", "H.Encaps", encapsulateRepairSingleSid(state.linkRepair.repairList.sids[0], baselinePacket())) : undefined),
+    packet: (state) => (state.packet?.repairOuter ? tiLfaPacket("wrong-encap", "P1", "P3", "Wrong repair SID (directly routed to P2)", "H.Encaps", state.packet) : undefined),
     run: (state) => {
       const sid = state.linkRepair?.repairList.sids[0];
       if (!sid) return { state, events: [] };
-      const pkt = encapsulateRepairSingleSid(sid, baselinePacket());
+      const pkt = encapsulateRepairSingleSid(sid, baselinePacket(), PLR_REPAIR_SOURCE);
       const journey = [...state.journey, { router: "P1" as RouterId, input: "IPv6 (primary down)", lookup: `Repair OIF P1→P3; WRONG repair SID ${sid.sidText} (routes directly to P2)`, action: "REPAIR_ENCAPSULATE" as TiLfaAction, output: "Wrong repair outer added" }];
       return { state: { ...state, packet: pkt, packetAt: "P3", journey }, events: [] };
     },
@@ -1280,11 +1295,12 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     id: "verify-resend",
     label: "Mandatory Resend",
     narrative: "Resend the same packet while P3 and P4 are STILL modeled as pre-convergence — prove the CORRECT repair (not eventual convergence) is what fixes this.",
-    packet: (state) => (state.linkRepair?.repairList.sids[0] ? tiLfaPacket("verify-repair", "P1", "P3", "Correct repair SID (P4 End.X+USD)", "H.Encaps", encapsulateRepairSingleSid(state.linkRepair.repairList.sids[0], baselinePacket())) : undefined),
+    // run() executes the whole resend; the stored packet is the final exposed packet at PE2.
+    packet: (state) => (state.packet && state.packetAt === "PE2" ? tiLfaPacket("verify-repair", "P2", "PE2", "Stage shown: final verified packet at PE2 after the repair outer has been removed; the journey records the full P1→P3→P4→P2→PE2 repair path", "VERIFIED", state.packet) : undefined),
     run: (state) => {
       const sid = state.linkRepair?.repairList.sids[0];
       if (!sid) return { state, events: [] };
-      const pkt = encapsulateRepairSingleSid(sid, baselinePacket());
+      const pkt = encapsulateRepairSingleSid(sid, baselinePacket(), PLR_REPAIR_SOURCE);
       const outcome = executeEndXUsd(sid, pkt);
       const journey: JourneyHop[] = [
         { router: "P1", input: "IPv6 (primary down)", lookup: `Repair OIF P1→${state.linkRepair!.outgoingInterface}; repair SID ${sid.sidText}`, action: "REPAIR_ENCAPSULATE", output: "Correct repair outer added" },
@@ -1386,18 +1402,18 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     id: "l3vpn-integration-intro",
     label: "Advanced Integration: Protecting An SRv6 L3VPN Packet",
     narrative: `Reusing the packet concept from /demo/srv6-l3vpn: a customer IPv4 packet already riding inside an SRv6 VPN outer (DA = PE2 End.DT4 Service SID, ${PE2_DT4_SID.sidText}) arrives at P1 as ordinary transit traffic — P1 has no idea it's a VPN packet, only that its outer destination currently routes via P1-P2.`,
-    run: (state) => ({ state: { ...state, packet: buildNestedVpnServicePacket({ kind: "IPV4", srcIp: "10.10.1.10", dstIp: "10.20.1.10" }, "2001:db8:110:2:0:0:0:c2"), packetAt: "P1", journey: [], failedLinkIds: [], failureKnownAt: {}, phase: "STEADY_STATE" }, events: [] }),
+    run: (state) => ({ state: { ...state, packet: buildNestedVpnServicePacket({ kind: "IPV4", srcIp: "10.10.1.10", dstIp: "10.20.1.10" }, VPN_PE1_SOURCE), packetAt: "P1", journey: [], failedLinkIds: [], failureKnownAt: {}, phase: "STEADY_STATE" }, events: [] }),
   },
   {
     id: "l3vpn-fail-and-repair",
     label: "P1-P2 Fails — TI-LFA Wraps The ENTIRE Existing Packet",
     narrative: "On failure, H.Encaps wraps the whole existing SRv6 VPN packet inside a further repair outer: REPAIR OUTER IPv6 (DA = P4 End.X+USD) → SRv6 L3VPN OUTER (DA = PE2 End.DT4, untouched) → customer IPv4. Nested encapsulation, visibly.",
-    packet: (state) => (state.linkRepair?.repairList.sids[0] && state.packet ? tiLfaPacket("l3vpn-repair", "P1", "P3", "TI-LFA wraps the entire existing SRv6 VPN packet", "H.Encaps", encapsulateRepairSingleSid(state.linkRepair.repairList.sids[0], state.packet)) : undefined),
+    packet: (state) => (state.packet?.repairOuter ? tiLfaPacket("l3vpn-repair", "P1", "P3", "TI-LFA wraps the entire existing SRv6 VPN packet", "H.Encaps", state.packet) : undefined),
     run: (state) => {
       const sid = state.linkRepair?.repairList.sids[0];
       if (!sid || !state.packet) return { state, events: [] };
       const failed = { ...state, failedLinkIds: [PROTECTED_LINK], failureKnownAt: { P1: true } };
-      const wrapped = encapsulateRepairSingleSid(sid, state.packet);
+      const wrapped = encapsulateRepairSingleSid(sid, state.packet, PLR_REPAIR_SOURCE);
       const journey = [...state.journey, { router: "P1" as RouterId, input: "SRv6 VPN packet (DA=PE2 End.DT4)", lookup: `Repair OIF P1→${state.linkRepair!.outgoingInterface}; repair SID ${sid.sidText}`, action: "REPAIR_ENCAPSULATE" as TiLfaAction, output: "Repair outer wraps the ENTIRE existing VPN packet" }];
       return { state: { ...failed, packet: wrapped, packetAt: state.linkRepair!.outgoingInterface, journey }, events: [{ type: "SRV6_VPN_PACKET_ENCAPSULATED", stepId: "l3vpn-fail-and-repair", timestamp: Date.now(), message: "TI-LFA nests around the existing SRv6 VPN packet" }] };
     },
@@ -1407,12 +1423,8 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     id: "l3vpn-p4-decap-repair-only",
     label: "P4: Removes ONLY The Repair Outer",
     narrative: "P4's End.X+USD removes exactly the TI-LFA repair outer — nothing else. The original SRv6 VPN packet (DA = PE2 End.DT4) is restored completely intact underneath, then forced to adjacency P2. P4 does NOT execute End.DT4 merely because it handled TI-LFA — that behavior belongs to PE2 alone.",
-    packet: (state) => {
-      const sid = state.linkRepair?.repairList.sids[0];
-      if (!sid || !state.packet) return undefined;
-      const outcome = executeEndXUsd(sid, state.packet);
-      return outcome.exposedPacket ? tiLfaPacket("l3vpn-usd", "P4", "P2", "Repair outer removed — original SRv6 VPN packet restored", "USD DECAP", outcome.exposedPacket) : undefined;
-    },
+    // run() already removed ONLY the repair outer — the VPN outer and customer IPv4 are still nested in the stored packet.
+    packet: (state) => (state.packet && !state.packet.repairOuter ? tiLfaPacket("l3vpn-usd", "P4", "P2", "Repair outer removed — original SRv6 VPN packet restored", "USD DECAP", state.packet) : undefined),
     run: (state) => {
       const sid = state.linkRepair?.repairList.sids[0];
       if (!sid || !state.packet) return { state, events: [] };

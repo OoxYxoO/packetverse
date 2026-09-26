@@ -20,6 +20,7 @@ import {
   NEXT_CSID_VALUE,
   ordinarySidText,
   REPLACE_CSID_LAYOUT,
+  readReplaceIndex,
   REPLACE_PROGRAM,
   srv6CsidSteps,
   validateSidStructureForCompression,
@@ -177,7 +178,7 @@ function behaviorText(hop: CsidJourneyHop): string {
   return `${BEHAVIOR_LABEL[hop.behavior]} + ${hop.flavor === "NEXT_CSID" ? "NEXT-CSID" : "REPLACE-CSID"}`;
 }
 function describeDa(da: Hextets, flavor: CsidJourneyHop["flavor"]): string {
-  if (flavor === "REPLACE_CSID") return `${fmtIpv6(da)} (CSID ${csidHexText(da[3])}/${csidHexText(da[4])}, Index ${da[7]})`;
+  if (flavor === "REPLACE_CSID") return `${fmtIpv6(da)} (CSID ${csidHexText(da[3])}/${csidHexText(da[4])}, Index ${readReplaceIndex(da)})`;
   return `${fmtIpv6(da)} (active CSID ${csidHexText(da[NEXT_CSID_LAYOUT.lblBits / 16])})`;
 }
 
@@ -225,8 +226,9 @@ function hopMutations(hop: CsidJourneyHop): PacketMutation[] {
     let detail: string;
     if (hop.action === "INTRA_CONTAINER_SHIFT") detail = `Argument shifted left after the Locator-Block: CSID ${csidHexText(before)} consumed, ${csidHexText(after)} now active, low slot zero-padded`;
     else if (hop.action === "CONTAINER_BOUNDARY_CROSSED" && hop.flavor === "NEXT_CSID") detail = `Container exhausted — Segment List[${hop.segmentsLeftAfter}] copied into the DA; ${csidHexText(after)} now active`;
-    else if (hop.action === "CONTAINER_BOUNDARY_CROSSED") detail = `Packed container Segment List[${hop.segmentsLeftAfter}] loaded; valid SID reconstructed from its first position (CSID ${csidHexText(after)}/${csidHexText(hop.daAfter[4])}, Index ${hop.daAfter[7]})`;
-    else detail = `Valid SID reconstructed from packed position ${hop.daBefore[7]} (CSID ${csidHexText(after)}/${csidHexText(hop.daAfter[4])}), Index ${hop.daBefore[7]} → ${hop.daAfter[7]}`;
+    // REPLACE-CSID: the Index counts DOWN and the NEW Index is the physical packed position the active CSID was read from.
+    else if (hop.action === "CONTAINER_BOUNDARY_CROSSED") detail = `Packed container Segment List[${hop.segmentsLeftAfter}] loaded; valid SID reconstructed from packed position ${readReplaceIndex(hop.daAfter)} (CSID ${csidHexText(after)}/${csidHexText(hop.daAfter[4])}), Index ${readReplaceIndex(hop.daBefore)} → ${readReplaceIndex(hop.daAfter)}`;
+    else detail = `Valid SID reconstructed from packed position ${readReplaceIndex(hop.daAfter)} (CSID ${csidHexText(after)}/${csidHexText(hop.daAfter[4])}), Index ${readReplaceIndex(hop.daBefore)} → ${readReplaceIndex(hop.daAfter)}`;
     out.push({ type: "DA_CHANGE", detail });
   }
   if (hop.segmentsLeftBefore !== hop.segmentsLeftAfter) out.push({ type: "SEGMENTS_LEFT_CHANGE", detail: `Segments Left ${hop.segmentsLeftBefore} → ${hop.segmentsLeftAfter} (a new 128-bit Segment List entry was consumed)` });
@@ -561,7 +563,7 @@ export function containerStateRows(state: Srv6CsidState, stepId: string): Row[] 
   const lbl = (replace ? REPLACE_CSID_LAYOUT : NEXT_CSID_LAYOUT).lblBits / 16;
   const rows: Row[] = [{ label: "IPv6 DA", value: fmtIpv6(pkt.daHextets) }, { label: "Locator-Block", value: LOCATOR_BLOCK_TEXT }];
   if (replace) {
-    rows.push({ label: "Active CSID (Locator-Node / Function)", value: `${csidHexText(pkt.daHextets[lbl])} / ${csidHexText(pkt.daHextets[lbl + 1])}` }, { label: "Index", value: String(pkt.daHextets[7]) });
+    rows.push({ label: "Active CSID (Locator-Node / Function)", value: `${csidHexText(pkt.daHextets[lbl])} / ${csidHexText(pkt.daHextets[lbl + 1])}` }, { label: "Index", value: String(readReplaceIndex(pkt.daHextets)) });
   } else {
     const slots = pkt.daHextets.slice(lbl);
     const queued = slots.slice(1).filter((v) => v !== 0);
