@@ -304,10 +304,23 @@ export interface RepairSid {
   flavors: Srv6Flavor[];
   adjacency: RouterId;
 }
-export interface Srv6RepairList {
-  sids: RepairSid[];
+/** A plain End SID (optionally USD-flavored): globally routed to its owner, bound to NO adjacency. Only the incident's deliberately wrong repair uses one. */
+export interface PlainEndRepairSid {
+  sidHextets: Hextets;
+  sidText: string;
+  owner: RouterId;
+  behavior: "END";
+  flavors: Srv6Flavor[];
+  adjacency?: undefined;
 }
-export interface TiLfaRepairPath {
+export type RepairInstructionSid = RepairSid | PlainEndRepairSid;
+export function isEndXRepairSid(sid: RepairInstructionSid): sid is RepairSid {
+  return sid.behavior === "END_X";
+}
+export interface Srv6RepairList<S extends RepairInstructionSid = RepairSid> {
+  sids: S[];
+}
+export interface TiLfaRepairPath<S extends RepairInstructionSid = RepairSid> {
   mode: ProtectionMode;
   protectedResource: string;
   plr: RouterId;
@@ -321,7 +334,7 @@ export interface TiLfaRepairPath {
   repairNode?: RouterId;
   mergeTarget?: RouterId;
   outgoingInterface?: RouterId; // the PLR's own first hop toward repairNode — plain IPv6 reachability, no SID needed for this leg
-  repairList: Srv6RepairList;
+  repairList: Srv6RepairList<S>;
   strategy: "LAST_P_SPACE_NODE_PLUS_FORCED_ADJACENCY" | "NO_REPAIR_AVAILABLE";
 }
 
@@ -336,9 +349,28 @@ const LOCATOR_HEXTETS4: Record<RouterId, [number, number, number, number]> = {
 export const INFRA_ADDRESS: Record<RouterId, Hextets> = Object.fromEntries(ALL_ROUTERS.map((r) => [r, buildSrv6Sid(LOCATOR_HEXTETS4[r], 0)])) as Record<RouterId, Hextets>;
 export const INFRA_ADDRESS_TEXT: Record<RouterId, string> = Object.fromEntries(ALL_ROUTERS.map((r) => [r, fmtIpv6(INFRA_ADDRESS[r])])) as Record<RouterId, string>;
 
+/**
+ * End.X SID function values, keyed by SID owner, then by bound adjacency.
+ * Each End.X SID is one locally instantiated behavior bound to ONE
+ * adjacency, so two adjacencies at the same owner need two distinct SIDs.
+ * `FUNCTION.END_X` (0x2) stays each owner's first End.X instance; 0x22 is a
+ * PacketVerse-local function allocation for P4's second End.X instance
+ * (→ PE2, node protection) — RFC 8986 leaves function values to the
+ * operator and assigns no value to this binding.
+ */
+const END_X_FUNCTION_BY_ADJACENCY: Partial<Record<RouterId, Partial<Record<RouterId, number>>>> = {
+  P3: { P4: FUNCTION.END_X },
+  P4: { P2: FUNCTION.END_X, PE2: 0x22 },
+};
+export function endXFunctionFor(owner: RouterId, adjacency: RouterId): number {
+  const fn = END_X_FUNCTION_BY_ADJACENCY[owner]?.[adjacency];
+  if (fn === undefined) throw new Error(`No End.X SID allocated at ${owner} for adjacency ${adjacency}`);
+  return fn;
+}
+
 /** A globally-routed End.X+USD repair SID at `owner`, forcing the specific adjacency `adjacency` — reachable via ordinary IPv6 forwarding toward `owner`'s locator, exactly like SRv6 L3VPN's Service SIDs, and deliberately NOT prefixed with a separate Node/End SID first (§13). */
 export function buildRepairSid(owner: RouterId, adjacency: RouterId): RepairSid {
-  const sidHextets = buildSrv6Sid(LOCATOR_HEXTETS4[owner], FUNCTION.END_X);
+  const sidHextets = buildSrv6Sid(LOCATOR_HEXTETS4[owner], endXFunctionFor(owner, adjacency));
   return { sidHextets, sidText: fmtIpv6(sidHextets), owner, behavior: "END_X", flavors: ["USD"], adjacency };
 }
 export function findRepairSidByHextets(state: { repairSids: RepairSid[] }, daHextets: Hextets): RepairSid | undefined {
@@ -393,7 +425,7 @@ export function precomputeTiLfaRepair(links: LinkDef[], plr: RouterId, destinati
 }
 
 /** Re-validates an ALREADY-COMPUTED repair against the CURRENT topology — reveals staleness after a change the repair was never recomputed against, or (in the troubleshooting incident) a repair that was simply wrong from the start. */
-export function validateRepairPath(repair: TiLfaRepairPath, links: LinkDef[]): { valid: boolean; reason: string } {
+export function validateRepairPath(repair: TiLfaRepairPath<RepairInstructionSid>, links: LinkDef[]): { valid: boolean; reason: string } {
   if (repair.strategy === "NO_REPAIR_AVAILABLE" || !repair.repairNode || repair.repairList.sids.length === 0) return { valid: false, reason: "No repair computed." };
   const toRepairNode = shortestPath(links, repair.plr, repair.repairNode);
   if (!toRepairNode) return { valid: false, reason: `${repair.plr} currently has no path to ${repair.repairNode}.` };
@@ -401,7 +433,7 @@ export function validateRepairPath(repair: TiLfaRepairPath, links: LinkDef[]): {
   return { valid: true, reason: "Repair path is current and avoids the protected resource end to end." };
 }
 /** Specifically checks the invariant a wrong/stale repair violates: does the chosen repair genuinely avoid the protected resource, independent of anything else? */
-export function validateRepairAvoidsResource(repair: TiLfaRepairPath): boolean {
+export function validateRepairAvoidsResource(repair: TiLfaRepairPath<RepairInstructionSid>): boolean {
   if (!repair.postConvergencePath) return false;
   return isPathSafe(repair.postConvergencePath, LINKS, repair.mode, repair.protectedResource);
 }
@@ -498,7 +530,7 @@ export function srSourceFor(router: RouterId): string {
 export const PLR_REPAIR_SOURCE = srSourceFor(PLR);
 
 /** Single-SID repair: no SRH at all — one segment fits entirely in the outer destination address. `srcText` is REQUIRED: it must belong to the node actually performing this H.Encaps (the PLR for TI-LFA repair). */
-export function encapsulateRepairSingleSid(repairSid: RepairSid, packet: TiLfaPacketState, srcText: string): TiLfaPacketState {
+export function encapsulateRepairSingleSid(repairSid: RepairInstructionSid, packet: TiLfaPacketState, srcText: string): TiLfaPacketState {
   return { ...packet, repairOuter: { srcText, daHextets: repairSid.sidHextets } };
 }
 /** Two-SID repair, for the SRH-education lab only (§57-59) — real reversed-storage-order SRH, Segment List[0] = the FINAL segment. */
@@ -626,7 +658,7 @@ export interface Srv6TiLfaState {
   failedNode?: RouterId;
   failureKnownAt: Partial<Record<RouterId, boolean>>;
   phase: TiLfaPhase;
-  linkRepair?: TiLfaRepairPath;
+  linkRepair?: TiLfaRepairPath<RepairInstructionSid>;
   nodeRepair?: TiLfaRepairPath;
   activeMode?: ProtectionMode;
   packet?: TiLfaPacketState;
@@ -1064,7 +1096,7 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     packet: (state) => (state.packet && !state.packet.repairOuter ? tiLfaPacket("p4-usd", "P4", "P2", "Repair outer removed — original packet restored", "USD DECAP", state.packet) : undefined),
     run: (state) => {
       const sid = state.linkRepair?.repairList.sids[0];
-      if (!sid || !state.packet) return { state, events: [] };
+      if (!sid || !isEndXRepairSid(sid) || !state.packet) return { state, events: [] };
       const outcome = executeEndXUsd(sid, state.packet);
       const journey = [...state.journey, { router: "P4" as RouterId, input: "Repair outer + original IPv6", lookup: "End.X+USD: remove repair outer, force adjacency P2", action: "USD_DECAP" as TiLfaAction, output: outcome.reason }];
       return { state: { ...state, packet: outcome.exposedPacket ?? state.packet, packetAt: "P2", journey }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "p4-usd-decap", timestamp: Date.now(), message: "P4 executes End.X+USD" }] };
@@ -1192,8 +1224,8 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     narrative: "The precomputed repair for link P1-P2 is (incorrectly) set to a directly-routed \"P2 End+USD\" SID — NOT the P4 End.X+USD adjacency SID. Outgoing interface is still correctly P1→P3.",
     run: (state) => {
       const correct = precomputeTiLfaRepair(state.links, PLR, DESTINATION, "LINK", PROTECTED_LINK);
-      const wrongSid: RepairSid = { sidHextets: buildSrv6Sid(LOCATOR_HEXTETS4.P2, FUNCTION.END), sidText: fmtIpv6(buildSrv6Sid(LOCATOR_HEXTETS4.P2, FUNCTION.END)), owner: "P2", behavior: "END_X", flavors: ["USD"], adjacency: "P2" };
-      const wrongRepair: TiLfaRepairPath = { ...correct, repairNode: "P2", mergeTarget: "P2", repairList: { sids: [wrongSid] } };
+      const wrongSid: PlainEndRepairSid = { sidHextets: buildSrv6Sid(LOCATOR_HEXTETS4.P2, FUNCTION.END), sidText: fmtIpv6(buildSrv6Sid(LOCATOR_HEXTETS4.P2, FUNCTION.END)), owner: "P2", behavior: "END", flavors: ["USD"] };
+      const wrongRepair: TiLfaRepairPath<RepairInstructionSid> = { ...correct, repairNode: "P2", mergeTarget: "P2", repairList: { sids: [wrongSid] } };
       return { state: { ...state, linkRepair: wrongRepair, troubleshooting: { ...state.troubleshooting, started: true } }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "inject-wrong-repair", timestamp: Date.now(), message: "Incorrect repair SID installed: P2 End+USD (directly routed, no P4 hop)" }] };
     },
     whatChanged: () => ["Repair list (WRONG): <P2 End+USD> — bypasses the documented P4-based strategy entirely"],
@@ -1299,7 +1331,7 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     packet: (state) => (state.packet && state.packetAt === "PE2" ? tiLfaPacket("verify-repair", "P2", "PE2", "Stage shown: final verified packet at PE2 after the repair outer has been removed; the journey records the full P1→P3→P4→P2→PE2 repair path", "VERIFIED", state.packet) : undefined),
     run: (state) => {
       const sid = state.linkRepair?.repairList.sids[0];
-      if (!sid) return { state, events: [] };
+      if (!sid || !isEndXRepairSid(sid)) return { state, events: [] };
       const pkt = encapsulateRepairSingleSid(sid, baselinePacket(), PLR_REPAIR_SOURCE);
       const outcome = executeEndXUsd(sid, pkt);
       const journey: JourneyHop[] = [
@@ -1427,7 +1459,7 @@ export const srv6TiLfaSteps: ScenarioStep<Srv6TiLfaState>[] = [
     packet: (state) => (state.packet && !state.packet.repairOuter ? tiLfaPacket("l3vpn-usd", "P4", "P2", "Repair outer removed — original SRv6 VPN packet restored", "USD DECAP", state.packet) : undefined),
     run: (state) => {
       const sid = state.linkRepair?.repairList.sids[0];
-      if (!sid || !state.packet) return { state, events: [] };
+      if (!sid || !isEndXRepairSid(sid) || !state.packet) return { state, events: [] };
       const outcome = executeEndXUsd(sid, state.packet);
       const journey = [...state.journey, { router: "P4" as RouterId, input: "Repair outer + SRv6 VPN outer + IPv4", lookup: "End.X+USD removes ONLY the repair outer", action: "USD_DECAP" as TiLfaAction, output: "Original SRv6 VPN packet (DA=PE2 End.DT4) restored" }];
       return { state: { ...state, packet: outcome.exposedPacket ?? state.packet, packetAt: "P2", journey }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "l3vpn-p4-decap-repair-only", timestamp: Date.now(), message: "P4 removes only the TI-LFA repair outer" }] };
