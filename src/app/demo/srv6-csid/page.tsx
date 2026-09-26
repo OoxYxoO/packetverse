@@ -26,6 +26,7 @@ import {
   NEXT_CSID_VALUE,
   ordinarySidText,
   REPLACE_CSID_LAYOUT,
+  computeReplaceCsidCapacity,
   REPLACE_PROGRAM,
   srv6CsidSteps,
   verifyCompressionEquivalence,
@@ -125,7 +126,8 @@ function containerViewerData(entry: CompressedListEntry): CsidContainerData | un
       csidBits: REPLACE_CSID_LAYOUT.lnflBits,
       argumentBits: 0,
       isPackedContainer: true,
-      slots: pairs.map((p, i) => ({ value: p[0] === 0 && p[1] === 0 ? "padding" : `${csidHexText(p[0])} / ${csidHexText(p[1])}`, owner: entry.segments[i]?.owner, role: p[0] === 0 && p[1] === 0 ? "padding" : "queued" })),
+      // Physical slot i holds the ((K-1) - i)-th CSID in travel order (RFC 9800 packs from position K-1 downward).
+      slots: pairs.map((p, i) => ({ value: p[0] === 0 && p[1] === 0 ? "padding" : `${csidHexText(p[0])} / ${csidHexText(p[1])}`, owner: p[0] === 0 && p[1] === 0 ? undefined : entry.segments[computeReplaceCsidCapacity(REPLACE_CSID_LAYOUT) - 1 - i]?.owner, role: p[0] === 0 && p[1] === 0 ? "padding" : "queued" })),
     };
   }
   if (entry.kind === "REPLACE_CSID_FIRST") {

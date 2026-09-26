@@ -67,7 +67,7 @@ const MPLS_PLR: ProcessingStage[] = [
 ];
 const MPLS_REPAIR_NODE: ProcessingStage[] = [
   { id: "ingress", label: "Ingress" },
-  { id: "pop-node-sid", label: "LFIB: POP Node-SID" },
+  { id: "lfib-lookup", label: "LFIB Lookup: Top Label = Local Adj-SID" },
   { id: "forced-adjacency", label: "Local Adj-SID: Forced Adjacency" },
   { id: "egress", label: "Egress" },
 ];
@@ -86,7 +86,7 @@ const SRV6_ENDPOINT: ProcessingStage[] = [
   { id: "ingress", label: "Ingress" },
   { id: "local-sid-match", label: "Local SID Table Match" },
   { id: "behavior", label: "Endpoint Behavior" },
-  { id: "deliver", label: "Deliver to CE" },
+  { id: "deliver", label: "Forward / Deliver" },
 ];
 const SRV6_PLR: ProcessingStage[] = [
   { id: "ingress", label: "Ingress" },
@@ -168,7 +168,7 @@ function lookupTypeFor(hop: JourneyHop): string {
       case "REPAIR_PUSH":
         return "TI-LFA precomputed repair (MPLS label repair list)";
       default:
-        return "MPLS LFIB (Node-SID, then local Adj-SID)";
+        return "MPLS LFIB (top label = local Adj-SID)";
     }
   }
   switch (hop.action) {
@@ -235,7 +235,8 @@ export function framesForHopPacket(p: HopPacket | undefined): PacketStackFrame[]
       const frames: PacketStackFrame[] = [];
       if (p.packet.repairOuter) frames.push({ id: `repair-${fmtIpv6(p.packet.repairOuter.daHextets)}`, text: `Repair outer IPv6 DA=${fmtIpv6(p.packet.repairOuter.daHextets)} · End.X+USD repair SID`, tone: "transport" });
       if (p.packet.repairOuter?.srh) frames.push({ id: "repair-srh", text: `Repair SRH SL=${p.packet.repairOuter.srh.segmentsLeft}`, tone: "transport" });
-      if (p.packet.vpnOuter) frames.push({ id: "vpn-outer", text: `SRv6 L3VPN outer DA=${p.packet.vpnOuter.daText}`, tone: "vpn" });
+      // The nested outer's ROLE comes from the scenario packet metadata — a generic transport outer is never called L3VPN.
+      if (p.packet.vpnOuter) frames.push(p.packet.vpnOuter.role === "GLOBAL_DT4_TRANSPORT" ? { id: "transport-outer", text: `SRv6 transport outer DA=${p.packet.vpnOuter.daText} · End.DT4 (global table)`, tone: "transport" } : { id: "vpn-outer", text: `SRv6 L3VPN outer DA=${p.packet.vpnOuter.daText}`, tone: "vpn" });
       if (p.packet.inner?.kind === "IPV4") frames.push(ipv4Frame(p.packet.inner.srcIp, p.packet.inner.dstIp));
       return frames;
     }
@@ -278,6 +279,8 @@ function mutationsFor(hop: JourneyHop): PacketMutation[] {
     if (before.packet.repairOuter && !after.packet.repairOuter) return [{ type: "DECAPSULATE", detail: "repair outer IPv6 removed (USD)" }];
   }
   if (before.kind === "SRV6_L3VPN" && after?.kind === "IPV4") return [{ type: "DECAPSULATE", detail: "outer IPv6 removed (End.DT4)" }];
+  if (before.kind === "SRV6" && after?.kind === "IPV4") return [{ type: "DECAPSULATE", detail: "outer IPv6 removed (End.DT4, global IPv4 table)" }];
+  if (before.kind === "SRV6_TILFA" && !before.packet.repairOuter && before.packet.vpnOuter && after?.kind === "IPV4") return [{ type: "DECAPSULATE", detail: before.packet.vpnOuter.role === "GLOBAL_DT4_TRANSPORT" ? "transport outer IPv6 removed (End.DT4, global IPv4 table)" : "L3VPN outer IPv6 removed (End.DT4)" }];
   return [];
 }
 
@@ -294,7 +297,7 @@ function lookupKeyFor(hop: JourneyHop): string | undefined {
     case "SRV6_L3VPN":
       return `IPv6 DA ${fmtIpv6(b.packet.outer.daHextets)}`;
     case "SRV6_TILFA":
-      return b.packet.repairOuter ? `IPv6 DA ${fmtIpv6(b.packet.repairOuter.daHextets)}` : b.packet.inner?.kind === "IPV4" ? `IPv4 DA ${b.packet.inner.dstIp}` : hop.input;
+      return b.packet.repairOuter ? `IPv6 DA ${fmtIpv6(b.packet.repairOuter.daHextets)}` : b.packet.vpnOuter ? `IPv6 DA ${b.packet.vpnOuter.daText}` : b.packet.inner?.kind === "IPV4" ? `IPv4 DA ${b.packet.inner.dstIp}` : hop.input;
   }
 }
 

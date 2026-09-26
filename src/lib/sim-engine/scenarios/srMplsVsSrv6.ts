@@ -1,7 +1,7 @@
 import type { PacketLayer, PacketVisual, ScenarioStep } from "../types";
 import { fmtLabel, deriveNodeSidLabel, computeAdjSidLabel, type LabelValue } from "./srMplsFoundations";
 import { buildSrv6Sid, fmtIpv6, decomposeSrv6Sid, type Hextets } from "./srv6Foundations";
-import { FUNCTION, BEHAVIOR_LABEL, BEHAVIOR_FAMILY, type Srv6EndpointBehavior, type InnerPayload } from "./srv6EndpointBehaviors";
+import { FUNCTION, BEHAVIOR_LABEL, BEHAVIOR_FAMILY, type Srv6EndpointBehavior } from "./srv6EndpointBehaviors";
 import {
   ALL_ROUTERS as CORE_ROUTERS,
   HEADEND as CORE_HEADEND,
@@ -21,6 +21,7 @@ import {
   encapsulateRepairSingleSid,
   buildTiLfaPacketLayers,
   INFRA_ADDRESS,
+  PLR_REPAIR_SOURCE,
   type RouterId as CoreRouterId,
   type TiLfaRepairPath,
   type TiLfaPacketState,
@@ -289,15 +290,34 @@ export function endXSidHextets(owner: CoreRouterId): Hextets {
 export function endXSidText(owner: CoreRouterId): string {
   return fmtIpv6(endXSidHextets(owner));
 }
+/**
+ * Generic TRANSPORT SID: End.DT4 bound to the provider/global IPv4 table,
+ * built on the router's own infrastructure locator. Used by the transport
+ * and TE phases so the egress PE really decapsulates (plain End does not).
+ * Deliberately a DIFFERENT SID instance from Phase 3's CUST-A Service SID
+ * (End.DT4 bound to VRF CUST-A, from the SRv6 L3VPN locator plan).
+ */
+export function globalDt4SidHextets(router: CoreRouterId): Hextets {
+  const { locator4 } = decomposeSrv6Sid(INFRA_ADDRESS[router]);
+  return buildSrv6Sid(locator4, FUNCTION.END_DT4);
+}
+export function globalDt4SidText(router: CoreRouterId): string {
+  return fmtIpv6(globalDt4SidHextets(router));
+}
+/** PE1's own source for every outer PE1 imposes (transport, TE, steering, VPN). */
+export const PE1_TRANSPORT_SOURCE = "2001:db8:100:1::c1";
 
 export interface Srv6SidRow {
   router: CoreRouterId;
-  behavior: Extract<Srv6EndpointBehavior, "END" | "END_X">;
+  behavior: Extract<Srv6EndpointBehavior, "END" | "END_X" | "END_DT4">;
   sidText: string;
   meaning: string;
 }
 export function buildSrv6SidDatabase(): Srv6SidRow[] {
-  return CORE_ROUTERS.map((r) => ({ router: r, behavior: "END" as const, sidText: endSidText(r), meaning: `${BEHAVIOR_LABEL.END}: reach ${r} via IPv6 FIB (global)` }));
+  return [
+    ...CORE_ROUTERS.map((r) => ({ router: r, behavior: "END" as const, sidText: endSidText(r), meaning: `${BEHAVIOR_LABEL.END}: reach ${r} via IPv6 FIB (global)` })),
+    { router: CORE_DESTINATION, behavior: "END_DT4" as const, sidText: globalDt4SidText(CORE_DESTINATION), meaning: `${BEHAVIOR_LABEL.END_DT4} (global/provider IPv4 table): transport egress — decapsulate, then global IPv4 lookup` },
+  ];
 }
 
 export interface SrhSeg {
@@ -425,90 +445,104 @@ export interface TeSegment {
   explanation: string;
 }
 function nodeSegmentExplanation(owner: CoreRouterId, isFirst: boolean): string {
-  return isFirst
-    ? `Node-SID/End(${owner}) — ordinary shortest path from ${CORE_HEADEND} already threads through the whole PE1-P1-P3-P4 chain.`
-    : `Node-SID/End(${owner}) — ordinary shortest path from the previous segment already reaches it.`;
+  if (owner === CORE_DESTINATION) return `Node-SID(${owner}) — kept at the bottom of the stack so transport state survives to ${owner} (${owner}'s penultimate hop PHPs it); no core router ever has to route the customer destination.`;
+  return isFirst ? `Node-SID(${owner}) — ordinary shortest path from ${CORE_HEADEND} already threads through the whole PE1-P1-P3-P4 chain.` : `Node-SID(${owner}) — ordinary shortest path from the previous segment already reaches it.`;
 }
 function adjSegmentExplanation(owner: CoreRouterId, target: CoreRouterId): string {
-  return `${owner}'s own ordinary shortest path to ${target} does NOT use the direct ${owner}-${target} link — a Node-SID/End segment here would misroute. A forced-adjacency segment at ${owner} → ${target} is required instead.`;
+  return `${owner}'s own ordinary shortest path to ${target} does NOT use the direct ${owner}-${target} link — a Node-SID segment here would misroute. A locally significant Adj-SID at ${owner} → ${target} is required instead.`;
 }
+
 /**
- * SR-MPLS encoding: Node-SID(P4) + Adj-SID(P4→P2) — 2 segments. The
- * trailing Node-SID that `deriveMinimalTeSegments` would otherwise add
- * for the path's own final destination is dropped here deliberately:
- * an MPLS label stack rides OVER an untouched IP header — `dstIp` was
- * set once, at packet construction, and is never touched by any
- * PUSH/SWAP/POP. Once the Adj-SID (bottom of stack) is consumed at its
- * owner, the packet becomes plain, already-addressed IP again, and
- * ordinary destination-based forwarding (which already matches the
- * remaining intended path — that is what made the dropped segment
- * "verified" in the first place) completes the journey for free. No
- * second architecture-neutral function computes this trim: it is only
- * safe for SR-MPLS.
+ * Phase 2 encoding model. ONE shared computation — `deriveMinimalTeSegments`
+ * over the explicit path — states the topology requirement: reach P4, force
+ * P4→P2, reach PE2. Each architecture then maps that requirement onto the
+ * segment semantics it actually has; the segment lists are NOT one-to-one
+ * translations of each other:
+ *  - SR-MPLS (this capstone models the common, LOCALLY significant Adj-SID):
+ *    Node-SID(P4) to reach the Adj-SID's owner, Adj-SID(P4→P2), and
+ *    Node-SID(PE2) kept at the bottom so transport state survives to PE2 —
+ *    3 labels. P3 PHPs 16004, P4 consumes its local Adj-SID, P2 PHPs 16006.
+ *  - SRv6 (this capstone's P4 End.X SID is GLOBALLY routed through P4's
+ *    locator): the End.X SID itself provides reach-P4 + force-P4→P2, so no
+ *    separate End(P4) is prepended; the program ends on PE2's global-table
+ *    End.DT4 SID, which decapsulates and does the provider IPv4 lookup —
+ *    2 SIDs.
+ * 3 labels vs. 2 SIDs is a consequence of THIS segment-significance model,
+ * not an architectural ranking: RFC 8402 also allows a globally significant
+ * MPLS Adj-SID, which would change the MPLS count at the cost of advertising
+ * that adjacency's forwarding state domain-wide, and not every SRv6
+ * deployment globally advertises its End.X SIDs.
  */
 export function buildMplsTeSegments(): TeSegment[] {
-  const raw = deriveMinimalTeSegments(TE_EXPLICIT_PATH);
-  const last = raw[raw.length - 1];
-  const trimmed = raw.length > 1 && last.type === "NODE" && last.owner === TE_EXPLICIT_PATH[TE_EXPLICIT_PATH.length - 1] ? raw.slice(0, -1) : raw;
-  return trimmed.map((s, i) => ({ order: i, type: s.type, owner: s.owner, target: s.target, explanation: s.type === "NODE" ? nodeSegmentExplanation(s.owner, i === 0) : adjSegmentExplanation(s.owner, s.target!) }));
-}
-/**
- * SRv6 BASE encoding (plain End / End.X, no USD): End(P4) + End.X(P4→
- * P2) + End(PE2) — 3 segments, one more than SR-MPLS's base encoding,
- * for a genuine data-plane reason (RFC 8986 §4.1/§4.2), not a weaker
- * minimizer or an unfair segment vocabulary: both architectures get to
- * use a forced-adjacency segment (Adj-SID here, exactly as much as
- * End.X there). The difference is what happens AFTER the forced-
- * adjacency segment is consumed. Plain End.X still performs the
- * ordinary SRH advance (decrement Segments Left, set DA to the NEXT
- * Segment List entry) — it only replaces the FORWARDING decision
- * (bound adjacency instead of a FIB lookup on that new DA); unlike
- * SR-MPLS's label stack, there is no separate, untouched "real
- * destination" field underneath an SRv6 outer header for the packet to
- * fall back on once the SRH is exhausted — whatever DA the last
- * Segments-Left decrement leaves behind IS what the next router acts
- * on. So the trailing End(PE2) segment is NOT redundant here the way
- * the equivalent Node-SID is for SR-MPLS: dropping it would leave DA
- * pointing at P4's own address after the forced hop, which P2 cannot
- * use to reach PE2.
- *
- * This 2-vs-3 result is therefore SCOPED to this specific pair of base
- * behaviors (Node-SID/Adj-SID vs. plain End/End.X) — it is not a
- * universal "SR-MPLS always needs fewer segments" rule. A different
- * SRv6 endpoint-behavior choice for the SAME forced hop (End.X's USD
- * flavor) changes the count again — see `testSrv6TeEndXUsdAlternative`
- * below, which executes that alternative through the real domain
- * behavior rather than assuming the result.
- */
-export function buildSrv6TeSegments(): TeSegment[] {
   const raw = deriveMinimalTeSegments(TE_EXPLICIT_PATH);
   return raw.map((s, i) => ({ order: i, type: s.type, owner: s.owner, target: s.target, explanation: s.type === "NODE" ? nodeSegmentExplanation(s.owner, i === 0) : adjSegmentExplanation(s.owner, s.target!) }));
 }
 
+export type Srv6TeBehavior = Extract<Srv6EndpointBehavior, "END" | "END_X" | "END_DT4">;
+export interface Srv6TeSegment {
+  order: number;
+  behavior: Srv6TeBehavior;
+  owner: CoreRouterId;
+  adjacency?: CoreRouterId;
+  sidHextets: Hextets;
+  sidText: string;
+  explanation: string;
+}
+/** "End.X(P4→P2)" / "End.DT4(PE2, global table)" / "End(P3)". */
+export function srv6TeSegmentName(s: Pick<Srv6TeSegment, "behavior" | "owner" | "adjacency">): string {
+  if (s.behavior === "END_X") return `End.X(${s.owner}→${s.adjacency})`;
+  if (s.behavior === "END_DT4") return `End.DT4(${s.owner}, global table)`;
+  return `End(${s.owner})`;
+}
+/** SRv6 encoding of the SAME shared requirement — see the encoding-model note above `buildMplsTeSegments`. */
+export function buildSrv6TeSegments(): Srv6TeSegment[] {
+  const raw = deriveMinimalTeSegments(TE_EXPLICIT_PATH);
+  const out: Omit<Srv6TeSegment, "order">[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const s = raw[i];
+    const next = raw[i + 1];
+    // "Reach X" followed by "force X→Y": the globally routed End.X SID at X already expresses both.
+    if (s.type === "NODE" && next?.type === "ADJ" && next.owner === s.owner) continue;
+    if (s.type === "ADJ") {
+      out.push({ behavior: "END_X", owner: s.owner, adjacency: s.target, sidHextets: endXSidHextets(s.owner), sidText: endXSidText(s.owner), explanation: `${s.owner} End.X→${s.target} — this capstone's End.X SID is globally routed through ${s.owner}'s locator, so it both reaches ${s.owner} and forces the ${s.owner}→${s.target} adjacency (no separate End(${s.owner}) first).` });
+    } else if (s.owner === CORE_DESTINATION) {
+      out.push({ behavior: "END_DT4", owner: s.owner, sidHextets: globalDt4SidHextets(s.owner), sidText: globalDt4SidText(s.owner), explanation: `${s.owner} End.DT4 (global/provider IPv4 table) — final segment: decapsulate, then global IPv4 lookup toward CE2.` });
+    } else {
+      out.push({ behavior: "END", owner: s.owner, sidHextets: endSidHextets(s.owner), sidText: endSidText(s.owner), explanation: `${s.owner} End — ordinary shortest path already reaches it.` });
+    }
+  }
+  if (out[out.length - 1]?.behavior !== "END_DT4") {
+    out.push({ behavior: "END_DT4", owner: CORE_DESTINATION, sidHextets: globalDt4SidHextets(CORE_DESTINATION), sidText: globalDt4SidText(CORE_DESTINATION), explanation: `${CORE_DESTINATION} End.DT4 (global/provider IPv4 table) — final segment: decapsulate, then global IPv4 lookup toward CE2.` });
+  }
+  return out.map((s, i) => ({ order: i, ...s }));
+}
+
+/** The Phase-1 SRv6 transport packet expressed as a nested outer (role = generic transport), so a TI-LFA repair or a TE steering outer can wrap it whole. */
+export function buildSrv6TransportNestedPacket(): TiLfaPacketState {
+  return { vpnOuter: { srcText: PE1_TRANSPORT_SOURCE, daHextets: globalDt4SidHextets(CORE_DESTINATION), daText: globalDt4SidText(CORE_DESTINATION), role: "GLOBAL_DT4_TRANSPORT" }, inner: { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 } };
+}
+
 /**
- * Advanced/optional comparison (NOT part of the base 2-vs-3 walkthrough
- * above): does choosing a DIFFERENT SRv6 endpoint behavior for the SAME
- * forced hop (P4→P2) change the required segment count? Reuses
- * srv6TiLfa.ts's OWN End.X+USD repair-SID and execution engine exactly
- * as this capstone's TI-LFA repair phase already does for the P1-P2
- * repair (`buildRepairSid`, `encapsulateRepairSingleSid`,
- * `executeEndXUsd`) — no second USD implementation is written here.
- * TI-LFA is one important use case for End.X+USD, already demonstrated
- * elsewhere in PacketVerse (this capstone's own repair phase, and the
- * dedicated SRv6 TI-LFA lesson) — it is not the only one; explicit
- * traffic engineering can use the identical mechanism.
- *
- * The result is EXECUTED through the real domain function, never
- * assumed: `executeEndXUsd` itself decides whether USD can decapsulate
- * here, exactly as it would for any other caller (the TI-LFA phase
- * included). `assertSrv6TeUsdAlternative` (module scope, below) fails
- * the build if that real execution ever stops confirming the
- * USD_DECAP_FORWARD outcome this comparison depends on.
+ * Advanced/optional comparison (NOT the base encoding above): a DIFFERENT
+ * encapsulation structure for the same forced hop. PE1 first builds the
+ * normal 1-SID transport packet (outer DA = PE2 global End.DT4), then adds
+ * ONE additional steering outer whose DA is P4's globally routed End.X+USD
+ * SID. At P4, USD removes ONLY that steering outer, exposing the untouched
+ * transport packet, and forces P4→P2; P2 forwards on the transport outer and
+ * PE2's End.DT4 decapsulates. Reuses srv6TiLfa.ts's own End.X+USD SID and
+ * execution engine (`buildRepairSid`, `encapsulateRepairSingleSid`,
+ * `executeEndXUsd`) — TI-LFA is one use of End.X+USD, explicit TE another.
+ * The result is EXECUTED, never assumed; `assertSrv6TeUsdAlternative`
+ * (module scope, below) fails the build if the real execution stops
+ * exposing the transport packet.
  */
 export interface Srv6TeUsdAlternative {
-  repairSid: RepairSid;
+  steeringSid: RepairSid;
+  transportPacket: TiLfaPacketState;
+  steeredPacket: TiLfaPacketState;
   outcome: EndXUsdOutcome;
-  segmentCount: number;
+  steeringSidCount: number;
+  transportSidCount: number;
   physicalPath: CoreRouterId[];
 }
 export function testSrv6TeEndXUsdAlternative(): Srv6TeUsdAlternative {
@@ -517,11 +551,12 @@ export function testSrv6TeEndXUsdAlternative(): Srv6TeUsdAlternative {
   if (!adjSeg || !adjSeg.target) {
     throw new Error("Explicit TE path no longer contains a forced-adjacency hop; the End.X+USD alternative does not apply.");
   }
-  const repairSid = buildRepairSid(adjSeg.owner, adjSeg.target);
-  const inner: InnerPayload = { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 };
-  const encapsulated = encapsulateRepairSingleSid(repairSid, { inner });
-  const outcome = executeEndXUsd(repairSid, encapsulated);
-  return { repairSid, outcome, segmentCount: 1, physicalPath: TE_EXPLICIT_PATH };
+  const steeringSid = buildRepairSid(adjSeg.owner, adjSeg.target);
+  const transportPacket = buildSrv6TransportNestedPacket();
+  // PE1 imposes this steering outer, so PE1 owns its source address.
+  const steeredPacket = encapsulateRepairSingleSid(steeringSid, transportPacket, PE1_TRANSPORT_SOURCE);
+  const outcome = executeEndXUsd(steeringSid, steeredPacket);
+  return { steeringSid, transportPacket, steeredPacket, outcome, steeringSidCount: 1, transportSidCount: 1, physicalPath: TE_EXPLICIT_PATH };
 }
 
 // ===========================================================================
@@ -710,24 +745,26 @@ export interface TransportComparisonRow {
 export function compareTransportEncoding(): TransportComparisonRow[] {
   return [
     { requirement: "Segment representation", srMpls: `MPLS label (${MPLS_STACK_BYTES_PER_LABEL} bytes)`, srv6: `IPv6 address (${SRV6_SID_BYTES} bytes)` },
-    { requirement: "Headend instruction", srMpls: `Push Node-SID label ${nodeSidLabel("PE2")}`, srv6: `Set IPv6 DA = ${endSidText("PE2")}` },
+    { requirement: "Headend instruction", srMpls: `Push Node-SID label ${nodeSidLabel("PE2")}`, srv6: `H.Encaps: outer IPv6 DA = ${globalDt4SidText("PE2")} (PE2 End.DT4, global table), no SRH` },
     { requirement: "Core (P-router) forwarding state", srMpls: "LFIB (incoming label → operation → outgoing label/interface)", srv6: "Ordinary IPv6 FIB (longest-prefix match on the locator)" },
     { requirement: "Core forwarding operation", srMpls: "Label SWAP (or PHP at the penultimate hop)", srv6: "Ordinary IPv6 forwarding — no per-packet SID rewrite" },
     { requirement: "Endpoint match", srMpls: "Label lookup in LFIB", srv6: "DA matches a Local SID Table entry → endpoint behavior" },
+    { requirement: "Egress", srMpls: "P2 PHPs the Node-SID; PE2 does a global IPv4 lookup toward CE2", srv6: "PE2 End.DT4: removes the outer IPv6 header, then a global IPv4 lookup toward CE2" },
   ];
 }
 export function compareTeEncoding(): TransportComparisonRow[] {
   const mplsSegs = buildMplsTeSegments();
   const srv6Segs = buildSrv6TeSegments();
   const mplsContent = mplsSegs.map((s) => (s.type === "NODE" ? `Node-SID(${s.owner})=${nodeSidLabel(s.owner)}` : `Adj-SID(${s.owner}→${s.target})=${adjSidLabel(s.owner, s.target!)}`)).join(" → ");
-  const srv6Content = srv6Segs.map((s) => (s.type === "NODE" ? `${s.owner} End=${endSidText(s.owner)}` : `${s.owner} End.X→${s.target}=${endXSidText(s.owner)}`)).join(" ; ");
+  const srv6Content = srv6Segs.map((s) => `${srv6TeSegmentName(s)}=${s.sidText}`).join(" ; ");
   return [
-    { requirement: "Segment list length (base encoding)", srMpls: `${mplsSegs.length} label(s)`, srv6: `${srv6Segs.length} SID(s) — End/End.X` },
+    { requirement: "Segment list length (base encoding)", srMpls: `${mplsSegs.length} label(s)`, srv6: `${srv6Segs.length} SID(s)` },
     { requirement: "Segment list content (base encoding)", srMpls: mplsContent, srv6: srv6Content },
-    { requirement: "Imposition mechanism", srMpls: "PUSH the label stack at the headend", srv6: srv6Segs.length > 1 ? "H.Encaps with a full SRH" : "H.Encaps, single SID (no SRH needed)" },
-    { requirement: "Wire representation", srMpls: "Label stack under the transport label", srv6: "Outer IPv6 DA + SRH segment list" },
-    { requirement: "Why the base counts differ", srMpls: "Adj-SID (bottom of stack) exposes the untouched, always-present IP destination once popped — no trailing segment needed.", srv6: "Plain End.X still advances DA to the next SRH entry (RFC 8986 §4.2) — a real trailing End(PE2) segment is required so P2 has something valid to forward on." },
-    { requirement: "Does this generalize?", srMpls: "No — this is scoped to Node-SID/Adj-SID vs. plain End/End.X.", srv6: "No — a different endpoint-behavior choice (End.X+USD) changes the count again; see the advanced comparison next." },
+    { requirement: "Imposition mechanism", srMpls: "PUSH the label stack at the headend", srv6: srv6Segs.length > 1 ? "H.Encaps with an SRH (DA = first SID)" : "H.Encaps, single SID (no SRH needed)" },
+    { requirement: "Wire representation", srMpls: "Label stack over the untouched customer IPv4 header", srv6: "Outer IPv6 DA + SRH segment list" },
+    { requirement: "Reaching P4 and forcing P4→P2", srMpls: "Node-SID(P4), then the locally significant Adj-SID(P4→P2) — a local Adj-SID needs its owner reached first", srv6: "One End.X(P4→P2) SID — globally routed through P4's locator in this model, so it reaches P4 and forces the adjacency" },
+    { requirement: "Final transport instruction", srMpls: "Node-SID(PE2) at the bottom — P2 PHPs it, PE2 does the IPv4 lookup", srv6: "PE2 End.DT4 (global table) — PE2 decapsulates and does the IPv4 lookup" },
+    { requirement: "Does this generalize?", srMpls: "No — a globally significant MPLS Adj-SID (RFC 8402) would change this count, at the cost of domain-wide adjacency state.", srv6: "No — it depends on this model's globally routed End.X; other SID-allocation choices change the count." },
   ];
 }
 export function compareVpnEncoding(): TransportComparisonRow[] {
@@ -743,12 +780,15 @@ export function compareVpnEncoding(): TransportComparisonRow[] {
 }
 export function compareProtectionEncoding(repair: TiLfaRepairPath): TransportComparisonRow[] {
   const mplsRepair = buildMplsRepairList(repair);
+  const repairLabels = mplsRepair.map((s) => `${s.type === "NODE" ? "Node-SID" : "Adj-SID"}(${s.owner}${s.target ? `→${s.target}` : ""})=${s.label}`).join(" + ");
   return [
     { requirement: "Protected resource", srMpls: PROTECTED_LINK, srv6: PROTECTED_LINK },
     { requirement: "Point of Local Repair", srMpls: CORE_PLR, srv6: CORE_PLR },
     { requirement: "Repair topology computation", srMpls: "Shared: P-Space / Q-Space / post-convergence SPF", srv6: "Shared: P-Space / Q-Space / post-convergence SPF" },
     { requirement: "Repair outgoing interface", srMpls: `${CORE_PLR}→${repair.outgoingInterface ?? "?"}`, srv6: `${CORE_PLR}→${repair.outgoingInterface ?? "?"}` },
-    { requirement: "Repair encoding", srMpls: mplsRepair.map((s) => `${s.type === "NODE" ? "Node-SID" : "Adj-SID"}(${s.owner}${s.target ? `→${s.target}` : ""})=${s.label}`).join(" + "), srv6: `${repair.repairNode ?? "?"} End.X+USD → ${repair.mergeTarget ?? "?"}` },
+    { requirement: "Repair instructions added (repair list)", srMpls: `${mplsRepair.length} repair label(s): ${repairLabels}`, srv6: `1 repair outer: ${repair.repairNode ?? "?"} End.X+USD → ${repair.mergeTarget ?? "?"} (SA = ${CORE_PLR})` },
+    { requirement: "Existing transport instruction underneath", srMpls: `Node-SID(${CORE_DESTINATION})=${nodeSidLabel(CORE_DESTINATION)}`, srv6: `Transport outer: DA = ${globalDt4SidText(CORE_DESTINATION)} (PE2 End.DT4, global table)` },
+    { requirement: "Full packet leaving the PLR", srMpls: `Full protected stack [${[...mplsRepair.map((s) => s.label), nodeSidLabel(CORE_DESTINATION)].join(", ")}] over customer IPv4`, srv6: "Repair outer → transport outer → customer IPv4" },
   ];
 }
 
@@ -783,10 +823,10 @@ export interface RequirementMatrixRow {
 export function buildRequirementMatrix(): RequirementMatrixRow[] {
   const csid = computeCsidLab();
   return [
-    { requirement: "Shortest-path transport", srMpls: "Node-SID label imposed at headend", srv6: "IPv6 DA set to destination's End SID" },
-    { requirement: "Explicit TE (base End/End.X encoding)", srMpls: `${buildMplsTeSegments().length}-label stack (PUSH)`, srv6: `${buildSrv6TeSegments().length}-SID program (H.Encaps${buildSrv6TeSegments().length > 1 ? " + SRH" : ""}); 1 SID with End.X+USD` },
+    { requirement: "Shortest-path transport", srMpls: "Node-SID label imposed at headend", srv6: "H.Encaps to the egress PE's global-table End.DT4 SID (no SRH)" },
+    { requirement: "Explicit TE (base encoding, this model)", srMpls: `${buildMplsTeSegments().length}-label stack (PUSH): Node-SID(P4), local Adj-SID(P4→P2), Node-SID(PE2)`, srv6: `${buildSrv6TeSegments().length}-SID program (H.Encaps${buildSrv6TeSegments().length > 1 ? " + SRH" : ""}): globally routed End.X(P4→P2), End.DT4(PE2, global table)` },
     { requirement: "L3VPN", srMpls: "VRF + RD + RT + MP-BGP + VPN label", srv6: "VRF + RD + RT + MP-BGP + Service SID (End.DT4)" },
-    { requirement: "Local FRR (TI-LFA)", srMpls: "OIF + MPLS label repair list", srv6: "OIF + IPv6 SID repair list (End.X+USD)" },
+    { requirement: "Local FRR (TI-LFA)", srMpls: `OIF + ${buildMplsRepairList(computeSharedTiLfaRepair()).length}-label repair list above the transport label`, srv6: "OIF + 1-SID repair outer (End.X+USD) around the transport outer" },
     { requirement: "Service identification", srMpls: "VPN label (locally significant per PE)", srv6: "Service SID (globally routable IPv6 address)" },
     { requirement: "Core (P-router) forwarding state", srMpls: "LFIB", srv6: "IPv6 FIB" },
     { requirement: "Packet instruction encoding", srMpls: "MPLS label stack (4 bytes/entry)", srv6: "IPv6 address / SRH (16 bytes/entry, or compressed)" },
@@ -809,7 +849,7 @@ export function evaluateSrv6LocatorIncident(route: VpnRoute, locatorReachable: b
 // 10. Journey / top-level state
 // ===========================================================================
 
-export type MplsFwdAction = "PUSH" | "SWAP" | "PHP_POP" | "VPN_LOOKUP" | "IP_FORWARD" | "REPAIR_PUSH" | "REPAIR_FORWARD_ADJ";
+export type MplsFwdAction = "PUSH" | "SWAP" | "PHP_POP" | "VPN_LOOKUP" | "IP_FORWARD" | "REPAIR_PUSH" | "REPAIR_FORWARD_ADJ" | "ADJ_SID_FORWARD";
 export type Srv6FwdAction = "SET_DA" | "IPV6_FIB_FORWARD" | "LOCAL_SID_MATCH" | "END_ADVANCE" | "END_DT4_DECAP" | "REPAIR_ENCAPSULATE" | "USD_DECAP_FORWARD";
 
 /**
@@ -920,6 +960,7 @@ export function describeSrv6Sid(sid: Hextets): string {
   const text = fmtIpv6(sid);
   for (const r of CORE_ROUTERS) if (endSidText(r) === text) return `End(${r})`;
   for (const r of CORE_ROUTERS) if (endXSidText(r) === text) return `End.X(${r})`;
+  for (const r of CORE_ROUTERS) if (globalDt4SidText(r) === text) return `End.DT4(${r}, global table)`;
   return "SID";
 }
 
@@ -943,7 +984,7 @@ export interface CapstoneState {
   // Phase 1/2 — transport + TE (both encodings, always both built so
   // SIDE_BY_SIDE never has to wait on step order).
   mplsSegments: TeSegment[];
-  srv6Segments: TeSegment[];
+  srv6Segments: Srv6TeSegment[];
   mplsTransportPacket?: MplsPacket;
   srv6TransportPacket?: Srv6Packet;
   mplsTePacket?: MplsPacket;
@@ -1033,8 +1074,8 @@ const SRV6_TE_USD = testSrv6TeEndXUsdAlternative();
 /** Build-time proof (mirrors `assertHeaderLabInvariants` below) that the advanced End.X+USD comparison narrative is describing what the real domain function actually does, not an assumed result. */
 function assertSrv6TeUsdAlternative(): void {
   if (SRV6_TE_USD.outcome.action !== "USD_DECAP_FORWARD") throw new Error(`Expected End.X+USD to decapsulate and forward for the TE alternative, got action=${SRV6_TE_USD.outcome.action} (${SRV6_TE_USD.outcome.reason})`);
-  if (SRV6_TE_USD.outcome.forwardedTo !== SRV6_TE_USD.repairSid.adjacency) throw new Error("End.X+USD alternative forwarded to an unexpected adjacency.");
-  if (SRV6_TE_USD.segmentCount !== 1) throw new Error("End.X+USD alternative should require exactly one SID.");
+  if (SRV6_TE_USD.outcome.forwardedTo !== SRV6_TE_USD.steeringSid.adjacency) throw new Error("End.X+USD alternative forwarded to an unexpected adjacency.");
+  if (SRV6_TE_USD.outcome.exposedPacket?.vpnOuter?.role !== "GLOBAL_DT4_TRANSPORT") throw new Error("End.X+USD alternative must expose the PE2 End.DT4 transport packet, never bare customer IPv4.");
 }
 assertSrv6TeUsdAlternative();
 const SHARED_REPAIR: TiLfaRepairPath = computeSharedTiLfaRepair();
@@ -1152,14 +1193,14 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   },
   {
     id: "srv6-transport-setda",
-    label: "PE1 Sets the DA",
-    narrative: `PE1 sets the packet's IPv6 Destination Address to PE2's End SID: ${endSidText("PE2")}. No label, no push — the destination address itself IS the segment.`,
+    label: "PE1 Encapsulates",
+    narrative: `PE1 H.Encaps the customer IPv4 packet: outer IPv6 SA = PE1, DA = PE2's global-table End.DT4 transport SID ${globalDt4SidText("PE2")}. One SID, so no SRH. No label, no push — the destination address itself IS the segment. (This transport SID is distinct from the CUST-A Service SID built in Phase 3.)`,
     run: (state) => {
-      const pkt: Srv6Packet = { srcText: "2001:db8:100:1::c1", daHextets: endSidHextets("PE2"), innerSrcIp: CE1_SRC, innerDstIp: CE2_HOST_IPV4 };
-      const journey: JourneyHop = { architecture: "SRV6", router: "PE1", input: "Plain customer IPv4", lookup: `Local SID / locator database: ${BEHAVIOR_LABEL.END}(PE2)`, action: "SET_DA", output: `Outer IPv6 DA = ${endSidText("PE2")}`, stepId: "srv6-transport-setda", ingressPeer: CE1_ID, egressPeer: nextOnPath(PRIMARY_PATH, "PE1"), before: { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 }, after: { kind: "SRV6", packet: pkt } };
-      return { state: { ...state, srv6TransportPacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-transport-setda", timestamp: Date.now(), message: `PE1 sets DA = ${endSidText("PE2")}` }] };
+      const pkt: Srv6Packet = { srcText: PE1_TRANSPORT_SOURCE, daHextets: globalDt4SidHextets("PE2"), innerSrcIp: CE1_SRC, innerDstIp: CE2_HOST_IPV4 };
+      const journey: JourneyHop = { architecture: "SRV6", router: "PE1", input: "Plain customer IPv4", lookup: `Transport SID for PE2: ${BEHAVIOR_LABEL.END_DT4} (global IPv4 table)`, action: "H_ENCAPS", output: `Outer IPv6 DA = ${globalDt4SidText("PE2")}, no SRH`, stepId: "srv6-transport-setda", ingressPeer: CE1_ID, egressPeer: nextOnPath(PRIMARY_PATH, "PE1"), before: { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 }, after: { kind: "SRV6", packet: pkt } };
+      return { state: { ...state, srv6TransportPacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-transport-setda", timestamp: Date.now(), message: `PE1 H.Encaps: DA = ${globalDt4SidText("PE2")}` }] };
     },
-    packet: (state) => (state.srv6TransportPacket ? srv6PacketVisual("srv6-transport", "PE1", "P1", "DA = PE2 End SID", state.srv6TransportPacket) : undefined),
+    packet: (state) => (state.srv6TransportPacket ? srv6PacketVisual("srv6-transport", "PE1", "P1", "H.Encaps: DA = PE2 End.DT4 (global table), no SRH", state.srv6TransportPacket) : undefined),
   },
   {
     id: "srv6-transport-core",
@@ -1168,8 +1209,8 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     run: (state) => {
       const pkt = state.srv6TransportPacket;
       const snap: HopPacket | undefined = pkt && { kind: "SRV6", packet: pkt };
-      const j1: JourneyHop = { architecture: "SRV6", router: "P1", input: `DA=${endSidText("PE2")}`, lookup: "IPv6 FIB: longest-prefix match on PE2's locator", action: "IPV6_FIB_FORWARD", output: "Forward to P2 — DA untouched", stepId: "srv6-transport-core", ingressPeer: prevOnPath(PRIMARY_PATH, "P1"), egressPeer: nextOnPath(PRIMARY_PATH, "P1"), before: snap, after: snap };
-      const j2: JourneyHop = { architecture: "SRV6", router: "P2", input: `DA=${endSidText("PE2")}`, lookup: "IPv6 FIB: longest-prefix match on PE2's locator", action: "IPV6_FIB_FORWARD", output: "Forward to PE2 — DA untouched", stepId: "srv6-transport-core", ingressPeer: prevOnPath(PRIMARY_PATH, "P2"), egressPeer: nextOnPath(PRIMARY_PATH, "P2"), before: snap, after: snap };
+      const j1: JourneyHop = { architecture: "SRV6", router: "P1", input: `DA=${globalDt4SidText("PE2")}`, lookup: "IPv6 FIB: longest-prefix match on PE2's locator", action: "IPV6_FIB_FORWARD", output: "Forward to P2 — DA untouched", stepId: "srv6-transport-core", ingressPeer: prevOnPath(PRIMARY_PATH, "P1"), egressPeer: nextOnPath(PRIMARY_PATH, "P1"), before: snap, after: snap };
+      const j2: JourneyHop = { architecture: "SRV6", router: "P2", input: `DA=${globalDt4SidText("PE2")}`, lookup: "IPv6 FIB: longest-prefix match on PE2's locator", action: "IPV6_FIB_FORWARD", output: "Forward to PE2 — DA untouched", stepId: "srv6-transport-core", ingressPeer: prevOnPath(PRIMARY_PATH, "P2"), egressPeer: nextOnPath(PRIMARY_PATH, "P2"), before: snap, after: snap };
       return { state: { ...state, journey: [...state.journey, j1, j2] }, events: [] };
     },
     // P1→P2 is a real link; P1→PE2 is not (the packet reaches PE2 only via P2).
@@ -1177,11 +1218,11 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   },
   {
     id: "srv6-transport-endpoint",
-    label: "PE2: Local SID Match",
-    narrative: `At PE2, the DA finally matches a Local SID Table entry: ${BEHAVIOR_LABEL.END}. PE2 executes the End behavior and delivers the (already-plain) customer packet.`,
+    label: "PE2: End.DT4 (Global Table)",
+    narrative: `At PE2, the DA finally matches a Local SID Table entry: ${BEHAVIOR_LABEL.END_DT4} bound to the global IPv4 table. PE2 removes the outer IPv6 header and looks the exposed customer IPv4 destination up in its global table toward CE2. (Plain End would NOT decapsulate — that's why the transport SID is an End.DT4.)`,
     run: (state) => {
       const pkt = state.srv6TransportPacket;
-      const journey: JourneyHop = { architecture: "SRV6", router: "PE2", input: `DA=${endSidText("PE2")}`, lookup: "Local SID Table: match found", action: "LOCAL_SID_MATCH", output: "End behavior executed — deliver toward CE2", stepId: "srv6-transport-endpoint", ingressPeer: prevOnPath(PRIMARY_PATH, "PE2"), egressPeer: CE2_ID, before: pkt && { kind: "SRV6", packet: pkt } };
+      const journey: JourneyHop = { architecture: "SRV6", router: "PE2", input: `DA=${globalDt4SidText("PE2")}`, lookup: `Local SID Table: ${BEHAVIOR_LABEL.END_DT4} (global IPv4 table)`, action: "LOCAL_SID_MATCH", output: "Outer IPv6 removed; global IPv4 lookup → CE2", stepId: "srv6-transport-endpoint", ingressPeer: prevOnPath(PRIMARY_PATH, "PE2"), egressPeer: CE2_ID, before: pkt && { kind: "SRV6", packet: pkt }, after: pkt && { kind: "IPV4", srcIp: pkt.innerSrcIp, dstIp: pkt.innerDstIp } };
       return { state: { ...state, journey: [...state.journey, journey] }, events: [] };
     },
   },
@@ -1212,13 +1253,13 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
         { id: "no", label: "No — fewer segments suffice wherever ordinary shortest-path forwarding already agrees with the desired path" },
       ],
       correctOptionId: "no",
-      explanation: `A Node-SID (or End SID) already carries a packet along whatever the IGP's OWN shortest path to that node is — one segment covers a whole stretch wherever that agrees with the desired route. Where it does NOT agree (even for a single hop), a Node-SID/End segment would misroute, so that hop needs a forced-adjacency segment (Adj-SID/End.X) instead — never assumed away. Here the minimal list is ${MPLS_TE_SEGS.length} segments for SR-MPLS and ${SRV6_TE_SEGS.length} for SRv6 (the "SIDE-BY-SIDE" view explains exactly why those counts differ).`,
+      explanation: `A reachability segment carries a packet along the IGP's OWN shortest path to its target — one segment covers a whole stretch wherever that agrees with the desired route. Where it does NOT agree (here, P4→P2), the hop needs a forced-adjacency instruction. How each data plane expresses that differs: with this capstone's locally significant MPLS Adj-SID, SR-MPLS needs Node-SID(P4) + Adj-SID(P4→P2) + Node-SID(PE2) = ${MPLS_TE_SEGS.length} labels; this capstone's globally routed SRv6 End.X folds reach-P4 and force-P4→P2 into one SID, then PE2's End.DT4 = ${SRV6_TE_SEGS.length} SIDs. Same physical intent, different segment significance — not a universal count rule.`,
     },
   },
   {
     id: "mpls-te-build",
     label: "SR-MPLS: Build the Policy",
-    narrative: `SR-MPLS SR Policy segment list, derived (not hand-typed) from the real topology: ${MPLS_TE_SEGS.map((s) => (s.type === "NODE" ? `Node-SID(${s.owner})=${nodeSidLabel(s.owner)}` : `Adj-SID(${s.owner}→${s.target})=${adjSidLabel(s.owner, s.target!)}`)).join(" then ")}.`,
+    narrative: `SR-MPLS SR Policy segment list, derived (not hand-typed) from the real topology: ${MPLS_TE_SEGS.map((s) => (s.type === "NODE" ? `Node-SID(${s.owner})=${nodeSidLabel(s.owner)}` : `Adj-SID(${s.owner}→${s.target})=${adjSidLabel(s.owner, s.target!)}`)).join(" then ")}. The local Adj-SID needs its owner reached first, and PE2's Node-SID stays at the bottom so transport state survives to PE2 — no core router ever routes the customer destination. Along the path: P3 PHPs Node-SID(P4), P4 consumes its local Adj-SID and forces P4→P2, P2 PHPs Node-SID(PE2).`,
     run: (state) => {
       const segments = buildMplsTeSegments();
       const unlabeled: MplsPacket = { srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4, labels: [] };
@@ -1228,46 +1269,68 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
         pkt = pushMplsLabel(pkt, s.type === "NODE" ? nodeSidLabel(s.owner) : adjSidLabel(s.owner, s.target!));
       }
       const stack = pkt.labels.map((l) => l.value).join(", ");
-      const journey: JourneyHop = { architecture: "SR_MPLS", router: "PE1", input: "Unlabeled IPv4", lookup: `SR Policy (explicit path ${TE_EXPLICIT_PATH.join("→")}) → ${segments.length}-segment list`, action: "PUSH", output: `Label stack [${stack}] pushed (top first) — transit forwarding along the policy is not simulated in this capstone`, stepId: "mpls-te-build", ingressPeer: CE1_ID, egressPeer: nextOnPath(TE_EXPLICIT_PATH, "PE1"), before: { kind: "MPLS", packet: unlabeled }, after: { kind: "MPLS", packet: pkt } };
-      return { state: { ...state, activeArchitecture: "SR_MPLS", mplsSegments: segments, mplsTePacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "MPLS_LABEL_PUSHED", stepId: "mpls-te-build", timestamp: Date.now(), message: `PE1 pushes ${segments.length}-label TE stack` }] };
+      const atP4 = popTopMplsLabel(pkt); // P3 is penultimate for P4: PHP of Node-SID(P4)
+      const atP2 = popTopMplsLabel(atP4); // P4 consumes its own local Adj-SID(P4→P2)
+      const atPe2 = popTopMplsLabel(atP2); // P2 is penultimate for PE2: PHP of Node-SID(PE2)
+      const mp = (p: MplsPacket): HopPacket => ({ kind: "MPLS", packet: p });
+      const peers = (r: RouterId) => ({ stepId: "mpls-te-build", ingressPeer: r === "PE1" ? CE1_ID : prevOnPath(TE_EXPLICIT_PATH, r), egressPeer: nextOnPath(TE_EXPLICIT_PATH, r) });
+      const top = (p: MplsPacket) => p.labels[0]?.value;
+      const journey: JourneyHop[] = [
+        { architecture: "SR_MPLS", router: "PE1", input: "Unlabeled IPv4", lookup: `SR Policy (explicit path ${TE_EXPLICIT_PATH.join("→")}) → ${segments.length}-label list`, action: "PUSH", output: `Label stack [${stack}] pushed (top first)`, ...peers("PE1"), before: mp(unlabeled), after: mp(pkt) },
+        { architecture: "SR_MPLS", router: "P1", input: `Top label ${top(pkt)}`, lookup: "LFIB: Node-SID(P4) → toward P3", action: "SWAP", output: `Label ${top(pkt)} unchanged (global Node-SID), forward to P3`, ...peers("P1"), before: mp(pkt), after: mp(pkt) },
+        { architecture: "SR_MPLS", router: "P3", input: `Top label ${top(pkt)}`, lookup: "LFIB: Node-SID(P4) target is one hop away → PHP", action: "PHP_POP", output: `Node-SID(P4) popped; [${atP4.labels.map((l) => l.value).join(", ")}] forwarded to P4`, ...peers("P3"), before: mp(pkt), after: mp(atP4) },
+        { architecture: "SR_MPLS", router: "P4", input: `Top label ${top(atP4)}`, lookup: `LFIB: ${top(atP4)} = local Adj-SID(P4→P2)`, action: "ADJ_SID_FORWARD", output: `Adj-SID consumed; forced onto P4→P2 with [${atP2.labels.map((l) => l.value).join(", ")}]`, ...peers("P4"), before: mp(atP4), after: mp(atP2) },
+        { architecture: "SR_MPLS", router: "P2", input: `Top label ${top(atP2)}`, lookup: "LFIB: Node-SID(PE2) target is one hop away → PHP", action: "PHP_POP", output: "Node-SID(PE2) popped; plain customer IPv4 to PE2 (PE2 does the global IPv4 lookup)", ...peers("P2"), before: mp(atP2), after: mp(atPe2) },
+      ];
+      return { state: { ...state, activeArchitecture: "SR_MPLS", mplsSegments: segments, mplsTePacket: pkt, journey: [...state.journey, ...journey] }, events: [{ type: "MPLS_LABEL_PUSHED", stepId: "mpls-te-build", timestamp: Date.now(), message: `PE1 pushes ${segments.length}-label TE stack` }] };
     },
     packet: (state) => (state.mplsTePacket ? mplsPacketVisual("mpls-te", "PE1", "P1", `PUSH ${state.mplsSegments.length}-label TE stack`, state.mplsTePacket) : undefined),
   },
   {
     id: "srv6-te-build",
     label: "SRv6: Build the Policy",
-    narrative: `SRv6 SR Policy, same intent, same derivation, using the BASE End/End.X encoding: ${SRV6_TE_SEGS.map((s) => (s.type === "NODE" ? `${s.owner} End=${endSidText(s.owner)}` : `${s.owner} End.X→${s.target}=${endXSidText(s.owner)}`)).join(" then ")}. Under this encoding, it needs one more segment than SR-MPLS's base encoding: plain End.X still advances the SRH to the next real entry (RFC 8986 §4.2) rather than falling back to an untouched IP header the way MPLS's label stack does, so the trailing End(${SRV6_TE_SEGS[SRV6_TE_SEGS.length - 1]?.owner}) segment is genuinely required here, not padding. ${SRV6_TE_SEGS.length > 1 ? "More than one SID → a full SRH is required (never a fake single-SID shortcut)." : "Exactly one SID → no SRH needed."} (A different endpoint-behavior choice changes this count again — see the advanced comparison after the next step.)`,
+    narrative: `SRv6 SR Policy, same intent, same shared path computation, SRv6's own segment semantics: ${SRV6_TE_SEGS.map((s) => `${srv6TeSegmentName(s)}=${s.sidText}`).join(" then ")}. This capstone's P4 End.X SID is globally routed through P4's locator, so it both reaches P4 and forces P4→P2 — no separate End(P4) first. The program ends on PE2's global-table End.DT4, which decapsulates. ${SRV6_TE_SEGS.length > 1 ? "More than one SID → a full SRH (DA = the first SID, Segment List[0] = the final SID)." : "Exactly one SID → no SRH needed."} At P4, End.X sets SL 1→0 and DA ← PE2's End.DT4, then forces P4→P2; P2 forwards on the new DA.`,
     run: (state) => {
       const segments = buildSrv6TeSegments();
-      const orderedSids = segments.map((s) => (s.type === "NODE" ? { sidHextets: endSidHextets(s.owner), sidText: endSidText(s.owner), owner: s.owner } : { sidHextets: endXSidHextets(s.owner), sidText: endXSidText(s.owner), owner: s.owner }));
+      const orderedSids = segments.map((s) => ({ sidHextets: s.sidHextets, sidText: s.sidText, owner: s.owner }));
       const srh = segments.length > 1 ? buildSrh(orderedSids) : undefined;
-      const pkt: Srv6Packet = { srcText: "2001:db8:100:1::c1", daHextets: orderedSids[0].sidHextets, srh, innerSrcIp: CE1_SRC, innerDstIp: CE2_HOST_IPV4 };
-      const journey: JourneyHop = { architecture: "SRV6", router: "PE1", input: "Plain customer IPv4", lookup: `SR Policy (explicit path ${TE_EXPLICIT_PATH.join("→")}) → ${segments.length}-SID program`, action: "H_ENCAPS", output: `Outer IPv6 DA = ${orderedSids[0].sidText}${srh ? `, SRH SL=${srh.segmentsLeft}` : ", no SRH"} — transit forwarding along the policy is not simulated in this capstone`, stepId: "srv6-te-build", ingressPeer: CE1_ID, egressPeer: nextOnPath(TE_EXPLICIT_PATH, "PE1"), before: { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 }, after: { kind: "SRV6", packet: pkt } };
-      return { state: { ...state, activeArchitecture: "SRV6", srv6Segments: segments, srv6TePacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-te-build", timestamp: Date.now(), message: `PE1 H.Encaps ${segments.length}-SID TE program` }] };
+      const pkt: Srv6Packet = { srcText: PE1_TRANSPORT_SOURCE, daHextets: orderedSids[0].sidHextets, srh, innerSrcIp: CE1_SRC, innerDstIp: CE2_HOST_IPV4 };
+      const afterEndX = advanceSrh(pkt); // End.X at P4: SL − 1, DA ← next Segment List entry
+      const sv = (p: Srv6Packet): HopPacket => ({ kind: "SRV6", packet: p });
+      const peers = (r: RouterId) => ({ stepId: "srv6-te-build", ingressPeer: r === "PE1" ? CE1_ID : prevOnPath(TE_EXPLICIT_PATH, r), egressPeer: r === "PE2" ? CE2_ID : nextOnPath(TE_EXPLICIT_PATH, r) });
+      const endX = segments.find((s) => s.behavior === "END_X");
+      const journey: JourneyHop[] = [
+        { architecture: "SRV6", router: "PE1", input: "Plain customer IPv4", lookup: `SR Policy (explicit path ${TE_EXPLICIT_PATH.join("→")}) → ${segments.length}-SID program`, action: "H_ENCAPS", output: `Outer IPv6 DA = ${orderedSids[0].sidText}${srh ? `, SRH SL=${srh.segmentsLeft} LE=${srh.lastEntry}` : ", no SRH"}`, ...peers("PE1"), before: { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 }, after: sv(pkt) },
+        { architecture: "SRV6", router: "P1", input: `DA=${orderedSids[0].sidText}`, lookup: "IPv6 FIB: longest-prefix match on P4's locator", action: "IPV6_FIB_FORWARD", output: "Forward to P3 — DA and SRH untouched", ...peers("P1"), before: sv(pkt), after: sv(pkt) },
+        { architecture: "SRV6", router: "P3", input: `DA=${orderedSids[0].sidText}`, lookup: "IPv6 FIB: longest-prefix match on P4's locator", action: "IPV6_FIB_FORWARD", output: "Forward to P4 — DA and SRH untouched", ...peers("P3"), before: sv(pkt), after: sv(pkt) },
+        { architecture: "SRV6", router: "P4", input: `DA=${orderedSids[0].sidText}`, lookup: `Local SID Table: ${BEHAVIOR_LABEL.END_X} → ${endX?.adjacency ?? "?"}`, action: "LOCAL_SID_MATCH", output: `End.X: SL ${pkt.srh?.segmentsLeft}→${afterEndX.srh?.segmentsLeft}, DA ← ${fmtIpv6(afterEndX.daHextets)}; forced onto P4→${endX?.adjacency ?? "?"}`, ...peers("P4"), before: sv(pkt), after: sv(afterEndX) },
+        { architecture: "SRV6", router: "P2", input: `DA=${fmtIpv6(afterEndX.daHextets)}`, lookup: "IPv6 FIB: longest-prefix match on PE2's locator", action: "IPV6_FIB_FORWARD", output: "Forward to PE2 — provider IPv6, never the customer IPv4", ...peers("P2"), before: sv(afterEndX), after: sv(afterEndX) },
+        { architecture: "SRV6", router: "PE2", input: `DA=${fmtIpv6(afterEndX.daHextets)}`, lookup: `Local SID Table: ${BEHAVIOR_LABEL.END_DT4} (global IPv4 table)`, action: "LOCAL_SID_MATCH", output: "Outer IPv6 + SRH removed; global IPv4 lookup → CE2", ...peers("PE2"), before: sv(afterEndX), after: { kind: "IPV4", srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4 } },
+      ];
+      return { state: { ...state, activeArchitecture: "SRV6", srv6Segments: segments, srv6TePacket: pkt, journey: [...state.journey, ...journey] }, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-te-build", timestamp: Date.now(), message: `PE1 H.Encaps ${segments.length}-SID TE program` }] };
     },
     packet: (state) => (state.srv6TePacket ? srv6PacketVisual("srv6-te", "PE1", "P1", `H.Encaps ${state.srv6Segments.length}-SID program`, state.srv6TePacket) : undefined),
   },
   {
     id: "compare-te-encoding",
     label: "SIDE-BY-SIDE: Same Intent, Different Encoding",
-    narrative: `LOGICAL INTENT is identical: ${TE_EXPLICIT_PATH.join(" → ")}. SR-MPLS expresses it as a label stack (Node-SID + a forced-adjacency Adj-SID where ordinary SPF disagrees); SRv6's BASE encoding expresses it as an IPv6 DA plus an SRH segment list (End + a forced-adjacency End.X for the same reason). Same path intent, different forwarding-plane encoding — scoped to these specific base behaviors, not a universal segment-count rule (see the advanced comparison next).`,
+    narrative: `LOGICAL INTENT is identical: ${TE_EXPLICIT_PATH.join(" → ")}. SR-MPLS expresses it as a ${MPLS_TE_SEGS.length}-label stack (Node-SID(P4) + local Adj-SID(P4→P2) + Node-SID(PE2)); SRv6 as an IPv6 DA plus a ${SRV6_TE_SEGS.length}-SID SRH program (globally routed End.X(P4→P2) + PE2 End.DT4). In this modeled case the globally routed SRv6 End.X folds reachability-to-P4 and the forced adjacency into one SID, while the modeled locally significant MPLS Adj-SID needs a Node-SID first. RFC 8402 also allows a globally significant MPLS Adj-SID, which could change the MPLS count at the cost of extra advertised forwarding state — so ${MPLS_TE_SEGS.length} labels vs. ${SRV6_TE_SEGS.length} SIDs HERE is not a universal ranking.`,
     run: noopRun,
     whatChanged: () => compareTeEncoding().map((r) => `${r.requirement}: SR-MPLS=${r.srMpls} | SRv6=${r.srv6}`),
   },
   {
     id: "srv6-te-usd-alternative",
     label: "Advanced: End.X+USD Alternative",
-    narrative: `Advanced/optional: does a DIFFERENT SRv6 endpoint-behavior choice for the SAME forced hop (${SRV6_TE_USD.repairSid.owner}→${SRV6_TE_USD.repairSid.adjacency}) change the segment count above? RFC 8986's End.X USD flavor removes the ENTIRE outer IPv6 header at the owning router, exposing the original packet underneath, then forces it onward — the SAME mechanism this capstone's own TI-LFA repair phase already used for the P1-P2 repair (TI-LFA is one important use case for End.X+USD, already demonstrated elsewhere in PacketVerse — not the only one). Tested here through the real domain function, not assumed: H.Encaps at PE1 straight to a globally-routed End.X+USD SID at ${SRV6_TE_USD.repairSid.owner} (${SRV6_TE_USD.repairSid.sidText}), forcing ${SRV6_TE_USD.repairSid.owner}→${SRV6_TE_USD.repairSid.adjacency} — no separate reachability segment first, because this SRv6 SID's IPv6 address is globally routable via its locator regardless of which behavior is bound to it. This capstone's modeled MPLS Adj-SID, by contrast, is locally significant (RFC 8402's default) — see the note below for why that's a modeling choice, not a hard architectural limit. Real executed result: ${SRV6_TE_USD.outcome.reason}`,
+    narrative: `Advanced/optional: a DIFFERENT SRv6 encapsulation structure for the same forced hop (${SRV6_TE_USD.steeringSid.owner}→${SRV6_TE_USD.steeringSid.adjacency}). PE1 first builds the normal 1-SID transport packet (outer DA = PE2's global-table End.DT4), then adds ONE additional steering outer whose DA is ${SRV6_TE_USD.steeringSid.owner}'s globally routed End.X+USD SID (${SRV6_TE_USD.steeringSid.sidText}), SA = PE1, no SRH. At ${SRV6_TE_USD.steeringSid.owner}, RFC 8986's USD flavor removes ONLY that steering outer, exposing the untouched transport packet, and forces ${SRV6_TE_USD.steeringSid.owner}→${SRV6_TE_USD.steeringSid.adjacency}; ${SRV6_TE_USD.steeringSid.adjacency} forwards on the transport outer and PE2's End.DT4 decapsulates. The same mechanism this capstone's TI-LFA repair uses. Real executed result: ${SRV6_TE_USD.outcome.reason}`,
     // A no-op run() is required so the engine actually evaluates whatChanged()
     // below (ScenarioEngine.applyStepEffects only calls whatChanged for steps
     // that also define run — see src/lib/sim-engine/ScenarioEngine.ts).
     run: (state) => ({ state, events: [{ type: "SRV6_SERVICE_SID_RESOLVED", stepId: "srv6-te-usd-alternative", timestamp: Date.now(), message: `End.X+USD alternative: ${SRV6_TE_USD.outcome.action}` }] }),
     whatChanged: () => [
-      `Base comparison: SR-MPLS = ${MPLS_TE_SEGS.length} instructions | SRv6 End/End.X (base encoding) = ${SRV6_TE_SEGS.length} SIDs`,
-      `Advanced SRv6 alternative: H.Encaps + a globally routed End.X+USD SID at ${SRV6_TE_USD.repairSid.owner} exposes the original IP packet and forces ${SRV6_TE_USD.repairSid.owner}→${SRV6_TE_USD.repairSid.adjacency} directly — ${SRV6_TE_USD.segmentCount} SID reaches ${CORE_DESTINATION} once ordinary IP forwarding takes over at ${SRV6_TE_USD.repairSid.adjacency}.`,
-      `Local Adj-SID vs. globally routed End.X: this capstone models the common/default LOCALLY significant MPLS Adj-SID (RFC 8402), so the headend needs Node-SID(${SRV6_TE_USD.repairSid.owner})=${nodeSidLabel(SRV6_TE_USD.repairSid.owner)} first to reach the Adj-SID's owner, then Adj-SID(${SRV6_TE_USD.repairSid.owner}→${SRV6_TE_USD.repairSid.adjacency})=${adjSidLabel(SRV6_TE_USD.repairSid.owner, SRV6_TE_USD.repairSid.adjacency)}. The modeled SRv6 End.X+USD SID is globally reachable through ${SRV6_TE_USD.repairSid.owner}'s own IPv6 locator, so the headend can steer straight to it.`,
-      `Standards nuance: RFC 8402 also permits a GLOBALLY significant Adj-SID — that could fold this SR-MPLS example down to one label too, the same way End.X+USD did for SRv6, but only at the cost of flooding that adjacency's reachability as extra forwarding state across the relevant SR domain/area (not modeled here).`,
-      `2 MPLS labels vs. 1 SRv6 SID here is a property of the segment-allocation model demonstrated — local vs. global SID advertisement, which endpoint/adjacency behaviors are used, and the encapsulation method — not a universal law about which data plane always needs fewer segments.`,
+      `Base SRv6 model: one transport/TE outer carrying a ${SRV6_TE_SEGS.length}-SID program <${SRV6_TE_SEGS.map((s) => srv6TeSegmentName(s)).join(", ")}>.`,
+      `USD alternative: one additional ${SRV6_TE_USD.steeringSidCount}-SID steering outer <${SRV6_TE_USD.steeringSid.owner} End.X+USD> wrapped around an existing ${SRV6_TE_USD.transportSidCount}-SID transport packet <End.DT4(PE2, global table)>. Both still carry the PE2 transport instruction; what changes is the encapsulation/steering structure, not a "fewer instructions" result.`,
+      `At ${SRV6_TE_USD.steeringSid.owner}: USD removes only the steering outer; ${SRV6_TE_USD.steeringSid.adjacency} then routes the provider IPv6 transport outer — never the customer IPv4 destination.`,
+      `Local Adj-SID vs. globally routed End.X: this capstone models the common LOCALLY significant MPLS Adj-SID (RFC 8402), so SR-MPLS needs Node-SID(${SRV6_TE_USD.steeringSid.owner})=${nodeSidLabel(SRV6_TE_USD.steeringSid.owner)} before Adj-SID(${SRV6_TE_USD.steeringSid.owner}→${SRV6_TE_USD.steeringSid.adjacency})=${adjSidLabel(SRV6_TE_USD.steeringSid.owner, SRV6_TE_USD.steeringSid.adjacency)}. RFC 8402 also permits a GLOBALLY significant Adj-SID, which would change that — at the cost of advertising the adjacency's forwarding state across the SR domain (not modeled here).`,
     ],
   },
 
@@ -1345,7 +1408,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     run: (state) => {
       if (!state.srv6VpnRoute?.prefixSid) return { state, events: [] };
       const serviceSid = state.srv6VpnRoute.prefixSid.l3Service.serviceSid;
-      const pkt = encapsulateSrv6VpnPacket(serviceSid, { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 }, "2001:db8:100:1::c1");
+      const pkt = encapsulateSrv6VpnPacket(serviceSid, { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 }, PE1_TRANSPORT_SOURCE);
       const outcome = processEgressServiceSid(serviceSid, pkt, PE2_LOCAL_ROUTES, []);
       const customer: HopPacket = { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 };
       const encapsulated: HopPacket = { kind: "SRV6_L3VPN", packet: pkt };
@@ -1397,7 +1460,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   {
     id: "failure-requirement",
     label: "Protection Requirement",
-    narrative: `Requirement: survive a ${PROTECTED_LINK} failure with local FRR, at PLR ${CORE_PLR}, without losing the CUST-A service traffic just built.`,
+    narrative: `Requirement: survive a ${PROTECTED_LINK} failure with local FRR, at PLR ${CORE_PLR}, protecting the Phase-1 PE1→PE2 transport traffic in each architecture. The repair is service-agnostic: it wraps whatever transport encapsulation the traffic already carries (the dedicated SRv6 TI-LFA lesson shows the nested L3VPN case).`,
   },
   {
     id: "shared-tilfa-compute",
@@ -1429,51 +1492,76 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   {
     id: "mpls-repair-encoding",
     label: "SR-MPLS: Repair Encoding",
-    narrative: `${CORE_PLR} encodes the SAME chosen repair as an MPLS label stack: Node-SID(${SHARED_REPAIR.repairNode})=${SHARED_REPAIR_NODE_LABEL}, then a locally-significant Adj-SID forcing ${SHARED_REPAIR.repairNode}→${SHARED_REPAIR.mergeTarget}=${SHARED_REPAIR_ADJ_LABEL}.`,
+    narrative: `${CORE_PLR} receives the real transport packet carrying Node-SID(PE2)=${nodeSidLabel(CORE_DESTINATION)} and pushes the repair list ABOVE it: Node-SID(${SHARED_REPAIR.repairNode})=${SHARED_REPAIR_NODE_LABEL}, then the locally significant Adj-SID(${SHARED_REPAIR.repairNode}→${SHARED_REPAIR.mergeTarget})=${SHARED_REPAIR_ADJ_LABEL}. Repair list: [${SHARED_REPAIR_NODE_LABEL}, ${SHARED_REPAIR_ADJ_LABEL}]. Full protected stack: [${SHARED_REPAIR_NODE_LABEL}, ${SHARED_REPAIR_ADJ_LABEL}, ${nodeSidLabel(CORE_DESTINATION)}].`,
     run: (state) => {
       if (!state.sharedRepair) return { state, events: [] };
-      const modeledInput: MplsPacket = { srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4, labels: [] };
-      let pkt: MplsPacket = modeledInput;
+      // The protected packet is the Phase-1 SR-MPLS transport packet: Node-SID(PE2), S=1.
+      const protectedTransport: MplsPacket = pushMplsLabel({ srcIp: CE1_SRC, dstIp: CE2_HOST_IPV4, labels: [] }, nodeSidLabel(CORE_DESTINATION));
+      let pkt: MplsPacket = protectedTransport;
       const list = state.mplsRepairList;
       for (let i = list.length - 1; i >= 0; i--) pkt = pushMplsLabel(pkt, list[i].label);
-      const journey: JourneyHop = { architecture: "SR_MPLS", router: CORE_PLR, input: "Primary next hop down", lookup: `Repair OIF ${CORE_PLR}→${state.sharedRepair.outgoingInterface}; repair labels [${list.map((s) => s.label).join(", ")}]`, action: "REPAIR_PUSH", output: "Repair label stack pushed", stepId: "mpls-repair-encoding", ingressPeer: prevOnPath(PRIMARY_PATH, CORE_PLR), egressPeer: state.sharedRepair.outgoingInterface, before: { kind: "MPLS", packet: modeledInput }, after: { kind: "MPLS", packet: pkt } };
-      return { state: { ...state, activeArchitecture: "SR_MPLS", mplsRepairPacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "MPLS_LABEL_PUSHED", stepId: "mpls-repair-encoding", timestamp: Date.now(), message: "PLR pushes repair label stack" }] };
+      const journey: JourneyHop = { architecture: "SR_MPLS", router: CORE_PLR, input: `Transport label ${nodeSidLabel(CORE_DESTINATION)}; primary next hop down`, lookup: `Repair OIF ${CORE_PLR}→${state.sharedRepair.outgoingInterface}; repair list [${list.map((s) => s.label).join(", ")}] above the transport label`, action: "REPAIR_PUSH", output: `Full protected stack [${pkt.labels.map((l) => l.value).join(", ")}]`, stepId: "mpls-repair-encoding", ingressPeer: prevOnPath(PRIMARY_PATH, CORE_PLR), egressPeer: state.sharedRepair.outgoingInterface, before: { kind: "MPLS", packet: protectedTransport }, after: { kind: "MPLS", packet: pkt } };
+      return { state: { ...state, activeArchitecture: "SR_MPLS", mplsRepairPacket: pkt, journey: [...state.journey, journey] }, events: [{ type: "MPLS_LABEL_PUSHED", stepId: "mpls-repair-encoding", timestamp: Date.now(), message: "PLR pushes the repair list above the transport label" }] };
     },
-    packet: (state) => (state.mplsRepairPacket ? mplsPacketVisual("mpls-repair", CORE_PLR, "P3", "Repair: Node-SID + Adj-SID", state.mplsRepairPacket) : undefined),
+    packet: (state) => (state.mplsRepairPacket ? mplsPacketVisual("mpls-repair", CORE_PLR, "P3", "Repair list [Node-SID + Adj-SID] above transport Node-SID(PE2)", state.mplsRepairPacket) : undefined),
   },
   {
     id: "srv6-repair-encoding",
     label: "SRv6: Repair Encoding",
-    narrative: `${CORE_PLR} encodes the IDENTICAL chosen repair as one SRv6 SID: ${SHARED_REPAIR.repairNode} End.X+USD → ${SHARED_REPAIR.mergeTarget}. A single globally-routed SID expresses what SR-MPLS needed two labels for.`,
+    narrative: `${CORE_PLR} wraps the real SRv6 transport packet (outer SA = PE1, DA = PE2's global-table End.DT4) in ONE repair outer: SA = ${CORE_PLR} (${PLR_REPAIR_SOURCE}), DA = ${SHARED_REPAIR.repairNode} End.X+USD → ${SHARED_REPAIR.mergeTarget}. One repair SID, so no SRH. Repair outer → transport outer → customer IPv4.`,
     run: (state) => {
       if (!state.sharedRepair?.repairList.sids[0]) return { state, events: [] };
       const sid = state.sharedRepair.repairList.sids[0];
-      const modeledInput: TiLfaPacketState = { inner: { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 } };
-      const wrapped = encapsulateRepairSingleSid(sid, modeledInput);
-      const journey: JourneyHop = { architecture: "SRV6", router: CORE_PLR, input: "Primary next hop down", lookup: `Repair OIF ${CORE_PLR}→${state.sharedRepair.outgoingInterface}; repair SID ${sid.sidText}`, action: "REPAIR_ENCAPSULATE", output: "Repair outer added (no SRH — single SID)", stepId: "srv6-repair-encoding", ingressPeer: prevOnPath(PRIMARY_PATH, CORE_PLR), egressPeer: state.sharedRepair.outgoingInterface, before: { kind: "SRV6_TILFA", packet: modeledInput }, after: { kind: "SRV6_TILFA", packet: wrapped } };
-      return { state: { ...state, activeArchitecture: "SRV6", srv6RepairPacket: wrapped, journey: [...state.journey, journey] }, events: [{ type: "SRV6_VPN_PACKET_ENCAPSULATED", stepId: "srv6-repair-encoding", timestamp: Date.now(), message: "PLR wraps traffic in the repair SID" }] };
+      const protectedTransport = buildSrv6TransportNestedPacket();
+      // P1 is the PLR performing this H.Encaps, so P1 owns the repair outer's source.
+      const wrapped = encapsulateRepairSingleSid(sid, protectedTransport, PLR_REPAIR_SOURCE);
+      const journey: JourneyHop = { architecture: "SRV6", router: CORE_PLR, input: `Transport outer DA=${globalDt4SidText(CORE_DESTINATION)}; primary next hop down`, lookup: `Repair OIF ${CORE_PLR}→${state.sharedRepair.outgoingInterface}; repair SID ${sid.sidText}`, action: "REPAIR_ENCAPSULATE", output: "Repair outer added around the transport outer (no SRH — single SID)", stepId: "srv6-repair-encoding", ingressPeer: prevOnPath(PRIMARY_PATH, CORE_PLR), egressPeer: state.sharedRepair.outgoingInterface, before: { kind: "SRV6_TILFA", packet: protectedTransport }, after: { kind: "SRV6_TILFA", packet: wrapped } };
+      return { state: { ...state, activeArchitecture: "SRV6", srv6RepairPacket: wrapped, journey: [...state.journey, journey] }, events: [{ type: "SRV6_VPN_PACKET_ENCAPSULATED", stepId: "srv6-repair-encoding", timestamp: Date.now(), message: "PLR wraps the transport packet in the repair outer" }] };
     },
-    packet: (state) => (state.srv6RepairPacket ? tiLfaPacketVisual("srv6-repair", CORE_PLR, "P3", "Repair: End.X+USD SID", state.srv6RepairPacket) : undefined),
+    packet: (state) => (state.srv6RepairPacket ? tiLfaPacketVisual("srv6-repair", CORE_PLR, "P3", "Repair outer (End.X+USD) around the transport outer", state.srv6RepairPacket) : undefined),
   },
   {
     id: "repair-execution",
-    label: "Repair Node Executes",
-    narrative: `At ${SHARED_REPAIR.repairNode}: SR-MPLS pops the Node-SID label, reads the Adj-SID, forces the ${SHARED_REPAIR.repairNode}→${SHARED_REPAIR.mergeTarget} adjacency. SRv6's USD flavor removes the entire repair outer header, exposing the original packet, then forces the same adjacency. Both land the packet at ${SHARED_REPAIR.mergeTarget} with the ORIGINAL customer packet (its VPN encapsulation, if any, untouched underneath).`,
+    label: "Repair Path Executes",
+    narrative: `Both repairs follow ${CORE_PLR} → P3 → ${SHARED_REPAIR.repairNode} → ${SHARED_REPAIR.mergeTarget} → ${CORE_DESTINATION}. SR-MPLS: P3 is penultimate for ${SHARED_REPAIR.repairNode} and PHPs Node-SID(${SHARED_REPAIR.repairNode}); ${SHARED_REPAIR.repairNode} consumes its local Adj-SID and forces ${SHARED_REPAIR.repairNode}→${SHARED_REPAIR.mergeTarget}; ${SHARED_REPAIR.mergeTarget} PHPs the transport Node-SID(${CORE_DESTINATION}). SRv6: P3 forwards on the repair DA; ${SHARED_REPAIR.repairNode}'s USD removes ONLY the repair outer, exposing the transport outer, and forces ${SHARED_REPAIR.repairNode}→${SHARED_REPAIR.mergeTarget}; ${SHARED_REPAIR.mergeTarget} forwards on the transport outer; ${CORE_DESTINATION}'s End.DT4 decapsulates. No P router ever routes the customer IPv4 destination.`,
     run: (state) => {
       if (!state.sharedRepair?.repairNode || !state.sharedRepair.mergeTarget) return { state, events: [] };
-      const repairNode = state.sharedRepair.repairNode;
-      // Physical predecessor of the repair node on the real post-convergence path (P1→P3→P4 here) — never the previous logical segment's owner.
-      const repairIngress = state.sharedRepair.postConvergencePath ? prevOnPath(state.sharedRepair.postConvergencePath, repairNode) : undefined;
-      // Node-SID pop, then the local Adj-SID is consumed as the packet is forced onto its adjacency — leaving the modeled, untouched IPv4 packet (see buildMplsTeSegments for the same Adj-SID semantics).
+      const repair = state.sharedRepair;
+      const repairNode = repair.repairNode!;
+      const merge = repair.mergeTarget!;
+      const path = repair.postConvergencePath ?? [];
+      // Physical neighbors on the real post-convergence path (P1→P3→P4→P2→PE2) — never a logical segment's owner.
+      const peers = (r: RouterId) => ({ stepId: "repair-execution", ingressPeer: prevOnPath(path, r), egressPeer: r === CORE_DESTINATION ? CE2_ID : nextOnPath(path, r) });
+      const hops: JourneyHop[] = [];
       const mplsIn = state.mplsRepairPacket;
-      const mplsOut = mplsIn ? popTopMplsLabel(popTopMplsLabel(mplsIn)) : undefined;
-      const mplsJourney: JourneyHop = { architecture: "SR_MPLS", router: repairNode, input: "Repair label stack", lookup: "LFIB: Node-SID pop, then local Adj-SID", action: "REPAIR_FORWARD_ADJ", output: `Forced onto the ${repairNode}→${state.sharedRepair.mergeTarget} adjacency`, stepId: "repair-execution", ingressPeer: repairIngress, egressPeer: state.sharedRepair.mergeTarget, before: mplsIn && { kind: "MPLS", packet: mplsIn }, after: mplsOut && { kind: "MPLS", packet: mplsOut } };
-      let srv6Journey: JourneyHop | undefined;
-      if (state.srv6RepairPacket) {
-        const outcome = executeEndXUsd(state.sharedRepair.repairList.sids[0], state.srv6RepairPacket);
-        srv6Journey = { architecture: "SRV6", router: repairNode, input: "Repair SID (final segment)", lookup: "Local SID Table: End.X, flavor USD", action: outcome.action, output: outcome.reason, stepId: "repair-execution", ingressPeer: repairIngress, egressPeer: outcome.forwardedTo, before: { kind: "SRV6_TILFA", packet: state.srv6RepairPacket }, after: outcome.exposedPacket && { kind: "SRV6_TILFA", packet: outcome.exposedPacket } };
+      if (mplsIn) {
+        const atRepairNode = popTopMplsLabel(mplsIn); // P3 PHPs Node-SID(repair node)
+        const atMerge = popTopMplsLabel(atRepairNode); // repair node consumes its own local Adj-SID
+        const atPe2 = popTopMplsLabel(atMerge); // merge target PHPs Node-SID(PE2)
+        const mp = (p: MplsPacket): HopPacket => ({ kind: "MPLS", packet: p });
+        hops.push(
+          { architecture: "SR_MPLS", router: "P3", input: `Top label ${mplsIn.labels[0]?.value}`, lookup: `LFIB: Node-SID(${repairNode}) target is one hop away → PHP`, action: "PHP_POP", output: `Node-SID(${repairNode}) popped; [${atRepairNode.labels.map((l) => l.value).join(", ")}] to ${repairNode}`, ...peers("P3"), before: mp(mplsIn), after: mp(atRepairNode) },
+          { architecture: "SR_MPLS", router: repairNode, input: `Top label ${atRepairNode.labels[0]?.value}`, lookup: `LFIB: ${atRepairNode.labels[0]?.value} = local Adj-SID(${repairNode}→${merge})`, action: "REPAIR_FORWARD_ADJ", output: `Adj-SID consumed; forced onto ${repairNode}→${merge} with [${atMerge.labels.map((l) => l.value).join(", ")}]`, ...peers(repairNode), before: mp(atRepairNode), after: mp(atMerge) },
+          { architecture: "SR_MPLS", router: merge, input: `Top label ${atMerge.labels[0]?.value}`, lookup: `LFIB: Node-SID(${CORE_DESTINATION}) target is one hop away → PHP`, action: "PHP_POP", output: `Node-SID(${CORE_DESTINATION}) popped; original customer IPv4 to ${CORE_DESTINATION} (global IPv4 lookup there)`, ...peers(merge), before: mp(atMerge), after: mp(atPe2) },
+        );
       }
-      return { state: { ...state, journey: [...state.journey, mplsJourney, ...(srv6Journey ? [srv6Journey] : [])] }, events: [] };
+      if (state.srv6RepairPacket) {
+        const wrapped = state.srv6RepairPacket;
+        const outcome = executeEndXUsd(repair.repairList.sids[0], wrapped);
+        const exposed = outcome.exposedPacket;
+        const tl = (p: TiLfaPacketState): HopPacket => ({ kind: "SRV6_TILFA", packet: p });
+        hops.push(
+          { architecture: "SRV6", router: "P3", input: `DA=${repair.repairList.sids[0].sidText}`, lookup: `IPv6 FIB: longest-prefix match on ${repairNode}'s locator`, action: "IPV6_FIB_FORWARD", output: `Forward to ${repairNode} — repair outer untouched`, ...peers("P3"), before: tl(wrapped), after: tl(wrapped) },
+          { architecture: "SRV6", router: repairNode, input: "Repair SID (final segment)", lookup: "Local SID Table: End.X, flavor USD", action: outcome.action, output: outcome.reason, ...peers(repairNode), before: tl(wrapped), after: exposed && tl(exposed) },
+        );
+        if (exposed?.vpnOuter) {
+          hops.push(
+            { architecture: "SRV6", router: merge, input: `DA=${exposed.vpnOuter.daText}`, lookup: `IPv6 FIB: longest-prefix match on ${CORE_DESTINATION}'s locator`, action: "IPV6_FIB_FORWARD", output: `Forward to ${CORE_DESTINATION} on the transport outer — never the customer IPv4`, ...peers(merge), before: tl(exposed), after: tl(exposed) },
+            { architecture: "SRV6", router: CORE_DESTINATION, input: `DA=${exposed.vpnOuter.daText}`, lookup: `Local SID Table: ${BEHAVIOR_LABEL.END_DT4} (global IPv4 table)`, action: "LOCAL_SID_MATCH", output: "Transport outer removed; global IPv4 lookup → CE2", ...peers(CORE_DESTINATION), before: tl(exposed), after: exposed.inner?.kind === "IPV4" ? { kind: "IPV4", srcIp: exposed.inner.srcIp, dstIp: exposed.inner.dstIp } : undefined },
+          );
+        }
+      }
+      return { state: { ...state, journey: [...state.journey, ...hops] }, events: [] };
     },
   },
   {
@@ -1489,19 +1577,19 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
   {
     id: "compare-protection-encoding",
     label: "SIDE-BY-SIDE: Repair Encoding",
-    narrative: "SAME failure, SAME PLR, SAME desired repair topology. SR-MPLS: OIF + a two-entry label repair list (Node-SID + Adj-SID). SRv6: OIF + one globally-routed End.X+USD SID. A globally routed End.X can fold what SR-MPLS needed two labels to express into one SID — that's a real difference, not a universal one (see the header-efficiency phase for why it doesn't always work out that way).",
+    narrative: "COMMON: same failure, same PLR, same OIF, same repair node, same forced merge adjacency. Comparing like with like — the repair instructions each PLR ADDS: SR-MPLS adds 2 repair labels (Node-SID + local Adj-SID) above the existing transport label; SRv6 adds 1 repair outer (a globally routed End.X+USD SID) around the existing transport outer. Both keep their transport instruction underneath. A globally routed End.X folds reach-and-force into one SID in this model — a real difference, not a universal one.",
     run: noopRun,
     whatChanged: (_, next) => (next.sharedRepair ? compareProtectionEncoding(next.sharedRepair).map((r) => `${r.requirement}: SR-MPLS=${r.srMpls} | SRv6=${r.srv6}`) : []),
   },
   {
     id: "predict-endx-always-smaller",
     label: "Always Smaller?",
-    narrative: "The SRv6 repair just used one SID where SR-MPLS needed two labels.",
+    narrative: "The SRv6 PLR just added one repair SID where the SR-MPLS PLR added two repair labels (both above an existing transport instruction).",
     question: {
       prompt: "Does a globally routed End.X SID always produce a smaller repair encoding than SR-MPLS?",
       options: [{ id: "yes", label: "Yes — SRv6 repair is always more compact" }, { id: "no", label: "No — it happened to fold two hops into one SID here; the general case depends on topology" }],
       correctOptionId: "no",
-      explanation: "Here, one End.X SID could express both \"reach the repair node\" and \"force this exact adjacency\" because the repair node is globally reachable. That's a real, useful property — but it's not a law; a different topology could need more SIDs, or an SR-MPLS design could need only one label.",
+      explanation: "Here, one End.X SID could express both \"reach the repair node\" and \"force this exact adjacency\" because this model's End.X SID is globally routed. That's a real, useful property — but it's not a law; a different topology could need more SIDs, and an SR-MPLS design with a globally significant Adj-SID could need only one repair label.",
     },
   },
 
@@ -1512,7 +1600,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     id: "endpoint-programmability",
     label: "Endpoint Programmability",
     narrative:
-      "One genuine architectural difference: an SR-MPLS segment is primarily a forwarding instruction expressed as a label — the label value itself carries no semantic beyond \"what to do with this stack.\" An SRv6 SID IS an IPv6 address bound to a named endpoint-behavior (End, End.X, End.T, End.DT4, End.DT6, ...), each independently specified by RFC 8986. This capstone already used End (topological) and End.X+USD (protection) and End.DT4 (VPN service) — all from the SAME SID-address space, distinguished by which local behavior a router bound to that address.",
+      "One genuine architectural difference: an SR-MPLS segment is primarily a forwarding instruction expressed as a label — the label value itself carries no semantic beyond \"what to do with this stack.\" An SRv6 SID IS an IPv6 address bound to a named endpoint-behavior (End, End.X, End.T, End.DT4, End.DT6, ...), each independently specified by RFC 8986. This capstone already used End.DT4 (global-table transport egress AND the CUST-A VPN service — two different SID instances), End.X (explicit TE) and End.X+USD (protection) — distinguished by which local behavior a router bound to each address.",
     run: noopRun,
     whatChanged: () => (["END", "END_X", "END_DT4"] as Srv6EndpointBehavior[]).map((b) => `${BEHAVIOR_LABEL[b]}: ${BEHAVIOR_FAMILY[b]}`),
   },
@@ -1721,7 +1809,7 @@ export const capstoneSteps: ScenarioStep<CapstoneState>[] = [
     run: (state) => {
       if (!state.srv6VpnRoute?.prefixSid) return { state, events: [] };
       const serviceSid = state.srv6VpnRoute.prefixSid.l3Service.serviceSid;
-      const pkt = encapsulateSrv6VpnPacket(serviceSid, { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 }, "2001:db8:100:1::c1");
+      const pkt = encapsulateSrv6VpnPacket(serviceSid, { kind: "IPV4", srcIp: CE1_HOST_IPV4, dstIp: CE2_HOST_IPV4 }, PE1_TRANSPORT_SOURCE);
       const outcome = processEgressServiceSid(serviceSid, pkt, PE2_LOCAL_ROUTES, []);
       const verified = !outcome.dropped;
       const encapsulated: HopPacket = { kind: "SRV6_L3VPN", packet: pkt };
@@ -1791,7 +1879,7 @@ export function comparisonPhaseForIndex(index: number): ComparisonPhase {
 /**
  * Anti-spoiler: each phase's side-by-side table directly states the
  * answer to that phase's own prediction(s) — "4 bytes" (predict-mpls-
- * label-bytes), "2 labels vs. 3 SIDs" (predict-minimal-segments),
+ * label-bytes), "3 labels vs. 2 SIDs" (predict-minimal-segments),
  * "identical VRF/RD/RT" + "P-router customer state: None" (predict-vrf-
  * rt-common, predict-p-router-vrf), "shared repair computation"
  * (predict-tilfa-shared), modeled total overhead (the MTU case the
@@ -1829,9 +1917,10 @@ export interface LocalSidEntry {
  */
 export function localSidEntries(state: CapstoneState, router: CoreRouterId): LocalSidEntry[] {
   const rows: LocalSidEntry[] = [{ sid: endSidText(router), behavior: BEHAVIOR_LABEL.END, usedBy: "Topological End SID (reachable via this router's locator)" }];
+  if (router === CORE_DESTINATION) rows.push({ sid: globalDt4SidText(router), behavior: BEHAVIOR_LABEL.END_DT4, usedBy: "Transport egress SID (decapsulate + global IPv4 table lookup) — not the CUST-A Service SID" });
   const endX = new Map<string, string[]>();
-  const teAdj = state.srv6Segments.find((s) => s.type === "ADJ" && s.owner === router);
-  if (teAdj) endX.set(endXSidText(router), [...(endX.get(endXSidText(router)) ?? []), `SR Policy: plain End.X → ${teAdj.target}`]);
+  const teEndX = state.srv6Segments.find((s) => s.behavior === "END_X" && s.owner === router);
+  if (teEndX) endX.set(endXSidText(router), [...(endX.get(endXSidText(router)) ?? []), `SR Policy: globally routed End.X → ${teEndX.adjacency}`]);
   for (const s of state.sharedRepair?.repairList.sids ?? []) if (s.owner === router) endX.set(s.sidText, [...(endX.get(s.sidText) ?? []), `TI-LFA repair: End.X+${s.flavors.join("+")} → ${s.adjacency}`]);
   for (const [sid, uses] of endX) rows.push({ sid, behavior: BEHAVIOR_LABEL.END_X, usedBy: uses.join(" · ") });
   const svc = state.srv6VpnRoute?.prefixSid?.l3Service.serviceSid;

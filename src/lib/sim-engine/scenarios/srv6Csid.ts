@@ -363,24 +363,57 @@ export function compressNextCsidRun(segments: LogicalSegment[], structures: Reco
 function replaceCsidPair(owner: RouterId, functionValue: number): [number, number] {
   return [NEXT_CSID_VALUE[owner], functionValue];
 }
+/** Hextets per packed CSID slot (LNFL / 16). */
+function replaceSlotHextets(layout: CsidLayoutConfig): number {
+  return layout.lnflBits / 16;
+}
+/**
+ * RFC 9800 §4.2: the Index occupies the least-significant X bits of the
+ * Argument, X = ceil(log2(K)) with K = floor(128/LNFL) packed positions.
+ * Every LNFL this model allows is >= 16 bits, so K <= 8 and X <= 3 — the
+ * Index always fits inside the DA's last hextet; the remaining Argument
+ * bits stay zero.
+ */
+export function replaceIndexBits(layout: CsidLayoutConfig): number {
+  return Math.max(1, Math.ceil(Math.log2(computeReplaceCsidCapacity(layout))));
+}
+export function readReplaceIndex(daHextets: Hextets, layout: CsidLayoutConfig = REPLACE_CSID_LAYOUT): number {
+  return daHextets[7] & ((1 << replaceIndexBits(layout)) - 1);
+}
+export function writeReplaceIndex(daHextets: Hextets, index: number, layout: CsidLayoutConfig = REPLACE_CSID_LAYOUT): Hextets {
+  const mask = (1 << replaceIndexBits(layout)) - 1;
+  const out = [...daHextets];
+  out[7] = (out[7] & ~mask & 0xffff) | (index & mask);
+  return out;
+}
+/** The CSID stored at physical packed `position` (0 = most-significant slot, K-1 = least-significant). */
+export function replacePackedSlot(container: Hextets, position: number, layout: CsidLayoutConfig = REPLACE_CSID_LAYOUT): number[] {
+  const w = replaceSlotHextets(layout);
+  return container.slice(position * w, position * w + w);
+}
+/** Physical packed position of the j-th CSID (travel order) inside one packed container: RFC 9800 fills from K-1 downward. */
+export function replacePackedPositionForTravelIndex(j: number, layout: CsidLayoutConfig = REPLACE_CSID_LAYOUT): number {
+  return computeReplaceCsidCapacity(layout) - 1 - j;
+}
 function functionValueForBehavior(s: LogicalSegment): number {
   return s.behavior === "END_DT4" ? FUNCTION.END_DT4 : s.behavior === "END_X" ? FUNCTION.END_X : FUNCTION.END;
 }
 function buildReplaceCsidFirstHextets(s: LogicalSegment): Hextets {
   const [node, fn] = replaceCsidPair(s.owner, functionValueForBehavior(s));
-  return [...LOCATOR_BLOCK_HEXTETS, node, fn, 0, 0, 0]; // Index = 0 in the low hextet
+  return writeReplaceIndex([...LOCATOR_BLOCK_HEXTETS, node, fn, 0, 0, 0], 0); // first SID: Index = 0
 }
+/** RFC 9800 §4.2/§6.2: the second CSID of the sequence goes in the LEAST-significant position (K-1), the next in K-2, and so on; unused positions stay zero. */
 function buildReplaceCsidPackedHextets(run: LogicalSegment[], layout: CsidLayoutConfig): Hextets {
   const capacity = computeReplaceCsidCapacity(layout);
-  const pairs: number[] = [];
-  for (const s of run) pairs.push(...replaceCsidPair(s.owner, functionValueForBehavior(s)));
-  while (pairs.length < capacity * 2) pairs.push(0);
-  return pairs;
-}
-function decodePackedPairs(hextets: Hextets): [number, number][] {
-  const pairs: [number, number][] = [];
-  for (let i = 0; i < hextets.length; i += 2) pairs.push([hextets[i], hextets[i + 1]]);
-  return pairs;
+  const w = replaceSlotHextets(layout);
+  const out: number[] = new Array(capacity * w).fill(0);
+  run.forEach((s, j) => {
+    const position = replacePackedPositionForTravelIndex(j, layout);
+    replaceCsidPair(s.owner, functionValueForBehavior(s)).forEach((v, o) => {
+      out[position * w + o] = v;
+    });
+  });
+  return out;
 }
 
 /** RFC 9800 §4.2: the first Segment List entry is a fully-formed SID (Locator-Block + first CSID + Index); every later entry is a PACKED container of CSID pairs, never itself a valid SID. */
@@ -488,6 +521,10 @@ export function executeNextCsidAdvance(input: NextCsidAdvanceInput): NextCsidAdv
     if (!srh || srh.segmentsLeft === 0) {
       return { outcome: "FINAL", newDaHextets: daHextets, newSrh: srh, segmentsLeftChanged: false, newHopLimit: hopLimit, forwardVia: endpointBehavior === "END_X" ? adjacency : undefined, reason: "Argument exhausted and no further Segment List entries — sequence complete." };
     }
+    // Ordinary RFC 8986 End processing applies at the boundary — including its Hop Limit check and single decrement.
+    if (hopLimit <= 1) {
+      return { outcome: "FINAL", newDaHextets: daHextets, newSrh: srh, segmentsLeftChanged: false, newHopLimit: hopLimit, reason: "Hop Limit would reach zero on this advance — the packet must be discarded, not forwarded further." };
+    }
     const segmentsLeft = srh.segmentsLeft - 1;
     const newDaHextets = srh.segmentList[segmentsLeft].hextets;
     return {
@@ -495,9 +532,9 @@ export function executeNextCsidAdvance(input: NextCsidAdvanceInput): NextCsidAdv
       newDaHextets,
       newSrh: { ...srh, segmentsLeft },
       segmentsLeftChanged: true,
-      newHopLimit: hopLimit,
+      newHopLimit: hopLimit - 1,
       forwardVia: endpointBehavior === "END_X" ? adjacency : undefined,
-      reason: "Argument exhausted — loaded the next 128-bit Segment List entry; ordinary RFC 8754 SRH advancement applies here, not intra-container shifting.",
+      reason: "Argument exhausted — loaded the next 128-bit Segment List entry; ordinary RFC 8754 SRH advancement applies here (Segments Left −1, Hop Limit −1), not intra-container shifting.",
     };
   }
   if (hopLimit <= 1) {
@@ -521,54 +558,85 @@ export function executeNextCsidAdvance(input: NextCsidAdvanceInput): NextCsidAdv
 // ---------------------------------------------------------------------------
 
 export type ReplaceCsidOutcome = "PACKED_ADVANCE" | "CONTAINER_BOUNDARY_CROSSED" | "FINAL";
-export interface ReplacePackedContext {
-  pairs: [number, number][];
-}
 export interface ReplaceCsidAdvanceInput {
   daHextets: Hextets;
   layout: CsidLayoutConfig;
-  packedContext?: ReplacePackedContext;
+  hopLimit: number;
   srh?: SegmentRoutingHeader;
 }
 export interface ReplaceCsidAdvanceResult {
   outcome: ReplaceCsidOutcome;
   newDaHextets: Hextets;
-  newPackedContext?: ReplacePackedContext;
   newSrh?: SegmentRoutingHeader;
   segmentsLeftChanged: boolean;
+  newHopLimit: number;
+  indexBefore: number;
+  indexAfter: number;
+  /** Physical packed position the new active CSID was read from (undefined when no packed CSID was used). */
+  packedPosition?: number;
   reason: string;
 }
 /**
- * Index (stored in the low hextet) counts how many CSIDs have been
- * consumed from the CURRENT packed container. While positions remain,
- * processing RECONSTRUCTS a fresh valid SID (Locator-Block + that
- * packed CSID pair + advanced Index) — the packed container itself is
- * never copied verbatim into the IPv6 DA (RFC 9800 §4.2). Once
- * positions are exhausted, the next Segment List entry (itself a
- * packed container, not a valid SID) is loaded and its first pair used
- * the same way.
+ * RFC 9800 §4.2.1 (End with REPLACE-CSID). The Index names the physical
+ * packed position of the CURRENT container (Segment List[Segments Left])
+ * the next CSID is read from; it counts DOWN. A non-zero Index is
+ * decremented and that position's CSID becomes active. Index 0 means the
+ * current entry is exhausted: Segments Left decrements, the Index is reset
+ * to K-1, and the next container's least-significant position is used.
+ * Either way the DA is RECONSTRUCTED as a valid SID (Locator-Block +
+ * that CSID + Index) — the packed container is never copied into the DA —
+ * and Hop Limit decrements once.
  */
 export function executeReplaceCsidAdvance(input: ReplaceCsidAdvanceInput): ReplaceCsidAdvanceResult {
-  const { daHextets, layout, packedContext, srh } = input;
+  const { daHextets, layout, hopLimit, srh } = input;
+  const capacity = computeReplaceCsidCapacity(layout);
   const lblHextets = layout.lblBits / 16;
-  const index = daHextets[7];
-  const nextPair = packedContext && index < packedContext.pairs.length ? packedContext.pairs[index] : undefined;
-  const nextPairIsPadding = !nextPair || (nextPair[0] === 0 && nextPair[1] === 0);
+  const argumentHextets = 8 - lblHextets - replaceSlotHextets(layout);
+  const index = readReplaceIndex(daHextets, layout);
+  const isZero = (v: number[]) => v.every((h) => h === 0);
+  const reconstruct = (slot: number[], newIndex: number) => writeReplaceIndex([...daHextets.slice(0, lblHextets), ...slot, ...new Array(argumentHextets).fill(0)], newIndex, layout);
+  const final = (reason: string): ReplaceCsidAdvanceResult => ({ outcome: "FINAL", newDaHextets: daHextets, newSrh: srh, segmentsLeftChanged: false, newHopLimit: hopLimit, indexBefore: index, indexAfter: index, reason });
 
-  if (packedContext && !nextPairIsPadding) {
-    const pair = nextPair!;
-    const newDaHextets = [...daHextets.slice(0, lblHextets), ...pair, 0, 0, index + 1];
-    return { outcome: "PACKED_ADVANCE", newDaHextets, newPackedContext: packedContext, newSrh: srh, segmentsLeftChanged: false, reason: `Constructed a fresh valid SID from packed position ${index} of the current container — Locator-Block unchanged, Index advances to ${index + 1}.` };
+  if (!srh || (srh.segmentsLeft === 0 && (index === 0 || isZero(replacePackedSlot(srh.segmentList[0].hextets, index - 1, layout))))) {
+    return final("No further CSID remains (Segments Left 0, next packed position empty) — sequence complete.");
   }
-  if (!srh || srh.segmentsLeft === 0) {
-    return { outcome: "FINAL", newDaHextets: daHextets, newSrh: srh, segmentsLeftChanged: false, reason: "No further packed positions and no further Segment List entries — sequence complete." };
+  if (hopLimit <= 1) return final("Hop Limit would reach zero on this advance — the packet must be discarded, not forwarded further.");
+
+  if (index !== 0) {
+    const newIndex = index - 1;
+    const slot = replacePackedSlot(srh.segmentList[srh.segmentsLeft].hextets, newIndex, layout);
+    if (isZero(slot)) {
+      // The rest of this container is padding: the next Segment List entry is a fully formed SID.
+      const segmentsLeft = srh.segmentsLeft - 1;
+      const next = srh.segmentList[segmentsLeft].hextets;
+      return { outcome: "CONTAINER_BOUNDARY_CROSSED", newDaHextets: next, newSrh: { ...srh, segmentsLeft }, segmentsLeftChanged: true, newHopLimit: hopLimit - 1, indexBefore: index, indexAfter: readReplaceIndex(next, layout), reason: "Remaining packed positions are padding — loaded the next fully formed Segment List entry." };
+    }
+    return {
+      outcome: "PACKED_ADVANCE",
+      newDaHextets: reconstruct(slot, newIndex),
+      newSrh: srh,
+      segmentsLeftChanged: false,
+      newHopLimit: hopLimit - 1,
+      indexBefore: index,
+      indexAfter: newIndex,
+      packedPosition: newIndex,
+      reason: `Index ${index} → ${newIndex}: reconstructed a valid SID from packed position ${newIndex} of the current container — Locator-Block unchanged, Segments Left unchanged, Hop Limit −1.`,
+    };
   }
   const segmentsLeft = srh.segmentsLeft - 1;
-  const nextEntry = srh.segmentList[segmentsLeft];
-  const pairs = decodePackedPairs(nextEntry.hextets);
-  const first = pairs[0];
-  const newDaHextets = [...daHextets.slice(0, lblHextets), ...first, 0, 0, 1];
-  return { outcome: "CONTAINER_BOUNDARY_CROSSED", newDaHextets, newPackedContext: { pairs }, newSrh: { ...srh, segmentsLeft }, segmentsLeftChanged: true, reason: "Loaded the next packed container and constructed a fresh valid SID from its first packed CSID; Index reset then advanced to 1." };
+  const newIndex = capacity - 1;
+  const slot = replacePackedSlot(srh.segmentList[segmentsLeft].hextets, newIndex, layout);
+  return {
+    outcome: "CONTAINER_BOUNDARY_CROSSED",
+    newDaHextets: reconstruct(slot, newIndex),
+    newSrh: { ...srh, segmentsLeft },
+    segmentsLeftChanged: true,
+    newHopLimit: hopLimit - 1,
+    indexBefore: index,
+    indexAfter: newIndex,
+    packedPosition: newIndex,
+    reason: `Index 0 — loaded packed container Segment List[${segmentsLeft}] (Segments Left −1), Index reset to K-1 = ${newIndex}: reconstructed a valid SID from packed position ${newIndex}, Hop Limit −1.`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +702,6 @@ export interface CsidPacketState {
   daHextets: Hextets;
   hopLimit: number;
   srh?: SegmentRoutingHeader;
-  packedContext?: ReplacePackedContext;
 }
 function ipv6Layer(pkt: CsidPacketState): PacketLayer {
   return {
@@ -658,13 +725,25 @@ function srhLayer(srh: SegmentRoutingHeader): PacketLayer {
       { label: "Last Entry", value: String(srh.lastEntry) },
       ...srh.segmentList.map((s) => ({
         label: `Segment List[${s.index}]${s.isPackedContainer ? " (packed — NOT a valid SID)" : ""}`,
-        value: s.isPackedContainer ? `CSIDs: ${s.csidOwners?.filter((o) => o).join(", ") || "(padding)"}` : `${fmtIpv6(s.hextets)}${s.csidOwners ? ` [${s.csidOwners.join(",")}]` : ""}`,
+        value: s.isPackedContainer ? packedPositionsText(s.hextets) : `${fmtIpv6(s.hextets)}${s.csidOwners ? ` [${s.csidOwners.join(",")}]` : ""}`,
       })),
     ],
   };
 }
 function payloadLayer(): PacketLayer {
   return { name: "Payload", color: "var(--pv-border-strong)", fields: [{ label: "Conceptual destination", value: "Application endpoint behind R8" }] };
+}
+/** "[3] R3 End · [2] R4 End · [1] R8 End.DT4 · [0] 0" — physical positions, most-significant first. */
+function packedPositionsText(hextets: Hextets): string {
+  const k = computeReplaceCsidCapacity(REPLACE_CSID_LAYOUT);
+  const out: string[] = [];
+  for (let pos = k - 1; pos >= 0; pos--) {
+    const [node, fn] = replacePackedSlot(hextets, pos);
+    const owner = ALL_ROUTERS.find((r) => NEXT_CSID_VALUE[r] === node);
+    const behavior = fn === FUNCTION.END_DT4 ? BEHAVIOR_LABEL.END_DT4 : fn === FUNCTION.END_X ? BEHAVIOR_LABEL.END_X : BEHAVIOR_LABEL.END;
+    out.push(node === 0 && fn === 0 ? `[${pos}] 0` : `[${pos}] ${owner ?? csidHexText(node)} ${behavior}`);
+  }
+  return out.join(" · ");
 }
 export function buildCsidPacketLayers(pkt: CsidPacketState): PacketLayer[] {
   return [ipv6Layer(pkt), ...(pkt.srh ? [srhLayer(pkt.srh)] : []), payloadLayer()];
@@ -732,7 +811,7 @@ function replaceCsidHop(segment: LogicalSegment, pkt: CsidPacketState, result: R
     segmentsLeftBefore: pkt.srh?.segmentsLeft,
     segmentsLeftAfter: result.newSrh?.segmentsLeft,
     hopLimitBefore: pkt.hopLimit,
-    hopLimitAfter: pkt.hopLimit,
+    hopLimitAfter: result.newHopLimit,
     reason: result.reason,
   };
 }
@@ -1054,7 +1133,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
     id: "r2-match-execute",
     label: "R2: Local SID Match — NEXT-CSID Advance",
     narrative: `R2's Local SID Table matches the active CSID (${csidHexText(2)}). Behavior: End + NEXT-CSID. Argument (C2..C5) is non-zero -> INTRA-CONTAINER SHIFT.`,
-    packet: (state) => (state.packet ? csidPacket("r2-before", "R2", "R2", "Before shift", "MATCH", state.packet) : undefined),
+    packet: (state) => (state.packet ? csidPacket("r2-after", "R2", "R2", "Stage shown: after R2's NEXT-CSID shift — R3's CSID is now active, Segments Left unchanged, Hop Limit decremented", "SHIFT", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const result = executeNextCsidAdvance({ daHextets: state.packet.daHextets, layout: NEXT_CSID_LAYOUT, hopLimit: state.packet.hopLimit, srh: state.packet.srh, endpointBehavior: "END" });
@@ -1116,7 +1195,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
     id: "r3-r5-shift",
     label: "R3, R4, R5: Continue Shifting",
     narrative: "R3, then R4, then R5 each repeat the identical pattern: match, non-zero Argument, shift, Segments Left unchanged, Hop Limit -1, ordinary FIB forward. Fast-forwarded here — the mechanism never changes.",
-    packet: (state) => (state.packet ? csidPacket("r3-r5", "R3", "R6", "Three intra-container shifts fast-forwarded", "SHIFT", state.packet) : undefined),
+    packet: (state) => (state.packet ? csidPacket("r3-r5", "R5", "R6", "Stage shown: after R3, R4 and R5 shifted — R6's CSID is now active, heading to R6", "SHIFT", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       let pkt = state.packet;
@@ -1132,8 +1211,8 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
   {
     id: "r6-boundary-cross",
     label: "R6: Container Boundary Crossed",
-    narrative: `R6's Argument is now all zero — the container is exhausted. Instead of another shift: the NEXT 128-bit Segment List entry (Container B) is copied into the IPv6 DA, and ordinary SRH advancement applies (Segments Left DOES decrement here).`,
-    packet: (state) => (state.packet ? csidPacket("r6-before", "R6", "R6", "Container A exhausted", "MATCH", state.packet) : undefined),
+    narrative: `R6's Argument is now all zero — the container is exhausted. Instead of another shift: the NEXT 128-bit Segment List entry (Container B) is copied into the IPv6 DA, and ordinary SRH advancement applies (Segments Left DOES decrement here, and Hop Limit decrements once, as for any End).`,
+    packet: (state) => (state.packet ? csidPacket("r6-after", "R6", "R6", "Stage shown: after R6 crossed the container boundary — Container B is active, SL 0, Hop Limit decremented", "BOUNDARY", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       const result = executeNextCsidAdvance({ daHextets: state.packet.daHextets, layout: NEXT_CSID_LAYOUT, hopLimit: state.packet.hopLimit, srh: state.packet.srh, endpointBehavior: "END" });
@@ -1160,7 +1239,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
     id: "r7-r8-finish",
     label: "R7, R8: Finish Container B",
     narrative: "R7 shifts within Container B (Segments Left unchanged again). R8's Argument is then all-zero with no further Segment List entries — FINAL. Delivered.",
-    packet: (state) => (state.packet ? csidPacket("r7-r8", "R6", "R8", "Container B processed to completion", "SHIFT", state.packet) : undefined),
+    packet: (state) => (state.packet ? csidPacket("r7-r8", "R7", "R8", "Stage shown: after R7's shift — R8's CSID is active; R8 is the final segment", "SHIFT", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       let pkt = state.packet;
@@ -1241,7 +1320,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
     id: "endx-walk",
     label: "Walk To R6, Cross, Forward via Adjacency",
     narrative: "R2..R5 shift normally. At R6: Argument is zero (R6 is the last CSID in its container) -> container boundary crossed, loading the single-CSID Container B (R8 only). R6 then forwards via its End.X adjacency directly to R8, never touching R7.",
-    packet: (state) => (state.packet ? csidPacket("endx-walk", "R1", "R6", "Walking to R6 (End.X)", "SHIFT", state.packet) : undefined),
+    packet: (state) => (state.packet ? csidPacket("endx-walk", "R6", "R8", "Stage shown: after R6 End.X + NEXT-CSID — Container B active, forced over adjacency R6→R8 (R7 bypassed)", "END.X", state.packet) : undefined),
     run: (state) => {
       if (!state.packet) return { state, events: [] };
       let pkt = state.packet;
@@ -1362,11 +1441,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
     id: "fault-consequence",
     label: "Consequence",
     narrative: "R4's structure is treated as unknown -> R4 is NOT compressible. This does not drop the whole policy — a valid mixed compressed/uncompressed encoding still represents the exact same program.",
-    packet: (state) => {
-      const plan = compressNextCsidRun(BASE_PROGRAM, liveStructures(state));
-      const { daHextets, srh } = buildDaAndSrh(plan);
-      return csidPacket("fault-mixed", "R1", "R1", "Mixed compressed/ordinary encoding — R4 broken out", "MIXED", { daHextets, hopLimit: 64, srh });
-    },
+    packet: (state) => (state.packet ? csidPacket("fault-mixed", "R1", "R1", "Mixed compressed/ordinary encoding — R4 broken out", "MIXED", state.packet) : undefined),
     run: (state) => {
       const plan = compressNextCsidRun(BASE_PROGRAM, liveStructures(state));
       const { daHextets, srh } = buildDaAndSrh(plan);
@@ -1494,7 +1569,7 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
   {
     id: "replace-packed-containers",
     label: "Packed Containers",
-    narrative: "Subsequent Segment List entries pack C2, C3, C4 without repeating the Locator-Block. A packed container is NOT copied verbatim into the IPv6 DA — RFC 9800 processing always CONSTRUCTS a valid SRv6 SID before it becomes the active DA.",
+    narrative: `Subsequent Segment List entries pack C2, C3, C4 without repeating the Locator-Block. RFC 9800 fills a packed container from its LEAST-significant position: C2 (R3) sits in position ${REPLACE_CAPACITY - 1}, C3 (R4) in ${REPLACE_CAPACITY - 2}, C4 (R8 End.DT4) in ${REPLACE_CAPACITY - 3}, and position 0 is padding — physical position is NOT processing order. A packed container is NOT copied verbatim into the IPv6 DA — RFC 9800 processing always CONSTRUCTS a valid SRv6 SID before it becomes the active DA.`,
   },
   {
     id: "predict-packed-not-copied",
@@ -1513,23 +1588,18 @@ export const srv6CsidSteps: ScenarioStep<Srv6CsidState>[] = [
   {
     id: "replace-advance-walk",
     label: "Walk The REPLACE-CSID Sequence",
-    narrative: "R2 (Index 0, fully formed) -> constructs R3's SID from the packed container, Index 1. R3 -> constructs R4's SID, Index 2. R4 -> constructs R8's End.DT4 SID, Index 3 (no further Segment List entries).",
-    packet: (state) => (state.replacePacket ? csidPacket("replace-walk", "R2", "R8", "REPLACE-CSID index-driven advance", "REPLACE", state.replacePacket) : undefined),
+    narrative: `R2 (Index 0, fully formed) -> Index 0 means its entry is exhausted: Segments Left decrements, the Index resets to K-1 = ${REPLACE_CAPACITY - 1}, and R3's SID is reconstructed from packed position ${REPLACE_CAPACITY - 1}. R3 -> Index ${REPLACE_CAPACITY - 1} → ${REPLACE_CAPACITY - 2}, R4's SID from position ${REPLACE_CAPACITY - 2}. R4 -> Index ${REPLACE_CAPACITY - 2} → ${REPLACE_CAPACITY - 3}, R8's End.DT4 SID from position ${REPLACE_CAPACITY - 3}. The Index counts DOWN, and every advance decrements Hop Limit.`,
+    packet: (state) => (state.replacePacket ? csidPacket("replace-walk", "R8", "R8", "Stage shown: REPLACE-CSID walk complete — R8 End.DT4 is active", "REPLACE", state.replacePacket) : undefined),
     run: (state) => {
       if (!state.replacePacket) return { state, events: [] };
       let pkt = state.replacePacket;
-      // Deliberately starts undefined — R2 (the first, fully-formed SID)
-      // has no packed-container context of its own; its own advance is
-      // what CROSSES into the SRH's packed container for the first time.
-      let packedContext: ReplacePackedContext | undefined;
       const hops: CsidJourneyHop[] = [];
       for (const segment of REPLACE_PROGRAM) {
-        const result = executeReplaceCsidAdvance({ daHextets: pkt.daHextets, layout: REPLACE_CSID_LAYOUT, packedContext, srh: pkt.srh });
+        const result = executeReplaceCsidAdvance({ daHextets: pkt.daHextets, layout: REPLACE_CSID_LAYOUT, hopLimit: pkt.hopLimit, srh: pkt.srh });
         hops.push(replaceCsidHop(segment, pkt, result));
-        pkt = { ...pkt, daHextets: result.newDaHextets, srh: result.newSrh };
-        packedContext = result.newPackedContext;
+        pkt = { ...pkt, daHextets: result.newDaHextets, hopLimit: result.newHopLimit, srh: result.newSrh };
       }
-      return { state: { ...state, replacePacket: pkt, replaceJourney: [...state.replaceJourney, ...hops] }, events: [{ type: "SRV6_CSID_REPLACE_ADVANCED", stepId: "replace-advance-walk", timestamp: Date.now(), message: "Walked full REPLACE-CSID sequence to R8 End.DT4" }] };
+      return { state: { ...state, replacePacket: pkt, packetAt: "R8", replaceJourney: [...state.replaceJourney, ...hops] }, events: [{ type: "SRV6_CSID_REPLACE_ADVANCED", stepId: "replace-advance-walk", timestamp: Date.now(), message: "Walked full REPLACE-CSID sequence to R8 End.DT4" }] };
     },
   },
   {
