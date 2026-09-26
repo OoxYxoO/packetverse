@@ -39,7 +39,13 @@ import {
 import { fmtIpv6 } from "@/lib/sim-engine/scenarios/srv6Foundations";
 import { PE2_DT4_SID } from "@/lib/sim-engine/scenarios/srv6L3vpn";
 import { GraphTopologyViewer } from "@/components/network/GraphTopologyViewer";
-import { GraphPacket } from "@/components/network/GraphPacket";
+import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
+import { resolveBriefing } from "@/components/lesson/briefing";
+import { bubblePacket } from "@/components/lesson/mplsStack";
+import { csidCallout } from "@/components/lesson/srv6AdvancedCallout";
+import type { PacketVisual } from "@/lib/sim-engine/types";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { PacketJourneyTimeline } from "@/components/protocol/PacketJourneyTimeline";
 import { SegmentRoutingHeaderViewer, type SegmentRoutingHeaderData } from "@/components/protocol/SegmentRoutingHeaderViewer";
@@ -88,6 +94,15 @@ import {
   traceFor,
   walkFor,
 } from "./deviceTrace";
+import { csidDescribeDa, csidHopFacts } from "./addressNames";
+import { SRV6C_BRIEFING_NOTES, SRV6C_BRIEFING_PHASES } from "./briefing";
+import { SRV6C_LESSON_SECTIONS, Srv6CsidLessonGuideContent } from "./LessonGuideContent";
+import { SRV6C_DEEP_DIVE_SECTIONS, Srv6CsidDeepDiveContent } from "./DeepDiveContent";
+
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "R1 → R8 · NEXT-CSID containers · REPLACE-CSID packed positions", sections: SRV6C_LESSON_SECTIONS, content: <Srv6CsidLessonGuideContent /> },
+  { id: "deep", label: "CSID / uSID Deep Dive", hint: "RFC 9800 compressed SIDs in general", sections: SRV6C_DEEP_DIVE_SECTIONS, content: <Srv6CsidDeepDiveContent /> },
+];
 
 const DEVICE_ROUTERS: RouterId[] = [...ALL_ROUTERS];
 type TopoView = "physical" | "packet";
@@ -179,6 +194,7 @@ export default function Srv6CsidDemo() {
   const [selectedLinkId, setSelectedLinkId] = useState<string | undefined>(undefined);
   const [packetSelected, setPacketSelected] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection (ARCHITECTURE.md §18) — a step INDEX, never passed to engine.goTo(). undefined = live. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -217,9 +233,6 @@ export default function Srv6CsidDemo() {
 
   const nodes = GRAPH_NODES.map((n) => (topoView === "packet" && activePkt && n.id === packetLocation ? { ...n, subLabel: `DA=${fmtIpv6(activePkt.daHextets)}` } : n));
   const edges = GRAPH_EDGES.filter((e) => (e.id !== "R3-R5" && e.id !== "R6-R8") || stepId.startsWith("endx"));
-  const activeNodeIds = animatedHop ? [animatedHop.fromId, animatedHop.toId] : [];
-  const packetFrom = animatedHop ? nodes.find((n) => n.id === animatedHop.fromId) : undefined;
-  const packetTo = animatedHop ? nodes.find((n) => n.id === animatedHop.toId) : undefined;
 
   const cliCommands = useMemo(() => buildCsidCliCommands(state, focusRouter), [state, focusRouter]);
   const lastHop = walkHops[walkHops.length - 1];
@@ -238,7 +251,6 @@ export default function Srv6CsidDemo() {
     active: animatedHop ? (e.a === animatedHop.fromId && e.b === animatedHop.toId) || (e.b === animatedHop.fromId && e.a === animatedHop.toId) : false,
     onPath: physicalLinkIds.has(e.id),
   }));
-  const activePacket3D: ActivePacket3D | undefined = activePacket && animatedHop ? { packet: activePacket, fromId: animatedHop.fromId, toId: animatedHop.toId } : undefined;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   const actionPending = !isComplete && !!currentStep?.requiresState && !canAdvance;
@@ -304,6 +316,15 @@ export default function Srv6CsidDemo() {
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
   const historicalInterfaces = historicalDeviceId && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+
+  // Bubble + 3D callout read the SHOWN packet: a historical chip selection shows that step's own stored packet,
+  // physical hop, journey facts (SL / HL / Index) and flavor — never the live ones.
+  const shownState = historicalState ?? state;
+  const shownStepId = historicalStep?.id ?? stepId;
+  const shownPacket = historicalCursor !== undefined ? historicalPacket : activePacket;
+  const shownHop = animatedHopFor(shownPacket, shownState, shownStepId);
+  const calloutFor = (p: PacketVisual) => csidCallout(p, csidDescribeDa(shownStepId), csidHopFacts(shownState, shownStepId));
+  const shownPacket3D: ActivePacket3D | undefined = shownPacket && shownHop ? { packet: shownPacket, fromId: shownHop.fromId, toId: shownHop.toId, callout: calloutFor(shownPacket) } : undefined;
 
   function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
     if (target.kind === "stage" && deviceTrace) {
@@ -557,7 +578,7 @@ export default function Srv6CsidDemo() {
     <NetworkScene3D
       nodes={nodes3D}
       links={links3D}
-      activePacket={inDeviceMode ? undefined : activePacket3D}
+      activePacket={inDeviceMode ? undefined : shownPacket3D}
       onSelectNode={(id) => {
         setSelectedNodeId(id as RouterId);
         setPacketSelected(false);
@@ -629,9 +650,47 @@ export default function Srv6CsidDemo() {
       </div>
     ) : null;
 
+  const briefing = currentStep ? resolveBriefing(currentStep.id, currentStep.label, SRV6C_BRIEFING_PHASES, SRV6C_BRIEFING_NOTES) : undefined;
+
+  /** 2D is overview-only — leaving 3D exits device mode so the panels match what is shown. */
+  function handleView3DChange(on: boolean) {
+    setViewMode3D(on);
+    if (!on) {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  const selectNode2D = (id: string) => {
+    setSelectedNodeId(id as RouterId);
+    setPacketSelected(false);
+    setSelectedLinkId(undefined);
+    setInspectorSurface("device");
+    setHistoricalIndex(undefined);
+  };
+
+  const graph2D = (focus?: boolean) => (
+    <div className={focus ? "relative h-full overflow-hidden [&>div]:!h-full [&>div]:rounded-none [&>div]:border-0" : "relative"}>
+      <GraphTopologyViewer nodes={nodes} edges={edges} activeNodeIds={shownHop ? [shownHop.fromId, shownHop.toId] : []} onNodeClick={focus ? selectNode2D : undefined}>
+        {shownPacket &&
+          shownHop &&
+          (() => {
+            const pkt = shownPacket;
+            const from = nodes.find((n) => n.id === shownHop.fromId);
+            const to = nodes.find((n) => n.id === shownHop.toId);
+            if (!from || !to) return null;
+            const c = calloutFor(pkt);
+            return <GraphPacketBubble packet={bubblePacket(pkt, c)} from={from} to={to} title={c.title} scope={`${shownHop.fromId} → ${shownHop.toId}`} onSelect={() => setPacketSelected(true)} />;
+          })()}
+      </GraphTopologyViewer>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
         <Badge tone="cyan" className="mb-3">
           RFC 9800 · SRv6 COMPRESSED SID (CSID / uSID) · NEXT-CSID + REPLACE-CSID
         </Badge>
@@ -640,6 +699,9 @@ export default function Srv6CsidDemo() {
           The same S1 → S2 → ... → S8 program, folded into one or two 128-bit containers instead of eight independent SIDs — while every
           segment&apos;s meaning, and RFC 8754&apos;s reversed Segment List storage order, stay exactly as they were.
         </p>
+      </div>
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 CSID" subtitle="Locator-Block 2001:db8:c5::/48 · NEXT-CSID 16-bit · REPLACE-CSID 32-bit, K = 4" tabs={GUIDE_TABS} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -666,7 +728,7 @@ export default function Srv6CsidDemo() {
 
       <div className="mb-6 flex flex-wrap gap-3">
         <TopologyModeSwitcher options={[{ value: "physical", label: "Physical" }, { value: "packet", label: "Packet" }]} value={topoView} onChange={setTopoView} />
-        <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => setViewMode3D(v === "on")} tone="violet" />
+        <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => handleView3DChange(v === "on")} tone="violet" />
         {viewMode3D && (
           <>
             <TopologyModeSwitcher
@@ -728,9 +790,9 @@ export default function Srv6CsidDemo() {
             </>
           ) : (
             <>
-              <GraphTopologyViewer nodes={nodes} edges={edges} activeNodeIds={activeNodeIds}>
-                {activePacket && packetFrom && packetTo && <GraphPacket packet={activePacket} from={packetFrom} to={packetTo} />}
-              </GraphTopologyViewer>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                {focusMode ? <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" /> : graph2D()}
+              </TopologyFrame>
               {lastHop && (
                 <GlassPanel className="p-4">
                   <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-pv-text-muted">Forwarding Decision — {lastHop.router}</h4>
@@ -742,14 +804,18 @@ export default function Srv6CsidDemo() {
             </>
           )}
 
-          {!isComplete && currentStep && (
-            <GlassPanel strong className="p-6">
-              <div className="mb-2 flex items-center gap-2">
-                <Badge tone="muted">Step {index + 1} / {totalSteps}</Badge>
-                <span className="text-xs text-pv-text-faint">{currentStep.label}</span>
-              </div>
-              <p className="text-sm leading-relaxed text-pv-text">{currentStep.narrative}</p>
-            </GlassPanel>
+          {!isComplete && currentStep && briefing && (
+            <MissionBriefingCard
+              stepNumber={index + 1}
+              totalSteps={totalSteps}
+              title={currentStep.label}
+              phase={briefing.phase}
+              objective={briefing.objective}
+              context={currentStep.narrative}
+              doingNow={briefing.doingNow}
+              takeaway={briefing.takeaway}
+              questionPending={questionActive}
+            />
           )}
 
           {!isComplete && currentStep?.question && <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />}
@@ -835,6 +901,10 @@ export default function Srv6CsidDemo() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
+              <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={viewMode3D ? "3d" : "2d"} onChange={(v) => handleView3DChange(v === "3d")} />
+              {viewMode3D && (
+              <>
               <TopologyModeSwitcher
                 options={[
                   { value: "overview", label: "Overview" },
@@ -855,30 +925,25 @@ export default function Srv6CsidDemo() {
                   Auto-Enter Devices
                 </button>
               )}
+              </>
+              )}
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">Step {Math.min(index + 1, totalSteps)} / {totalSteps}</Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label ?? (isComplete ? "Complete" : "")}</span>
+            currentStep && briefing ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={briefing.objective} questionPending={questionActive} />
+                {!questionActive && actionPending && (
+                  <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-pv-warning">
+                    Repair pending — apply it in the panel to continue
+                  </span>
+                )}
               </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">Prediction pending — answer in the panel to continue</span>
-              ) : actionPending ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">Repair pending — apply it in the panel to continue</span>
-              ) : isComplete ? (
-                <span className="shrink-0 rounded-full border border-pv-success/40 bg-pv-success/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-success">Lesson complete — +850 XP</span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Lesson complete — +850 XP</span>
+            )
           }
-          canvas={<div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">{scene(true)}</div>}
+          canvas={!viewMode3D ? graph2D(true) : <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">{scene(true)}</div>}
           inspector={
             // An unanswered prediction always wins; once answered it stays visible until the learner explicitly picks a timeline entry.
             questionActive || (!isComplete && currentStep?.question && historicalCursor === undefined) ? (
@@ -1012,7 +1077,7 @@ export default function Srv6CsidDemo() {
                 followPacket={cameraMode === "packetFollow"}
                 onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
                 view3D={viewMode3D}
-                onToggleView3D={() => setViewMode3D((v) => !v)}
+                onToggleView3D={() => handleView3DChange(!viewMode3D)}
               />
             </div>
           }
