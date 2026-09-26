@@ -43,7 +43,13 @@ import {
 } from "@/lib/sim-engine/scenarios/srMplsVsSrv6";
 import { fmtIpv6 } from "@/lib/sim-engine/scenarios/srv6Foundations";
 import { GraphTopologyViewer } from "@/components/network/GraphTopologyViewer";
-import { GraphPacket } from "@/components/network/GraphPacket";
+import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
+import { resolveBriefing } from "@/components/lesson/briefing";
+import { bubblePacket } from "@/components/lesson/mplsStack";
+import { capstoneCallout } from "@/components/lesson/srv6AdvancedCallout";
+import type { PacketVisual } from "@/lib/sim-engine/types";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { SidTableViewer, type SidTableRow } from "@/components/protocol/SidTableViewer";
 import { SegmentListViewer, type SegmentListRow } from "@/components/protocol/SegmentListViewer";
@@ -75,6 +81,15 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { DEVICE_ROUTERS, PRIMARY_TRANSITION_ROUTER, deviceForStep, framesForHopPacket, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { capstoneAddressNames, capstoneLabelMeaning } from "./addressNames";
+import { SRCMP_BRIEFING_NOTES, SRCMP_BRIEFING_PHASES } from "./briefing";
+import { SRCMP_LESSON_SECTIONS, SrMplsVsSrv6LessonGuideContent } from "./LessonGuideContent";
+import { SRCMP_DEEP_DIVE_SECTIONS, SrMplsVsSrv6DeepDiveContent } from "./DeepDiveContent";
+
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "One topology · transport, TE, L3VPN, TI-LFA in both encodings", sections: SRCMP_LESSON_SECTIONS, content: <SrMplsVsSrv6LessonGuideContent /> },
+  { id: "deep", label: "SR-MPLS vs SRv6 Deep Dive", hint: "Segment Routing encodings in general", sections: SRCMP_DEEP_DIVE_SECTIONS, content: <SrMplsVsSrv6DeepDiveContent /> },
+];
 
 const RR1_NODE = { id: "RR1", label: "RR1", x: 49, y: 6, subLabel: "Route Reflector (control-plane only)" };
 const RR1_EDGES = [
@@ -153,6 +168,7 @@ export default function SrMplsVsSrv6Capstone() {
   const [selectedLinkId, setSelectedLinkId] = useState<string | undefined>(undefined);
   const [packetSelected, setPacketSelected] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   /** A focused stage/layer/interface is only meaningful inside the technology it was clicked in — stage/frame ids differ per data plane. */
   const [focused, setFocused] = useState<{ target: FocusTarget3D; tech: Architecture } | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection (ARCHITECTURE.md §18) — a step INDEX, never passed to engine.goTo(). */
@@ -199,9 +215,12 @@ export default function SrMplsVsSrv6Capstone() {
   const edges = useMemo(() => [...GRAPH_EDGES.map((e) => ({ ...e, state: state.linkFailed && e.id === PROTECTED_LINK ? ("down" as const) : ("full" as const) })), ...RR1_EDGES], [state.linkFailed]);
   // A packet is only ever drawn across a real cable.
   const drawablePacket = activePacket && physicalEdge(activePacket.from, activePacket.to) ? activePacket : undefined;
-  const activeNodeIds = drawablePacket ? [drawablePacket.from, drawablePacket.to] : [];
-  const packetFrom = nodes.find((n) => n.id === drawablePacket?.from);
-  const packetTo = nodes.find((n) => n.id === drawablePacket?.to);
+  // Bubble + 3D callout read the SHOWN packet: a historical chip selection shows that step's own stored packet
+  // and names its addresses from that step's own state — never the live ones. RR1 is never a packet endpoint.
+  const shownSource = historical ? historicalPacket : activePacket;
+  const shownPacket = shownSource && physicalEdge(shownSource.from, shownSource.to) ? shownSource : undefined;
+  const addressName = capstoneAddressNames(inspectState);
+  const calloutFor = (p: PacketVisual) => capstoneCallout(p, addressName, capstoneLabelMeaning);
 
   // --- Physical links this step's (inspected) hops actually crossed, from each hop's recorded ingress/egress peers — never from logical segment order.
   const stepLinkIds = new Set<string>();
@@ -228,7 +247,7 @@ export default function SrMplsVsSrv6Capstone() {
     onPath: stepLinkIds.has(e.id),
     visualState: state.linkFailed && e.id === PROTECTED_LINK ? "failed" : undefined,
   }));
-  const activePacket3D: ActivePacket3D | undefined = drawablePacket ? { packet: drawablePacket, fromId: drawablePacket.from, toId: drawablePacket.to } : undefined;
+  const shownPacket3D: ActivePacket3D | undefined = shownPacket ? { packet: shownPacket, fromId: shownPacket.from, toId: shownPacket.to, callout: calloutFor(shownPacket) } : undefined;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
   const deviceWithEvent = (router: RouterId | undefined, s: CapstoneState, sid: string, t: Architecture) => (router && traceFor(router, s, t, sid)?.activeStageId !== undefined ? router : undefined);
@@ -693,9 +712,43 @@ export default function SrMplsVsSrv6Capstone() {
       }
     : undefined;
 
+  const briefing = currentStep ? resolveBriefing(currentStep.id, currentStep.label, SRCMP_BRIEFING_PHASES, SRCMP_BRIEFING_NOTES) : undefined;
+
+  /** 2D is overview-only — leaving 3D exits device mode so the panels match what is shown. */
+  function handleView3DChange(on: boolean) {
+    setIs3D(on);
+    if (!on) {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  const graph2D = (focus?: boolean) => {
+    const viewer = (
+      <GraphTopologyViewer nodes={nodes} edges={edges} activeNodeIds={shownPacket ? [shownPacket.from, shownPacket.to] : []} onNodeClick={focus ? selectNode : (id) => setSelectedNodeId(id as RouterId)} onEdgeClick={setSelectedLinkId}>
+        {shownPacket &&
+          (() => {
+            const pkt = shownPacket;
+            const from = nodes.find((n) => n.id === pkt.from);
+            const to = nodes.find((n) => n.id === pkt.to);
+            if (!from || !to) return null;
+            const c = calloutFor(pkt);
+            return <GraphPacketBubble packet={bubblePacket(pkt, c)} from={from} to={to} title={c.title} scope={`${pkt.from} → ${pkt.to}`} onSelect={() => setPacketSelected(true)} />;
+          })()}
+      </GraphTopologyViewer>
+    );
+    return focus ? (
+      <div className="relative h-full overflow-hidden [&>div]:!h-full [&>div]:rounded-none [&>div]:border-0">{viewer}</div>
+    ) : (
+      <GlassPanel className="relative aspect-[16/10] w-full overflow-hidden p-0">{viewer}</GlassPanel>
+    );
+  };
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
         <Badge tone="cyan" className="mb-3">
           ENGINEERING CAPSTONE · RFC 8402 · RFC 8660 · RFC 9256 · RFC 9855 · RFC 8754 · RFC 8986 · RFC 9252 · RFC 9800
         </Badge>
@@ -703,6 +756,9 @@ export default function SrMplsVsSrv6Capstone() {
         <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
           One shared topology, one shared traffic requirement, one shared failure, one shared VPN service, one shared TE requirement — solved once in SR-MPLS, once in SRv6. Inspect exactly what changes and what doesn&apos;t.
         </p>
+      </div>
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SR-MPLS vs SRv6" subtitle="One Segment Routing architecture · two data-plane encodings · same topology" tabs={GUIDE_TABS} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -729,28 +785,44 @@ export default function SrMplsVsSrv6Capstone() {
 
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <TopologyModeSwitcher options={VIEW_MODES} value={viewMode} onChange={setViewMode} />
-        <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={is3D ? "on" : "off"} onChange={(v) => setIs3D(v === "on")} tone="violet" />
+        <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={is3D ? "on" : "off"} onChange={(v) => handleView3DChange(v === "on")} tone="violet" />
         {is3D && <TopologyModeSwitcher options={CAMERA_OPTIONS} value={cameraMode} onChange={handleCameraModeChange} />}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="space-y-4">
-          <GlassPanel strong className="p-5">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wide text-pv-cyan-soft">
-                Step {Math.min(index + 1, totalSteps)} / {totalSteps} — {currentStep?.label ?? "Complete"}
-              </span>
-              <Badge tone={stepArchitecture(stepId) === "SRV6" ? "violet" : "cyan"}>{stepArchTag(stepArchitecture(stepId))}</Badge>
-            </div>
-            <p className="text-sm leading-relaxed text-pv-text">{currentStep?.narrative}</p>
-            {whatChanged.length > 0 && (
-              <ul className="mt-3 space-y-1 border-t border-pv-border pt-3 text-[11px] text-pv-text-muted">
-                {whatChanged.map((w, i) => (
-                  <li key={i}>• {w}</li>
-                ))}
-              </ul>
-            )}
-          </GlassPanel>
+          {currentStep && briefing ? (
+            <MissionBriefingCard
+              stepNumber={index + 1}
+              totalSteps={totalSteps}
+              title={currentStep.label}
+              phase={briefing.phase}
+              objective={briefing.objective}
+              context={currentStep.narrative}
+              doingNow={briefing.doingNow}
+              takeaway={briefing.takeaway}
+              questionPending={questionActive}
+            />
+          ) : (
+            <GlassPanel strong className="p-5">
+              <span className="text-xs font-semibold uppercase tracking-wide text-pv-cyan-soft">Complete</span>
+            </GlassPanel>
+          )}
+          {currentStep && (
+            <GlassPanel className="p-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-pv-text-faint">Data plane in this step</span>
+                <Badge tone={stepArchitecture(stepId) === "SRV6" ? "violet" : "cyan"}>{stepArchTag(stepArchitecture(stepId))}</Badge>
+              </div>
+              {whatChanged.length > 0 && (
+                <ul className="mt-3 space-y-1 border-t border-pv-border pt-3 text-[11px] text-pv-text-muted">
+                  {whatChanged.map((w, i) => (
+                    <li key={i}>• {w}</li>
+                  ))}
+                </ul>
+              )}
+            </GlassPanel>
+          )}
 
           {currentStep?.question && <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />}
 
@@ -758,20 +830,16 @@ export default function SrMplsVsSrv6Capstone() {
           {stepId === "incident-repair" && repairAction}
 
           <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
-            {!is3D ? (
-              <GlassPanel className="relative aspect-[16/10] w-full overflow-hidden p-0">
-                <GraphTopologyViewer nodes={nodes} edges={edges} activeNodeIds={activeNodeIds} onNodeClick={(id) => setSelectedNodeId(id as RouterId)} onEdgeClick={setSelectedLinkId}>
-                  {drawablePacket && packetFrom && packetTo && <GraphPacket packet={drawablePacket} from={packetFrom} to={packetTo} onSelect={() => setPacketSelected(true)} />}
-                </GraphTopologyViewer>
-              </GlassPanel>
-            ) : focusMode ? (
-              // Focus Mode renders its own full-size <NetworkScene3D> — never a second, hidden WebGL canvas behind it (one-canvas invariant).
+            {focusMode ? (
+              // Focus Mode renders its own full-size topology — never a second, hidden copy (or WebGL canvas) behind it.
               <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" />
+            ) : !is3D ? (
+              graph2D()
             ) : (
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
-                activePacket={inDeviceMode ? undefined : activePacket3D}
+                activePacket={inDeviceMode ? undefined : shownPacket3D}
                 onSelectNode={(id) => {
                   setSelectedNodeId(id as RouterId);
                   setPacketSelected(false);
@@ -928,10 +996,12 @@ export default function SrMplsVsSrv6Capstone() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
-              <TopologyModeSwitcher options={CAMERA_OPTIONS} value={cameraMode} onChange={handleCameraModeChange} />
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
+              <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={is3D ? "3d" : "2d"} onChange={(v) => handleView3DChange(v === "3d")} />
+              {is3D && <TopologyModeSwitcher options={CAMERA_OPTIONS} value={cameraMode} onChange={handleCameraModeChange} />}
               {techSwitcher}
-              {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
-              {cameraMode === "packetFollow" && (
+              {is3D && inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+              {is3D && cameraMode === "packetFollow" && (
                 <button
                   type="button"
                   onClick={() => setAutoEnterDevices((v) => !v)}
@@ -943,37 +1013,29 @@ export default function SrMplsVsSrv6Capstone() {
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">
-                  Step {Math.min(index + 1, totalSteps)} / {totalSteps}
-                </Badge>
+            currentStep && briefing ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={briefing.objective} questionPending={questionActive} />
                 <Badge tone={stepArchitecture(stepId) === "SRV6" ? "violet" : "cyan"}>{stepArchTag(stepArchitecture(stepId))}</Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label ?? (isComplete ? "Complete" : "")}</span>
+                {!questionActive && currentStep.requiresState && !canAdvance && (
+                  <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-pv-warning">
+                    Engineer action pending — apply the fix in the panel to continue
+                  </span>
+                )}
               </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  {DECISION_LAB_STEP_IDS.has(stepId) ? "Decision pending — choose in the panel to continue" : "Prediction pending — answer in the panel to continue"}
-                </span>
-              ) : stepId === "incident-repair" && !state.troubleshooting.repaired ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">Engineer action pending — restore the locator to continue</span>
-              ) : isComplete ? (
-                <span className="shrink-0 rounded-full border border-pv-success/40 bg-pv-success/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-success">Capstone complete — Segment Routing Architect (+1000 XP)</span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Capstone complete — Segment Routing Architect (+1000 XP)</span>
+            )
           }
           canvas={
+            !is3D ? (
+              graph2D(true)
+            ) : (
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
               <NetworkScene3D
                 nodes={nodes3D}
                 links={links3D}
-                activePacket={inDeviceMode ? undefined : activePacket3D}
+                activePacket={inDeviceMode ? undefined : shownPacket3D}
                 onSelectNode={selectNode}
                 onSelectLink={(id) => setSelectedLinkId(id)}
                 selectedLinkId={selectedLinkId}
@@ -986,6 +1048,7 @@ export default function SrMplsVsSrv6Capstone() {
                 deviceView={deviceView}
               />
             </div>
+            )
           }
           inspector={focusInspector}
           timeline={
@@ -1211,7 +1274,7 @@ function Srv6View({ state, sidDb, srv6VpnRow, repairRows }: { state: CapstoneSta
   return (
     <div className="space-y-4">
       <GlassPanel className="p-4">
-        <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-pv-text-muted">SRv6 End SID Database</h4>
+        <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-pv-text-muted">SRv6 SID Database</h4>
         <div className="space-y-1 pv-mono text-[11px]">
           {sidDb.map((r) => (
             <div key={r.router} className="flex justify-between rounded-lg border border-pv-border p-1.5">
