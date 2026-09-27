@@ -37,7 +37,15 @@ export const SERVER_A_IP = "10.10.10.33";
 export const SERVER_A_MAC = "DD:DD:DD:DD:DD:33";
 
 export const ESI = "00:11:22:33:44:55:66:77:88:99";
+/** Ordinary EVI/service Route Target — carried by Type 1/2/3 routes for this VNI's EVI. Never the Type-4 import RT. */
 const EVPN_EXPORT_RT = "65000:10010";
+export const SERVICE_RT = EVPN_EXPORT_RT;
+/**
+ * ES-Import Route Target (RFC 7432 §7.6/§8.1.1) carried by the Type-4 Ethernet Segment route so only PEs attached to
+ * this ES import it. RFC 7432 auto-derives it only for ESI Types 1, 2 and 3; this lesson's ESI is Type 0 (operator
+ * configured), so the ES-Import RT is an explicitly CONFIGURED lesson-local 6-octet value — not derived from the ESI.
+ */
+export const ES_IMPORT_RT = "00:00:5E:00:53:01";
 function rdFor(leaf: LeafId): string {
   return `${VTEP_LOOPBACK[leaf]}:${VNI}`;
 }
@@ -68,20 +76,28 @@ export interface Type4Route {
   originLeaf: LeafId;
   originatorIp: string;
   rd: string;
-  rt: string;
+  /** ES-Import Route Target (configured for this Type-0 ESI) — never the EVI service RT. */
+  esImportRt: string;
+  /** True once the originating PE has withdrawn the route (e.g. its ES attachment failed) — no longer an active ES member / DF candidate. */
+  withdrawn: boolean;
 }
 export interface Type1Route {
   esi: string;
   originLeaf: LeafId;
   scope: "per-es" | "per-evi";
+  /** per-EVI: 0 (VLAN-based service, RFC 8365 §5.1.3). per-ES: MAX-ET 0xFFFFFFFF (RFC 7432 §8.2.1). */
   ethernetTag: number;
+  /** per-EVI: the VNI carried in the route's label field. per-ES: 0. */
+  vniLabel: number;
+  /** per-ES only: the ESI Label extended community's Single-Active flag (false = All-Active). */
+  singleActive?: boolean;
   rd: string;
   rt: string;
 }
 
 export interface DfCandidate {
   leaf: LeafId;
-  electionValue: string; // this lesson's basic/default algorithm: the candidate's own VTEP IP
+  electionValue: string; // the candidate's Originating Router's IP (from its Type-4 route) — ordered NUMERICALLY to assign ordinals
   available: boolean;
 }
 export interface DfState {
@@ -92,9 +108,13 @@ export interface DfState {
   winner?: LeafId;
   reason: string;
   previousWinner?: LeafId;
+  /** Service value V used by the modulo rule (the VLAN for this VLAN-based service). */
+  serviceValue?: number;
+  /** Candidates in numeric IP order with their computed ordinals — filled in by the election. */
+  ordinals?: { leaf: LeafId; ip: string; ordinal: number }[];
 }
 
-export type MhAction = "UNDERLAY_FORWARD" | "DF_FORWARD_TO_ES" | "NDF_SUPPRESS" | "UNICAST_DELIVER";
+export type MhAction = "UNDERLAY_FORWARD" | "DF_FORWARD_TO_ES" | "NDF_SUPPRESS" | "UNICAST_DELIVER" | "ES_ATTACHMENT_UNAVAILABLE";
 export interface JourneyHop {
   device: EvpnMultihomingDeviceId;
   input: string;
@@ -109,7 +129,7 @@ export interface EvpnMultihomingState {
   esPeersDiscovered: Partial<Record<LeafId, LeafId[]>>;
   type1Routes: Partial<Record<LeafId, Type1Route[]>>;
   dfState: DfState;
-  leaf1Failed: boolean;
+  leaf1Failed: boolean; // LEAF1's SERVER-A-facing ES attachment only — LEAF1 stays a healthy VTEP and VNI flood member
   dualDfFault: boolean;
 
   bumSent: boolean;
@@ -124,9 +144,15 @@ export interface EvpnMultihomingState {
   challengeSucceeded?: boolean;
 }
 
-function candidateSet(leaf1Failed: boolean): DfCandidate[] {
-  return ES_LEAFS.filter((l) => !(leaf1Failed && l === "LEAF1")).map((l) => ({ leaf: l, electionValue: VTEP_LOOPBACK[l], available: true }));
+/** The DF candidates are exactly the PEs with an ACTIVE (not withdrawn) Type-4 route for this ES — the control plane, not a local flag, decides candidacy. */
+export function dfCandidatesFromType4(routes: Partial<Record<LeafId, Type4Route>>): DfCandidate[] {
+  return ES_LEAFS.flatMap((l) => {
+    const r = routes[l];
+    return r && !r.withdrawn ? [{ leaf: l, electionValue: r.originatorIp, available: true }] : [];
+  });
 }
+
+export const DEFAULT_DF_ALGORITHM = "Default service carving (RFC 7432 §8.5): order candidate IPs numerically → ordinals 0…N−1 → DF = the PE whose ordinal equals (VLAN mod N)";
 
 export function createEvpnMultihomingState(): EvpnMultihomingState {
   return {
@@ -134,7 +160,7 @@ export function createEvpnMultihomingState(): EvpnMultihomingState {
     type4Routes: {},
     esPeersDiscovered: {},
     type1Routes: {},
-    dfState: { esi: ESI, evi: `VLAN ${VLAN} / VNI ${VNI}`, algorithm: "Basic/default for this lesson (ordinal — lowest candidate VTEP IP wins)", candidates: candidateSet(false), reason: "Not yet elected" },
+    dfState: { esi: ESI, evi: `VLAN ${VLAN} / VNI ${VNI}`, algorithm: DEFAULT_DF_ALGORITHM, candidates: [], reason: "Not yet elected", serviceValue: VLAN },
     leaf1Failed: false,
     dualDfFault: false,
     bumSent: false,
@@ -150,25 +176,56 @@ export function createEvpnMultihomingState(): EvpnMultihomingState {
 // ---------------------------------------------------------------------------
 
 export function originateEthernetSegmentRoute(leaf: LeafId): Type4Route {
-  return { esi: ESI, originLeaf: leaf, originatorIp: VTEP_LOOPBACK[leaf], rd: rdFor(leaf), rt: EVPN_EXPORT_RT };
+  return { esi: ESI, originLeaf: leaf, originatorIp: VTEP_LOOPBACK[leaf], rd: rdFor(leaf), esImportRt: ES_IMPORT_RT, withdrawn: false };
 }
+/** MAX-ET — the reserved Ethernet Tag every Ethernet A-D per-ES route carries (RFC 7432 §8.2.1). */
+export const MAX_ET = 0xffffffff;
 export function originateEthernetAdRoute(leaf: LeafId, scope: "per-es" | "per-evi"): Type1Route {
-  return { esi: ESI, originLeaf: leaf, scope, ethernetTag: scope === "per-evi" ? VNI : 0xffffffff, rd: rdFor(leaf), rt: EVPN_EXPORT_RT };
+  return scope === "per-evi"
+    ? { esi: ESI, originLeaf: leaf, scope, ethernetTag: 0, vniLabel: VNI, rd: rdFor(leaf), rt: EVPN_EXPORT_RT }
+    : { esi: ESI, originLeaf: leaf, scope, ethernetTag: MAX_ET, vniLabel: 0, singleActive: false, rd: rdFor(leaf), rt: EVPN_EXPORT_RT };
 }
+/** ES peers are discovered only from ACTIVE Type-4 routes — a withdrawn route no longer announces ES membership. */
 export function discoverEsPeers(routes: Partial<Record<LeafId, Type4Route>>): Partial<Record<LeafId, LeafId[]>> {
-  const origins = (Object.keys(routes) as LeafId[]).filter((l) => routes[l]);
+  const origins = (Object.keys(routes) as LeafId[]).filter((l) => routes[l] && !routes[l]!.withdrawn);
   const peers: Partial<Record<LeafId, LeafId[]>> = {};
   for (const l of origins) peers[l] = origins.filter((o) => o !== l);
   return peers;
 }
 
-/** Standards-valid but deliberately BASIC default election: lowest candidate VTEP IP wins. Real deployments may use other algorithms (e.g. highest-random-weight, preference-based) — always call this what it is, never "the" universal algorithm. */
-export function electDesignatedForwarder(candidates: DfCandidate[], _previousWinner: LeafId | undefined): { winner?: LeafId; reason: string } {
-  const available = candidates.filter((c) => c.available);
-  if (available.length === 0) return { winner: undefined, reason: "No candidates available for this ESI/EVI." };
-  const sorted = [...available].sort((a, b) => a.electionValue.localeCompare(b.electionValue));
-  const winner = sorted[0].leaf;
-  return { winner, reason: `${winner} has the lowest candidate VTEP IP (${sorted[0].electionValue}) among {${available.map((c) => c.leaf).join(", ")}} — basic/default ordinal election.` };
+/** Numeric IPv4 value (so 10.255.0.10 sorts after 10.255.0.2) — never a lexicographic string compare. */
+export function ipv4ToNumber(ip: string): number {
+  const parts = ip.split(".").map((p) => Number(p));
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) throw new Error(`Invalid IPv4 address: ${ip}`);
+  return ((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256 + parts[3];
+}
+
+/**
+ * RFC 7432 §8.5 default "service carving", generic over any candidate shape: order the available candidates by
+ * NUMERIC IPv4 value, give them ordinals 0…N−1, then select the ordinal (serviceValue mod N). The lowest IP only
+ * decides who holds ordinal 0 — it does not win by itself.
+ */
+export function serviceCarving<T extends { electionValue: string; available: boolean }>(candidates: T[], serviceValue: number): { ordered: { candidate: T; ordinal: number }[]; selectedOrdinal?: number; selected?: T } {
+  const ordered = candidates
+    .filter((c) => c.available)
+    .sort((a, b) => ipv4ToNumber(a.electionValue) - ipv4ToNumber(b.electionValue))
+    .map((candidate, ordinal) => ({ candidate, ordinal }));
+  if (ordered.length === 0) return { ordered };
+  const selectedOrdinal = serviceValue % ordered.length;
+  return { ordered, selectedOrdinal, selected: ordered[selectedOrdinal].candidate };
+}
+
+/** Default DF election for one <ES, VLAN>: numeric candidate-IP ordering → ordinals → VLAN mod N. Other algorithms (HRW, preference — RFC 8584) exist and are not modeled here. */
+export function electDesignatedForwarder(candidates: DfCandidate[], serviceValue: number, _previousWinner?: LeafId): { winner?: LeafId; reason: string; ordinals: { leaf: LeafId; ip: string; ordinal: number }[] } {
+  const { ordered, selectedOrdinal, selected } = serviceCarving(candidates, serviceValue);
+  const ordinals = ordered.map(({ candidate, ordinal }) => ({ leaf: candidate.leaf, ip: candidate.electionValue, ordinal }));
+  if (!selected || selectedOrdinal === undefined) return { winner: undefined, reason: "No candidates available for this ESI/EVI.", ordinals };
+  const order = ordinals.map((o) => `${o.leaf} ${o.ip} → ordinal ${o.ordinal}`).join(", ");
+  return {
+    winner: selected.leaf,
+    reason: `Candidate IPs in numeric order: ${order}. VLAN ${serviceValue} mod ${ordered.length} = ${selectedOrdinal} → ordinal ${selectedOrdinal} → ${selected.leaf} is DF.`,
+    ordinals,
+  };
 }
 
 export function shouldForwardBumToEs(leaf: LeafId, dfState: DfState): boolean {
@@ -187,15 +244,24 @@ export function dfRoleFor(dfState: DfState, leaf: LeafId): DfRole {
   return dfState.winner === leaf ? "df" : "ndf";
 }
 
-export function failEsPe(state: EvpnMultihomingState, leaf: LeafId): EvpnMultihomingState {
-  if (leaf !== "LEAF1") return state;
-  return { ...state, leaf1Failed: true };
+/** Withdraw (or re-advertise) one PE's Type-4 route and re-derive ES-peer discovery from the ACTIVE routes. */
+export function setType4Withdrawn(state: EvpnMultihomingState, leaf: LeafId, withdrawn: boolean): EvpnMultihomingState {
+  const existing = state.type4Routes[leaf] ?? originateEthernetSegmentRoute(leaf);
+  const type4Routes = { ...state.type4Routes, [leaf]: { ...existing, withdrawn } };
+  return { ...state, type4Routes, esPeersDiscovered: discoverEsPeers(type4Routes) };
 }
 
+/** LEAF1's SERVER-A-facing ES attachment fails: LEAF1 withdraws its Type-4 route (RFC 7432 §8.5) — the device, its VTEP, underlay, BGP and Type-3 membership are untouched. */
+export function failEsPe(state: EvpnMultihomingState, leaf: LeafId): EvpnMultihomingState {
+  if (leaf !== "LEAF1") return state;
+  return setType4Withdrawn({ ...state, leaf1Failed: true }, "LEAF1", true);
+}
+
+/** Re-run the default election over the PEs with an active Type-4 route for this ES. */
 export function recomputeDf(state: EvpnMultihomingState): EvpnMultihomingState {
-  const candidates = candidateSet(state.leaf1Failed);
-  const { winner, reason } = electDesignatedForwarder(candidates, state.dfState.winner);
-  return { ...state, dfState: { ...state.dfState, candidates, winner, reason, previousWinner: state.dfState.winner } };
+  const candidates = dfCandidatesFromType4(state.type4Routes);
+  const { winner, reason, ordinals } = electDesignatedForwarder(candidates, VLAN, state.dfState.winner);
+  return { ...state, dfState: { ...state.dfState, candidates, winner, reason, ordinals, serviceValue: VLAN, previousWinner: state.dfState.winner } };
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +340,7 @@ function type4Packet(id: string, from: LeafId, to: LeafId, route: Type4Route): P
     { label: "Ethernet Segment Identifier", value: route.esi },
     { label: "Originating PE / Router IP", value: route.originatorIp },
     { label: "RD", value: route.rd },
-    { label: "Route Target", value: route.rt },
+    { label: "ES-Import Route Target", value: `${route.esImportRt} (configured — Type-0 ESI, not auto-derived)` },
   ] }] };
 }
 function type1Packet(id: string, from: LeafId, to: LeafId, route: Type1Route): PacketVisual {
@@ -282,7 +348,15 @@ function type1Packet(id: string, from: LeafId, to: LeafId, route: Type1Route): P
     { label: "AFI/SAFI", value: "L2VPN EVPN" },
     { label: "Route Type", value: "1 (Ethernet Auto-Discovery)" },
     { label: "Ethernet Segment Identifier", value: route.esi },
-    { label: "Ethernet Tag ID (Advanced)", value: route.scope === "per-evi" ? String(route.ethernetTag) : "0xFFFFFFFF (per-ES)" },
+    ...(route.scope === "per-evi"
+      ? [
+          { label: "Ethernet Tag ID (Advanced)", value: `${route.ethernetTag} (VLAN-based service)` },
+          { label: "VNI (Label field)", value: String(route.vniLabel) },
+        ]
+      : [
+          { label: "Ethernet Tag ID (Advanced)", value: "0xFFFFFFFF (MAX-ET, per-ES)" },
+          { label: "ESI Label EC — Single-Active flag", value: route.singleActive ? "1 (Single-Active)" : "0 (All-Active)" },
+        ]),
     { label: "RD", value: route.rd },
     { label: "Route Target", value: route.rt },
   ] }] };
@@ -441,13 +515,13 @@ export const evpnMultihomingSteps: ScenarioStep<EvpnMultihomingState>[] = [
   {
     id: "df-election-chamber",
     label: "DF Election Chamber",
-    narrative: `ESI ${ESI.slice(-8)}, Ethernet Tag/EVI VLAN ${VLAN} / VNI ${VNI}. Candidates: LEAF1 (${VTEP_LOOPBACK.LEAF1}), LEAF2 (${VTEP_LOOPBACK.LEAF2}). Election algorithm: basic/default for this lesson — lowest candidate VTEP IP wins. Other algorithms exist (preference-based, HRW) but are deferred.`,
+    narrative: `ESI ${ESI.slice(-8)}, Ethernet Tag/EVI VLAN ${VLAN} / VNI ${VNI}. Candidates — every PE with an active Type-4 route for this ES: LEAF1 (${VTEP_LOOPBACK.LEAF1}), LEAF2 (${VTEP_LOOPBACK.LEAF2}). Default election (RFC 7432 service carving): order the candidate IPs numerically to assign ordinals 0, 1, …; then the PE whose ordinal equals VLAN mod N becomes DF. Other algorithms exist (preference-based, HRW) but are deferred.`,
     run: (state) => ({ state: recomputeDf(state), events: [{ type: "ROUTE_SELECTED", stepId: "df-election-chamber", timestamp: Date.now(), message: "DF election computed for this ESI/EVI" }] }),
   },
   {
     id: "df-status-visual",
     label: "DF / NDF, Scoped",
-    narrative: `LEAF1: DF for ESI ${ESI.slice(-8)}, VLAN ${VLAN}/VNI ${VNI}. LEAF2: NDF for that exact same scope. This is never a permanent, router-wide role — it's specific to this one Ethernet Segment and this one EVI.`,
+    narrative: `LEAF1 holds ordinal 0 and LEAF2 ordinal 1; VLAN ${VLAN} mod 2 = 0, so LEAF1 is DF for ESI ${ESI.slice(-8)}, VLAN ${VLAN}/VNI ${VNI}, and LEAF2 is NDF for that exact same scope. Its lower IP only placed it at ordinal 0 — the modulo picked the ordinal. This is never a permanent, router-wide role — it's specific to this one Ethernet Segment and this one EVI.`,
   },
   {
     id: "enter-leaf1-multihoming-pipeline",
@@ -511,24 +585,24 @@ export const evpnMultihomingSteps: ScenarioStep<EvpnMultihomingState>[] = [
   },
   {
     id: "df-failure-event",
-    label: "LEAF1 Fails",
-    narrative: "BEFORE: LEAF1 = DF, LEAF2 = NDF. Now fail LEAF1's Ethernet-Segment attachment.",
-    run: (state) => ({ state: failEsPe(state, "LEAF1"), events: [{ type: "BGP_SESSION_RESET", stepId: "df-failure-event", timestamp: Date.now(), message: "LEAF1's Ethernet-Segment attachment becomes unavailable" }] }),
+    label: "LEAF1's ES Attachment Fails",
+    narrative: "BEFORE: LEAF1 = DF, LEAF2 = NDF. Now fail only LEAF1's Ethernet-Segment attachment to SERVER-A — LEAF1 itself, its VTEP, underlay, BGP EVPN, and its VNI 10010 flood membership all stay up. Because it is no longer attached to the ES, LEAF1 withdraws its Type-4 Ethernet Segment route.",
+    run: (state) => ({ state: failEsPe(state, "LEAF1"), events: [{ type: "VPN_ROUTE_WITHDRAWN", stepId: "df-failure-event", timestamp: Date.now(), message: "LEAF1's ES attachment fails — LEAF1 withdraws its Type-4 Ethernet Segment route" }] }),
   },
   {
     id: "re-election",
     label: "Re-Election",
-    narrative: "The candidate set changes — LEAF1 is no longer available. LEAF2 is selected as the new DF for this ESI/EVI. AFTER: LEAF1 = unavailable, LEAF2 = DF.",
+    narrative: `LEAF1's Type-4 withdrawal re-triggers the election. Only LEAF2 still has an active Type-4 route, so it is the only candidate: ordinal 0, VLAN ${VLAN} mod 1 = 0 → LEAF2 is the new DF for this ESI/EVI. AFTER: LEAF1 = ES attachment unavailable (not a candidate), LEAF2 = DF.`,
     run: (state) => ({ state: recomputeDf(state), events: [{ type: "ROUTE_SELECTED", stepId: "re-election", timestamp: Date.now(), message: "DF re-elected — LEAF2 becomes DF" }] }),
     whatChanged: (prev, next) => [`DF for ESI ${ESI.slice(-8)} / VLAN ${VLAN}: ${prev.dfState.winner} → ${next.dfState.winner}`],
   },
   {
     id: "resend-bum-after-failure",
     label: "Resend The Same Broadcast",
-    narrative: "The identical broadcast from HOST-B, sent again — this time it should be delivered via LEAF2.",
+    narrative: "The identical broadcast from HOST-B, sent again. LEAF1 is still a VTEP in VNI 10010's flood list (its Type-3 membership never changed), so it still receives its own VXLAN copy — it simply cannot deliver it onto its failed ES attachment. LEAF2, the new DF, delivers the one copy SERVER-A receives.",
     packet: () => framePacket("f-bum-2", "HOST-B", "LEAF3", "Broadcast Ethernet frame — HOST-B (after failure)", "BROADCAST", bumFrame()),
     run: (state) => ({
-      state: { ...state, replicaStage: "delivered", forwardingCopies: [{ leaf: "LEAF2", delivered: true, reason: "New DF — forwarded" }], journey: [...state.journey, { device: "LEAF3", input: "Broadcast frame", lookup: "VNI 10010 flood list → LEAF2 (LEAF1 unavailable)", action: "UNDERLAY_FORWARD", output: "1 VXLAN copy created" }, { device: "LEAF2", input: "VXLAN(VNI 10010)", lookup: "Destination ES → DF status = DF (new)", action: "DF_FORWARD_TO_ES", output: "Forwarded onto the Ethernet Segment" }, { device: "SERVER-A", input: "1 copy (from LEAF2)", lookup: "—", action: "UNICAST_DELIVER", output: "One copy delivered, via the new DF" }] },
+      state: { ...state, replicaStage: "delivered", forwardingCopies: [{ leaf: "LEAF1", delivered: false, reason: "ES attachment unavailable — cannot deliver onto the ES" }, { leaf: "LEAF2", delivered: true, reason: "New DF — forwarded" }], journey: [...state.journey, { device: "LEAF3", input: "Broadcast frame", lookup: "VNI 10010 flood list → LEAF1, LEAF2 (Type-3 membership unchanged)", action: "UNDERLAY_FORWARD", output: "2 VXLAN copies created" }, { device: "LEAF1", input: "VXLAN(VNI 10010)", lookup: "Destination ES → local ES attachment unavailable", action: "ES_ATTACHMENT_UNAVAILABLE", output: "Not delivered — no working attachment to SERVER-A's ES" }, { device: "LEAF2", input: "VXLAN(VNI 10010)", lookup: "Destination ES → DF status = DF (new)", action: "DF_FORWARD_TO_ES", output: "Forwarded onto the Ethernet Segment" }, { device: "SERVER-A", input: "1 copy (from LEAF2)", lookup: "—", action: "UNICAST_DELIVER", output: "One copy delivered, via the new DF" }] },
       events: [{ type: "PACKET_RECEIVED", stepId: "resend-bum-after-failure", timestamp: Date.now(), message: "LEAF2 (new DF) delivers the broadcast to SERVER-A" }],
     }),
   },
@@ -545,8 +619,11 @@ export const evpnMultihomingSteps: ScenarioStep<EvpnMultihomingState>[] = [
   {
     id: "fault-injected",
     label: "Both LEAF1 And LEAF2 Believe They Are DF",
-    narrative: "Physical ES links, underlay, BGP EVPN, ESI, Type-4 discovery, and Type-1 signaling are all healthy — LEAF1 and LEAF2 both correctly see each other as ES peers. But their DF election state has become inconsistent: both now believe they are DF for the same ESI/EVI.",
-    run: (state) => ({ state: { ...state, leaf1Failed: false, dualDfFault: true, dfState: { ...state.dfState, candidates: candidateSet(false), winner: "LEAF1", previousWinner: state.dfState.winner, reason: "INCONSISTENT — LEAF2 independently also believes it is DF (educational fault)" } }, events: [{ type: "BGP_STATE_CHANGED", stepId: "fault-injected", timestamp: Date.now(), message: "DF election state made inconsistent between LEAF1 and LEAF2 (deliberate fault)" }] }),
+    narrative: "LEAF1's ES attachment has been restored and LEAF1 has re-advertised its Type-4 route. Physical ES links, underlay, BGP EVPN, ESI, Type-4 discovery, and Type-1 signaling are all healthy — LEAF1 and LEAF2 both correctly see each other as ES peers. But their DF election state has become inconsistent: both now believe they are DF for the same ESI/EVI.",
+    run: (state) => {
+      const restored = setType4Withdrawn({ ...state, leaf1Failed: false }, "LEAF1", false);
+      return { state: { ...restored, dualDfFault: true, dfState: { ...restored.dfState, candidates: dfCandidatesFromType4(restored.type4Routes), winner: "LEAF1", previousWinner: state.dfState.winner, reason: "INCONSISTENT — LEAF2 independently also believes it is DF (educational fault)" } }, events: [{ type: "BGP_STATE_CHANGED", stepId: "fault-injected", timestamp: Date.now(), message: "LEAF1's ES attachment restored (Type 4 re-advertised); DF election state then made inconsistent between LEAF1 and LEAF2 (deliberate fault)" }] };
+    },
     whatChanged: () => ["LEAF1 believes: DF", "LEAF2 ALSO believes: DF — inconsistent"],
   },
   {

@@ -40,7 +40,7 @@ export function explainNode(state: EvpnVpwsState, nodeId: EvpnVpwsDeviceId): Nod
       currentAction,
       packetBefore: hop?.input,
       packetAfter: hop?.output,
-      note: state.mtuFault ? "PE3's expected L2 MTU does not match the Primary's advertised L2 MTU — the remote endpoint exists but is not usable until this is corrected." : undefined,
+      note: state.mtuFault ? "PE3's local L2 MTU — which is also what its own A-D per-EVI route advertises — does not match the Primary's advertised L2 MTU. The remote endpoint exists but is not usable until this is corrected." : undefined,
     };
   }
 

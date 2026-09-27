@@ -102,7 +102,7 @@ import { calculateFullMeshPwCount, calculateHierarchicalPwCount, applyHierarchic
 
 import { compareMobilityRoutes, selectEndpointLocation, type Type2Route as MobilityType2Route, type LeafId as MobilityLeafId } from "./evpnMacMobility";
 
-import { electDesignatedForwarder, dfRoleFor, type DfCandidate, type DfState, type DfRole, type LeafId as MhLeafId, ETHERNET_SEGMENT } from "./evpnMultihoming";
+import { DEFAULT_DF_ALGORITHM, electDesignatedForwarder, dfRoleFor, type DfCandidate, type DfState, type DfRole, type LeafId as MhLeafId, ETHERNET_SEGMENT } from "./evpnMultihoming";
 
 // ---------------------------------------------------------------------------
 // CUST-A topology — CE1/CE2/CE3 on PE1/PE2/PE3, the SAME customer used by
@@ -479,8 +479,10 @@ export function multihomingComparisonDemo(): { dfState: DfState; roleByLeaf: Rec
     { leaf: "LEAF1" as MhLeafId, electionValue: "1.1.1.1", available: true },
     { leaf: "LEAF2" as MhLeafId, electionValue: "2.2.2.2", available: true },
   ];
-  const { winner, reason } = electDesignatedForwarder(candidates, undefined);
-  const dfState: DfState = { esi: ETHERNET_SEGMENT.esi, evi: "CUST-A", algorithm: "Basic/default (lowest candidate loopback wins)", candidates, winner, reason };
+  // CUST-A's attachment circuits use VLAN 100 — the service value for the default modulo election (100 mod 2 = 0 → ordinal 0).
+  const serviceValue = CUST_A_AC.PE1.vlan;
+  const { winner, reason, ordinals } = electDesignatedForwarder(candidates, serviceValue);
+  const dfState: DfState = { esi: ETHERNET_SEGMENT.esi, evi: "CUST-A", algorithm: DEFAULT_DF_ALGORITHM, candidates, winner, reason, serviceValue, ordinals };
   return { dfState, roleByLeaf: { LEAF1: dfRoleFor(dfState, "LEAF1" as MhLeafId), LEAF2: dfRoleFor(dfState, "LEAF2" as MhLeafId) } as Record<MhLeafId, DfRole> };
 }
 

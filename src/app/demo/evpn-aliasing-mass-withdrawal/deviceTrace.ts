@@ -8,7 +8,6 @@ import {
   VNI,
   VTEP_LOOPBACK,
   evpnAliasingSteps,
-  getEligibleEsPeers,
   type EvpnAliasingDeviceId,
   type EvpnAliasingState,
   type JourneyHop,
@@ -41,7 +40,7 @@ function vxlanFrames(justChanged = false): PacketStackFrame[] {
 
 const ACTION_LOOKUP_TYPE: Record<MwAction, string> = {
   UNDERLAY_FORWARD: "Underlay Route Lookup",
-  ALIAS_SELECT: "Type-2 → ESI → A-D Per-EVI → Eligible Set → Flow Selection",
+  ALIAS_SELECT: "Type-2 → ESI → A-D Per-EVI + Per-ES → Eligible Set → Flow Selection",
   VXLAN_DECAP: "VXLAN Decapsulation",
   LOCAL_DELIVER: "VNI → Local ESI → Access Delivery",
   ES_ATTACHMENT_UNAVAILABLE: "Local ES Attachment State",
@@ -122,7 +121,7 @@ const LEAF3_ALIAS_STAGES: ProcessingStage[] = [
   { id: "dest-mac-lookup", label: "Destination MAC Lookup" },
   { id: "type2-route", label: "Type-2 Route" },
   { id: "esi-identified", label: "ESI Identified" },
-  { id: "adevi-lookup", label: "A-D Per-EVI Lookup" },
+  { id: "adevi-lookup", label: "A-D Per-EVI + Per-ES Check" },
   { id: "eligible-set", label: "Eligible PE Set" },
   { id: "flow-select", label: "Flow / ECMP Selection" },
   { id: "remote-vtep", label: "Remote VTEP" },
@@ -258,15 +257,15 @@ export function interfacesFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", st
 }
 
 export function aliasingTabRowsFor(state: EvpnAliasingState) {
-  if (!state.aliasing) return [{ label: "Aliasing", value: "Not yet built — waiting on A-D per-EVI routes from both leafs" }];
+  if (!state.aliasing) return [{ label: "Aliasing", value: "Not yet built — waiting on A-D per-EVI and All-Active A-D per-ES routes from both leafs" }];
   const a = state.aliasing;
   const failed = ["LEAF1", "LEAF2"].filter((l) => !a.eligiblePEs.includes(l as LeafId)) as LeafId[];
   return [
     { label: "Destination", value: a.mac },
     { label: "ESI", value: a.esi },
     { label: "EVI / VNI", value: `VLAN ${VLAN} / VNI ${a.vni}` },
-    { label: "Type-2 Source", value: "Type-2 + Ethernet A-D per-EVI" },
-    { label: "A-D Peers", value: (["LEAF1", "LEAF2"] as LeafId[]).filter((l) => state.perEviAdRoutes[l]).join(", ") || "(none)" },
+    { label: "Type-2 Source", value: a.source },
+    { label: "A-D Peers (per-EVI + per-ES)", value: (["LEAF1", "LEAF2"] as LeafId[]).filter((l) => state.perEviAdRoutes[l] && state.perEsAdRoutes[l]).join(", ") || "(none)" },
     { label: "Eligible PEs", value: a.eligiblePEs.join(", ") || "(none)" },
     { label: "Failed / Ineligible PEs", value: failed.length ? failed.join(", ") : "(none)" },
     { label: "Selected PE — Flow A", value: a.selectedPe.A ?? "(unselected)" },
@@ -299,6 +298,7 @@ export function esTabRowsFor(state: EvpnAliasingState, leaf: LeafId) {
     { label: "VNI / EVI", value: `VLAN ${VLAN} / VNI ${VNI}` },
     { label: "A-D Per-EVI Advertised", value: evi ? "Yes" : "No" },
     { label: "A-D Per-ES Advertised", value: es ? (es.withdrawn ? "Yes (WITHDRAWN)" : "Yes") : "No" },
+    { label: "Single-Active Flag (per-ES)", value: es ? (es.singleActive ? "1 (Single-Active)" : "0 (All-Active)") : "—" },
   ];
 }
 
@@ -306,8 +306,8 @@ export function adRoutesTabRowsFor(state: EvpnAliasingState, leaf: LeafId): Evpn
   const rows: EvpnRibRow[] = [];
   const evi = state.perEviAdRoutes[leaf];
   const es = state.perEsAdRoutes[leaf];
-  if (evi) rows.push({ routeType: "1", subKind: "PER EVI", summary: `ESI ${evi.esi.slice(-8)} / VNI ${evi.vni}`, nextHop: VTEP_LOOPBACK[leaf], rd: evi.rd, rt: evi.rt });
-  if (es) rows.push({ routeType: "1", subKind: "PER ES", summary: `ESI ${es.esi.slice(-8)}${es.withdrawn ? " (WITHDRAWN)" : ""}`, nextHop: VTEP_LOOPBACK[leaf], rd: es.rd, rt: es.rt });
+  if (evi) rows.push({ routeType: "1", subKind: "PER EVI", summary: `ESI ${evi.esi.slice(-8)} / Tag ${evi.ethernetTag} / VNI ${evi.vni}`, nextHop: VTEP_LOOPBACK[leaf], rd: evi.rd, rt: evi.rt });
+  if (es) rows.push({ routeType: "1", subKind: "PER ES", summary: `ESI ${es.esi.slice(-8)} / MAX-ET / ${es.singleActive ? "Single-Active" : "All-Active"}${es.withdrawn ? " (WITHDRAWN)" : ""}`, nextHop: VTEP_LOOPBACK[leaf], rd: es.rd, rt: es.rt });
   return rows;
 }
 
@@ -327,9 +327,9 @@ export function evpnRibRowsFor(state: EvpnAliasingState, device: EvpnAliasingDev
     if (state.macRoute) rows.push({ routeType: "2", summary: `${state.macRoute.mac} / ${state.macRoute.ip}`, nextHop: `ESI ${state.macRoute.esi.slice(-8)} (multihomed)`, rd: state.macRoute.rd, rt: state.macRoute.rt });
     (["LEAF1", "LEAF2"] as LeafId[]).forEach((l) => {
       const evi = state.perEviAdRoutes[l];
-      if (evi) rows.push({ routeType: "1", subKind: "PER EVI", summary: `ESI ${evi.esi.slice(-8)} / VNI ${evi.vni}`, nextHop: VTEP_LOOPBACK[l], rd: evi.rd, rt: evi.rt });
+      if (evi) rows.push({ routeType: "1", subKind: "PER EVI", summary: `ESI ${evi.esi.slice(-8)} / Tag ${evi.ethernetTag} / VNI ${evi.vni}`, nextHop: VTEP_LOOPBACK[l], rd: evi.rd, rt: evi.rt });
       const es = state.perEsAdRoutes[l];
-      if (es) rows.push({ routeType: "1", subKind: "PER ES", summary: `ESI ${es.esi.slice(-8)}${es.withdrawn ? " (WITHDRAWN)" : ""}`, nextHop: VTEP_LOOPBACK[l], rd: es.rd, rt: es.rt });
+      if (es) rows.push({ routeType: "1", subKind: "PER ES", summary: `ESI ${es.esi.slice(-8)} / MAX-ET / ${es.singleActive ? "Single-Active" : "All-Active"}${es.withdrawn ? " (WITHDRAWN)" : ""}`, nextHop: VTEP_LOOPBACK[l], rd: es.rd, rt: es.rt });
     });
     return rows;
   }
@@ -371,7 +371,8 @@ export interface CliCommandEntry { id: string; label: string; cisco: CliOutput; 
 export function buildAliasingCliCommands(state: EvpnAliasingState, device: EvpnAliasingDeviceId): CliCommandEntry[] {
   if (device === "SPINE1") return [{ id: "underlay", label: "underlay routes", cisco: { cmd: "show ip route ospf", output: "10.255.0.1/32, 10.255.0.2/32, 10.255.0.3/32 — all via OSPF" }, juniper: { cmd: "show route protocol ospf", output: "10.255.0.1/32, 10.255.0.2/32, 10.255.0.3/32 — all *[OSPF/10]" } }];
   if (device === "LEAF3") {
-    const eligible = getEligibleEsPeers(state.perEviAdRoutes, state.perEsAdRoutes, state.massWithdrawalProcessed);
+    // Applied forwarding state (what LEAF3 actually uses) — may lag the control plane until mass withdrawal is processed.
+    const eligible = state.aliasing?.eligiblePEs ?? [];
     return [
       { id: "mac", label: "mac forwarding", cisco: { cmd: "show l2route evpn mac all", output: `MAC ${state.macRoute?.mac ?? "—"}  ESI ${ESI.slice(-8)}  Next-hops: ${eligible.join(",")}` }, juniper: { cmd: "show evpn instance extensive", output: `MAC/ESI ${ESI.slice(-8)}: next-hops ${eligible.join(", ")}` } },
       { id: "adroutes", label: "evpn type 1 routes", cisco: { cmd: "show bgp l2vpn evpn route-type 1", output: `ESI ${ESI.slice(-8)}: A-D per-EVI from LEAF1,LEAF2; A-D per-ES ${state.perEsAdRoutes.LEAF1?.withdrawn ? "LEAF1 WITHDRAWN" : "LEAF1,LEAF2 present"}` }, juniper: { cmd: "show route table bgp.evpn.0 match-prefix 1:*", output: `1:*:${ESI.slice(-8)} — per-EVI x2, per-ES ${state.perEsAdRoutes.LEAF1?.withdrawn ? "(LEAF1 withdrawn)" : "x2"}` } },

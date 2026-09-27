@@ -6,7 +6,7 @@ import {
   GRAPH_EDGES,
   LOCAL_AC_VLAN,
   REMOTE_AC_VLAN,
-  TRANSPORT_LABEL,
+  TRANSPORT_LABEL_TO,
   VPWS_SERVICE_ID,
   discoverVpwsEndpoint,
   remoteServiceLabelFor,
@@ -29,10 +29,10 @@ const stepIndex = (id: string) => evpnVpwsSteps.findIndex((s) => s.id === id);
 function ethernetFrames(): PacketStackFrame[] {
   return [{ id: "ethernet", text: "Ethernet (Customer Frame)", tone: "generic" }];
 }
-/** `serviceLabel` is always a real value from the scenario — the pushed downstream label or the disposition PE's own advertised label. */
-function mplsFrames(serviceLabel: number, justChanged = false): PacketStackFrame[] {
+/** Both labels are real values from the scenario — the transport label toward the disposition PE and that PE's advertised service label. */
+function mplsFrames(transportLabel: number, serviceLabel: number, justChanged = false): PacketStackFrame[] {
   return [
-    { id: "transport", text: `MPLS Shim (transport) — Label ${TRANSPORT_LABEL}`, tone: "transport" },
+    { id: "transport", text: `MPLS Shim (transport) — Label ${transportLabel}`, tone: "transport" },
     { id: "service", text: `MPLS Shim (service) — Label ${serviceLabel}`, tone: "vpn", justChanged },
     { id: "ethernet", text: "Ethernet (Customer Frame)", tone: "generic" },
   ];
@@ -89,9 +89,11 @@ function hopToTrace(device: "PE1" | "PE2" | "PE3", hop: JourneyHop, stages: Proc
   // PUSH presents the downstream label the scenario actually pushed; POP presents the
   // disposition PE's own advertised label — the one remote PEs push toward it.
   const serviceLabel = isPush ? state.packet?.labels.find((l) => l.purpose === "service")?.value : isPop ? state.perEviAdRoutes[device]?.serviceLabel : undefined;
-  const labeledFrames = serviceLabel === undefined ? undefined : mplsFrames(serviceLabel, isPush);
+  // Transport label: the one actually pushed (PUSH), or the label toward this disposition PE (POP) — never a global constant.
+  const transportLabel = isPush ? state.packet?.labels.find((l) => l.purpose === "transport")?.value : isPop ? TRANSPORT_LABEL_TO[device] : undefined;
+  const labeledFrames = serviceLabel === undefined || transportLabel === undefined ? undefined : mplsFrames(transportLabel, serviceLabel, isPush);
   const mutations: PacketMutation[] | undefined = isPush
-    ? [...(serviceLabel === undefined ? [] : [{ type: "PUSH" as const, detail: `Service label ${serviceLabel}` }]), { type: "PUSH", detail: `Transport label ${TRANSPORT_LABEL}` }]
+    ? [...(serviceLabel === undefined ? [] : [{ type: "PUSH" as const, detail: `Service label ${serviceLabel}` }]), ...(transportLabel === undefined ? [] : [{ type: "PUSH" as const, detail: `Transport label ${transportLabel}` }])]
     : isPop
       ? [{ type: "POP", detail: serviceLabel === undefined ? "Transport + service labels removed — customer frame forwarded to the AC" : `Transport + service label ${serviceLabel} removed — customer frame forwarded to the AC` }]
       : undefined;
@@ -200,7 +202,11 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
     // Active only while the labeled packet is in the core, or at CORE's own teaching step (whose run
     // then hands the packet to PE3) — a packet merely existing elsewhere is not CORE processing it.
     if (state.packetAt !== "CORE" && currentStepId !== "core-transport-only") return base;
-    return { ...base, activeStageId: "transport-forward", completedStageIds: ["underlay-ingress", "top-label"], lookupType: "Top Transport Label (Swap)", lookupKey: `Label ${TRANSPORT_LABEL}`, reason: "Ordinary transport forwarding — never inspects the VPWS service label or customer MACs, and never selects a VPWS AC." };
+    // The top label of the packet actually in the core — its own direction's transport label.
+    const top = state.packet?.labels[0];
+    if (!top) return base;
+    const toward = (Object.keys(TRANSPORT_LABEL_TO) as PeId[]).find((pe) => TRANSPORT_LABEL_TO[pe] === top.value);
+    return { ...base, activeStageId: "transport-forward", completedStageIds: ["underlay-ingress", "top-label"], lookupType: "Top Transport Label (Swap)", lookupKey: `Label ${top.value}`, lookupResult: toward ? `Swap ${top.value} → toward ${toward}` : undefined, nextHopId: toward, nextHopLabel: toward, reason: "Ordinary transport forwarding — never inspects the VPWS service label or customer MACs, and never selects a VPWS AC." };
   }
 
   // Exact signature moments for PE1/PE2/PE3 — real JourneyHop data, never a stale earlier hop.
@@ -227,7 +233,7 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
       const done = ["es-configured"];
       if (state.election.primaryPe) done.push("election");
       if (own && !own.withdrawn) done.push("adevi-advertised");
-      if (discoverVpwsEndpoint(routes, device)) done.push("remote-discovered");
+      if (discoverVpwsEndpoint(routes, state.perEsAdRoutes, device)) done.push("remote-discovered");
       if (serviceUp) done.push("service-installed");
       return { ...base, completedStageIds: done };
     }
@@ -249,7 +255,7 @@ export function traceFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpws
   if (i < controlEnd) {
     const base: DeviceProcessingTrace = { deviceId: "PE3", stages: PE3_CONTROL_STAGES, completedStageIds: [] };
     const own = routes.PE3;
-    const remote = discoverVpwsEndpoint(routes, "PE3");
+    const remote = discoverVpwsEndpoint(routes, state.perEsAdRoutes, "PE3");
     if (currentStepId === "pe3-advertises-adevi") return { ...base, activeStageId: "adevi-advertised", completedStageIds: [...(remote ? ["remote-discovered"] : []), ...(serviceUp ? ["service-installed"] : [])] };
     if (currentStepId === "vpws-route-discovery") {
       return serviceUp
@@ -287,7 +293,8 @@ export function packetFramesFor(trace: DeviceProcessingTrace | undefined, state:
     case "mpls-ingress": {
       // Only reached while the labeled packet is in the core or arriving at PE3 — `state.packet` is that packet.
       const serviceLabel = state.packet?.labels.find((l) => l.purpose === "service")?.value;
-      return serviceLabel === undefined ? undefined : mplsFrames(serviceLabel);
+      const transportLabel = state.packet?.labels.find((l) => l.purpose === "transport")?.value;
+      return serviceLabel === undefined || transportLabel === undefined ? undefined : mplsFrames(transportLabel, serviceLabel);
     }
     default:
       return undefined;
@@ -345,12 +352,12 @@ const INTERFACES: Record<"PE1" | "CORE" | "PE2" | "PE3", IfaceDef[]> = {
 export function interfacesFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: EvpnVpwsState, currentStepId: string): DeviceInterfaceData[] {
   const trace = traceFor(device, state, currentStepId);
   const processing = trace.activeStageId !== undefined;
+  // PE1's failure is service-specific: the VPWS-500 AC (VLAN) is down, the CE-A port and Ethernet Segment stay up for other services.
   return INTERFACES[device]
-    .filter((def) => !(def.neighborId === "CE-A" && device === "PE1" && state.pe1AcFailed))
     .map((def) => ({
       id: def.id,
       name: def.name,
-      status: def.neighborId === "CE-A" && device === "PE1" && state.pe1AcFailed ? "down" : "up",
+      status: "up" as const,
       ip: def.ip,
       neighborId: def.neighborId,
       neighborLabel: def.neighborLabel,
@@ -359,7 +366,7 @@ export function interfacesFor(device: "PE1" | "CORE" | "PE2" | "PE3", state: Evp
       protocols: def.protocols,
       packetCount: trace.completedStageIds.length > 0 || processing ? 1 : 0,
       role: processing && def.id === trace.ingressInterfaceId ? "ingress" : processing && def.id === trace.egressInterfaceId ? "egress" : processing ? "ingress" : "idle",
-      extra: def.extra,
+      extra: def.neighborId === "CE-A" && device === "PE1" && state.pe1AcFailed ? [...(def.extra ?? []), { label: `VPWS-${VPWS_SERVICE_ID} AC (VLAN ${LOCAL_AC_VLAN})`, value: "DOWN" }] : def.extra,
     }));
 }
 
@@ -373,6 +380,8 @@ export function esTabRowsFor(state: EvpnVpwsState, pe: PeId) {
     { label: "Primary", value: state.election.primaryPe ?? "(not yet elected)" },
     { label: "Backup", value: state.election.backupPe ?? "(none)" },
     { label: "Local Role", value: roleLabel },
+    { label: "A-D Per-ES (Single-Active flag)", value: state.perEsAdRoutes[pe] ? `${state.perEsAdRoutes[pe]!.singleActive ? "1 — Single-Active" : "0 — All-Active"}${state.perEsAdRoutes[pe]!.withdrawn ? " (WITHDRAWN)" : ""}` : "(not advertised)" },
+    { label: "Election", value: state.election.ordinals?.length ? `${state.election.ordinals.map((o) => `${o.pe} ${o.ip} → ${o.ordinal}`).join(", ")}; ${VPWS_SERVICE_ID} mod ${state.election.ordinals.length} = ${VPWS_SERVICE_ID % state.election.ordinals.length}` : "(not yet elected)" },
     { label: "Service", value: `VPWS-${VPWS_SERVICE_ID}` },
   ];
 }
@@ -392,8 +401,8 @@ export function pbTabRowsFor(state: EvpnVpwsState, pe: PeId) {
 
 /** The downstream label this PE pushes toward its current remote endpoint (from the scenario's pure resolver). */
 function remoteLabelText(state: EvpnVpwsState, device: PeId): string {
-  const remote = discoverVpwsEndpoint(state.perEviAdRoutes, device);
-  const label = remoteServiceLabelFor(state.perEviAdRoutes, device);
+  const remote = discoverVpwsEndpoint(state.perEviAdRoutes, state.perEsAdRoutes, device);
+  const label = remoteServiceLabelFor(state.perEviAdRoutes, state.perEsAdRoutes, device);
   return remote && label !== undefined ? `${label} (advertised by ${remote})` : "(no usable remote endpoint)";
 }
 
@@ -418,10 +427,10 @@ export function vpwsServicesTabRowsFor(state: EvpnVpwsState, device: EvpnVpwsDev
     { label: "Redundancy Mode", value: "Single-Active" },
     { label: "Primary", value: state.election.primaryPe ?? "(not yet elected)" },
     { label: "Backup", value: state.election.backupPe ?? "(none)" },
-    { label: "Remote PE", value: device === "PE3" ? (discoverVpwsEndpoint(state.perEviAdRoutes, "PE3") ?? "(none usable)") : discoverVpwsEndpoint(state.perEviAdRoutes, device as PeId) ?? "(none)" },
+    { label: "Remote PE", value: device === "PE3" ? (discoverVpwsEndpoint(state.perEviAdRoutes, state.perEsAdRoutes, "PE3") ?? "(none usable)") : discoverVpwsEndpoint(state.perEviAdRoutes, state.perEsAdRoutes, device as PeId) ?? "(none)" },
     { label: "Local Service Label (advertised)", value: state.perEviAdRoutes[device as PeId] ? String(state.perEviAdRoutes[device as PeId]!.serviceLabel) : "(not advertised)" },
     ...(device === "PE1" || device === "PE2" || device === "PE3" ? [{ label: "Remote Service Label (pushed)", value: remoteLabelText(state, device) }] : []),
-    { label: "L2 MTU", value: svc ? String(svc.pe3ExpectedMtu) : "9000" },
+    { label: "L2 MTU (PE3 local = advertised)", value: svc ? String(svc.pe3LocalMtu) : state.perEviAdRoutes.PE3 ? String(state.perEviAdRoutes.PE3.l2Mtu) : "(not advertised)" },
     { label: "Status", value: svc ? svc.status.toUpperCase() : "DOWN" },
   ];
 }
@@ -455,9 +464,16 @@ export function evpnRibRowsFor(state: EvpnVpwsState, device: EvpnVpwsDeviceId): 
       ],
     });
   };
+  const pushPerEs = (pe: PeId) => {
+    const r = state.perEsAdRoutes[pe];
+    if (!r) return;
+    rows.push({ routeType: "1", subKind: "PER ES", summary: `${pe} — ESI ${r.esi.slice(-8)} / MAX-ET${r.withdrawn ? " (WITHDRAWN)" : ""}`, nextHop: pe, rd: r.rd, rt: r.rt, extra: [{ label: "ESI Label EC", value: r.singleActive ? "Single-Active flag = 1" : "Single-Active flag = 0" }] });
+  };
   if (device === "PE3") {
     pushRoute("PE1");
     pushRoute("PE2");
+    pushPerEs("PE1");
+    pushPerEs("PE2");
   } else if (device === "PE1" || device === "PE2") {
     pushRoute("PE3");
   }
@@ -496,7 +512,11 @@ export interface CliOutput { cmd: string; output: string; }
 export interface CliCommandEntry { id: string; label: string; cisco: CliOutput; juniper: CliOutput; }
 
 export function buildVpwsCliCommands(state: EvpnVpwsState, device: EvpnVpwsDeviceId): CliCommandEntry[] {
-  if (device === "CORE") return [{ id: "mpls", label: "mpls forwarding", cisco: { cmd: "show mpls forwarding-table", output: "Label 16003 -> swap -> PE3" }, juniper: { cmd: "show route table mpls.0", output: "16003 Swap 16003 -> PE3" } }];
+  if (device === "CORE") {
+    const lfib = (Object.keys(TRANSPORT_LABEL_TO) as PeId[]).map((pe) => `Label ${TRANSPORT_LABEL_TO[pe]} -> swap -> ${pe}`).join("\n");
+    const lfibJ = (Object.keys(TRANSPORT_LABEL_TO) as PeId[]).map((pe) => `${TRANSPORT_LABEL_TO[pe]} Swap ${TRANSPORT_LABEL_TO[pe]} -> ${pe}`).join("\n");
+    return [{ id: "mpls", label: "mpls forwarding", cisco: { cmd: "show mpls forwarding-table", output: lfib }, juniper: { cmd: "show route table mpls.0", output: lfibJ } }];
+  }
   if (device === "CE-A" || device === "CE-B") return [{ id: "iface", label: "interface status", cisco: { cmd: "show interfaces status", output: "Gi0/0 up" }, juniper: { cmd: "show interfaces terse", output: "ge-0/0/0 up" } }];
   const pe = device as PeId;
   const svc: CliOutput = { cmd: `show evpn vpws instance ${VPWS_SERVICE_ID}`, output: `VPWS-${VPWS_SERVICE_ID}  Status: ${state.vpwsService?.status.toUpperCase() ?? "DOWN"}` };

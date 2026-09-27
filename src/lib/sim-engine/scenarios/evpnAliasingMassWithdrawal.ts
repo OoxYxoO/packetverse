@@ -1,5 +1,5 @@
 import type { PacketVisual, ScenarioStep } from "../types";
-import { HOST_B_IP, HOST_B_MAC, VLAN, VNI, VTEP_LOOPBACK, ES_LEAFS, ESI, ETHERNET_SEGMENT, type LeafId } from "./evpnMultihoming";
+import { HOST_B_IP, HOST_B_MAC, MAX_ET, VLAN, VNI, VTEP_LOOPBACK, ES_LEAFS, ESI, ETHERNET_SEGMENT, type LeafId } from "./evpnMultihoming";
 
 export type { LeafId };
 import { buildPacketLayers, type DataFrame } from "./evpnVxlan";
@@ -48,9 +48,9 @@ function rdFor(leaf: LeafId): string {
 }
 
 export const TERMS: { term: string; expansion: string; meaning: string }[] = [
-  { term: "Aliasing", expansion: "Multiple Eligible Next Hops", meaning: "Built from Ethernet A-D per-EVI routes — gives a remote PE more than one usable path for known-unicast traffic toward an all-active multihomed destination." },
-  { term: "A-D per-EVI", expansion: "Route Type 1, Per-Service Form", meaning: "\"This PE participates in this Ethernet Segment for this EVI.\" Used to construct the aliasing/eligible-next-hop set." },
-  { term: "A-D per-ES", expansion: "Route Type 1, Per-Segment Form", meaning: "\"This PE is attached to this Ethernet Segment.\" Its withdrawal is the fast failure signal behind Mass Withdrawal." },
+  { term: "Aliasing", expansion: "Multiple Eligible Next Hops", meaning: "Built from Ethernet A-D per-EVI routes TOGETHER WITH each PE's All-Active Ethernet A-D per-ES route — gives a remote PE more than one usable path for known-unicast traffic toward an all-active multihomed destination." },
+  { term: "A-D per-EVI", expansion: "Route Type 1, Per-Service Form", meaning: "\"This PE participates in this Ethernet Segment for this EVI.\" Never usable for forwarding on its own — the matching per-ES route must also be present." },
+  { term: "A-D per-ES", expansion: "Route Type 1, Per-Segment Form", meaning: "\"This PE is attached to this Ethernet Segment\" — its ESI Label community's Single-Active flag says All-Active vs Single-Active. Its withdrawal is the fast failure signal behind Mass Withdrawal." },
   { term: "Mass Withdrawal", expansion: "Rapid Next-Hop Pruning", meaning: "One ES-level withdrawal removes a failed PE as a usable forwarding next hop for every destination behind that segment — not a one-by-one MAC route cleanup." },
   { term: "Flow", expansion: "Deterministic Selection", meaning: "A simplified flow-level abstraction standing in for ECMP hashing — never a claim about a specific ASIC's per-packet algorithm." },
 ];
@@ -70,19 +70,26 @@ export interface Type2AliasRoute {
   originLeaf: LeafId;
 }
 
-/** Route Type 1, per-EVI form — "this PE participates in this ESI for this EVI." Drives the aliasing set. */
+/** Route Type 1, per-EVI form — "this PE participates in this ESI for this EVI." One half of the aliasing prerequisite. */
 export interface Type1PerEviRoute {
   esi: string;
   originLeaf: LeafId;
+  /** 0 — VLAN-based service (one VNI per MAC-VRF), RFC 8365 §5.1.3. Never the VNI. */
+  ethernetTag: number;
+  /** The VNI, carried in the route's label field. */
   vni: number;
   rd: string;
   rt: string;
 }
 
-/** Route Type 1, per-ES form — "this PE is attached to this ESI," full stop. Its withdrawal is the mass-withdraw signal. */
+/** Route Type 1, per-ES form — "this PE is attached to this ESI." Carries the redundancy mode; its withdrawal is the mass-withdraw signal. */
 export interface Type1PerEsRoute {
   esi: string;
   originLeaf: LeafId;
+  /** MAX-ET (0xFFFFFFFF), RFC 7432 §8.2.1. */
+  ethernetTag: number;
+  /** ESI Label extended community Single-Active flag — false = All-Active. */
+  singleActive: boolean;
   rd: string;
   rt: string;
   withdrawn: boolean;
@@ -147,14 +154,34 @@ export function createEvpnAliasingState(): EvpnAliasingState {
 // Pure scenario functions (brief §40)
 // ---------------------------------------------------------------------------
 
+/**
+ * RFC 7432 §8.4: a PE is an aliasing next hop only when BOTH its Ethernet A-D per-EVI route AND its active Ethernet
+ * A-D per-ES route (Single-Active flag 0 = All-Active) for the ES are present — a per-EVI route alone is never enough.
+ */
 export function getEligibleEsPeers(
   perEviAdRoutes: Partial<Record<LeafId, Type1PerEviRoute>>,
   perEsAdRoutes: Partial<Record<LeafId, Type1PerEsRoute>>,
-  massWithdrawalProcessed: boolean,
 ): LeafId[] {
-  const advertised = ES_LEAFS.filter((l) => perEviAdRoutes[l]);
-  if (!massWithdrawalProcessed) return advertised;
-  return advertised.filter((l) => !perEsAdRoutes[l]?.withdrawn);
+  return ES_LEAFS.filter((l) => {
+    const evi = perEviAdRoutes[l];
+    const es = perEsAdRoutes[l];
+    return !!evi && !!es && !es.withdrawn && !es.singleActive;
+  });
+}
+
+/**
+ * The per-ES view LEAF3's forwarding state has APPLIED. A received per-ES withdrawal is control-plane fact at once,
+ * but until LEAF3 processes it (mass-withdrawal processing) its applied forwarding view still treats the route as
+ * active — which is exactly the stale applied state the incident models.
+ */
+export function appliedPerEsView(perEsAdRoutes: Partial<Record<LeafId, Type1PerEsRoute>>, withdrawalsApplied: boolean): Partial<Record<LeafId, Type1PerEsRoute>> {
+  if (withdrawalsApplied) return perEsAdRoutes;
+  const view: Partial<Record<LeafId, Type1PerEsRoute>> = {};
+  for (const l of ES_LEAFS) {
+    const r = perEsAdRoutes[l];
+    if (r) view[l] = { ...r, withdrawn: false };
+  }
+  return view;
 }
 
 export function selectFlowNextHop(eligiblePEs: LeafId[], flow: FlowId): LeafId | undefined {
@@ -170,13 +197,13 @@ export function buildAliasingSet(
   perEsAdRoutes: Partial<Record<LeafId, Type1PerEsRoute>>,
   massWithdrawalProcessed: boolean,
 ): AliasingEntry {
-  const eligiblePEs = getEligibleEsPeers(perEviAdRoutes, perEsAdRoutes, massWithdrawalProcessed);
+  const eligiblePEs = getEligibleEsPeers(perEviAdRoutes, appliedPerEsView(perEsAdRoutes, massWithdrawalProcessed));
   const selectedPe: Partial<Record<FlowId, LeafId>> = {};
   (["A", "B"] as FlowId[]).forEach((f) => {
     const pe = selectFlowNextHop(eligiblePEs, f);
     if (pe) selectedPe[f] = pe;
   });
-  return { mac: macRoute.mac, esi: macRoute.esi, vni: macRoute.vni, eligiblePEs, selectedPe, source: "Type-2 MAC/IP + Ethernet A-D per-EVI" };
+  return { mac: macRoute.mac, esi: macRoute.esi, vni: macRoute.vni, eligiblePEs, selectedPe, source: "Type-2 MAC/IP + Ethernet A-D per-EVI + All-Active A-D per-ES" };
 }
 
 export function recomputeAliasingSet(state: EvpnAliasingState): EvpnAliasingState {
@@ -295,7 +322,8 @@ function type1PerEviPacket(id: string, from: LeafId, to: EvpnAliasingDeviceId, r
       { label: "AFI/SAFI", value: "L2VPN EVPN" },
       { label: "Route Type", value: "1 (Ethernet Auto-Discovery — per EVI)" },
       { label: "Ethernet Segment Identifier", value: route.esi },
-      { label: "Ethernet Tag ID (Advanced)", value: String(route.vni) },
+      { label: "Ethernet Tag ID (Advanced)", value: `${route.ethernetTag} (VLAN-based service)` },
+      { label: "VNI (Label field)", value: String(route.vni) },
       { label: "RD", value: route.rd },
       { label: "Route Target", value: route.rt },
     ] }],
@@ -313,6 +341,8 @@ function type1PerEsPacket(id: string, from: LeafId, to: EvpnAliasingDeviceId, ro
       { label: "AFI/SAFI", value: "L2VPN EVPN" },
       { label: "Route Type", value: "1 (Ethernet Auto-Discovery — per ES)" },
       { label: "Ethernet Segment Identifier", value: route.esi },
+      { label: "Ethernet Tag ID (Advanced)", value: "0xFFFFFFFF (MAX-ET, per-ES)" },
+      ...(action === "announce" ? [{ label: "ESI Label EC — Single-Active flag", value: route.singleActive ? "1 (Single-Active)" : "0 (All-Active)" }] : []),
       { label: "Originating PE", value: route.originLeaf },
       { label: "RD", value: route.rd },
       { label: "Action", value: action === "withdraw" ? "WITHDRAW" : "ANNOUNCE" },
@@ -369,7 +399,7 @@ export const evpnAliasingSteps: ScenarioStep<EvpnAliasingState>[] = [
   {
     id: "aliasing-problem-intro",
     label: "The Aliasing Problem",
-    narrative: "LEAF3 knows: SERVER-A's MAC → a Type-2 route → ESI X. It also knows — from Ethernet A-D signaling — that ESI X / EVI VNI 10010 is reachable through both LEAF1 and LEAF2. The relationship becomes: MAC → ESI X → { LEAF1, LEAF2 }.",
+    narrative: "LEAF3 knows: SERVER-A's MAC → a Type-2 route → ESI X. It also knows — from Ethernet A-D signaling (a per-EVI route AND an All-Active per-ES route from each PE) — that ESI X / EVI VNI 10010 is reachable through both LEAF1 and LEAF2. The relationship becomes: MAC → ESI X → { LEAF1, LEAF2 }.",
   },
   {
     id: "type1-deep-dive",
@@ -379,11 +409,11 @@ export const evpnAliasingSteps: ScenarioStep<EvpnAliasingState>[] = [
   {
     id: "leaf1-advertises-perevi-perces",
     label: "LEAF1 Advertises Both A-D Forms",
-    narrative: "LEAF1 advertises A-D per-EVI (for aliasing) and A-D per-ES (for failure signaling) — two different forms of the same route type.",
+    narrative: "LEAF1 advertises A-D per-EVI (its participation in this EVI on the ES — Ethernet Tag 0, VNI 10010 in the label field) and A-D per-ES (Ethernet Tag MAX-ET, Single-Active flag 0 = All-Active; also the failure signal) — two different forms of the same route type. A remote PE may only use the per-EVI route for forwarding once the matching per-ES route is also present.",
     packet: (state) => (state.perEviAdRoutes.LEAF1 ? type1PerEviPacket("ad-evi-leaf1", "LEAF1", "LEAF3", state.perEviAdRoutes.LEAF1) : undefined),
     run: (state) => {
-      const perEvi: Type1PerEviRoute = { esi: ESI, originLeaf: "LEAF1", vni: VNI, rd: rdFor("LEAF1"), rt: EVPN_EXPORT_RT };
-      const perEs: Type1PerEsRoute = { esi: ESI, originLeaf: "LEAF1", rd: rdFor("LEAF1"), rt: EVPN_EXPORT_RT, withdrawn: false };
+      const perEvi: Type1PerEviRoute = { esi: ESI, originLeaf: "LEAF1", ethernetTag: 0, vni: VNI, rd: rdFor("LEAF1"), rt: EVPN_EXPORT_RT };
+      const perEs: Type1PerEsRoute = { esi: ESI, originLeaf: "LEAF1", ethernetTag: MAX_ET, singleActive: false, rd: rdFor("LEAF1"), rt: EVPN_EXPORT_RT, withdrawn: false };
       return {
         state: { ...state, perEviAdRoutes: { ...state.perEviAdRoutes, LEAF1: perEvi }, perEsAdRoutes: { ...state.perEsAdRoutes, LEAF1: perEs } },
         events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "leaf1-advertises-perevi-perces", timestamp: Date.now(), message: "LEAF1 advertises A-D per-EVI and A-D per-ES for ESI " + ESI.slice(-8) }],
@@ -396,20 +426,20 @@ export const evpnAliasingSteps: ScenarioStep<EvpnAliasingState>[] = [
     narrative: "LEAF2 does the same for its own attachment to the identical ESI.",
     packet: (state) => (state.perEviAdRoutes.LEAF2 ? type1PerEviPacket("ad-evi-leaf2", "LEAF2", "LEAF3", state.perEviAdRoutes.LEAF2) : undefined),
     run: (state) => {
-      const perEvi: Type1PerEviRoute = { esi: ESI, originLeaf: "LEAF2", vni: VNI, rd: rdFor("LEAF2"), rt: EVPN_EXPORT_RT };
-      const perEs: Type1PerEsRoute = { esi: ESI, originLeaf: "LEAF2", rd: rdFor("LEAF2"), rt: EVPN_EXPORT_RT, withdrawn: false };
+      const perEvi: Type1PerEviRoute = { esi: ESI, originLeaf: "LEAF2", ethernetTag: 0, vni: VNI, rd: rdFor("LEAF2"), rt: EVPN_EXPORT_RT };
+      const perEs: Type1PerEsRoute = { esi: ESI, originLeaf: "LEAF2", ethernetTag: MAX_ET, singleActive: false, rd: rdFor("LEAF2"), rt: EVPN_EXPORT_RT, withdrawn: false };
       const nextState = { ...state, perEviAdRoutes: { ...state.perEviAdRoutes, LEAF2: perEvi }, perEsAdRoutes: { ...state.perEsAdRoutes, LEAF2: perEs } };
       return {
         state: recomputeAliasingSet(nextState),
         events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "leaf2-advertises-perevi-perces", timestamp: Date.now(), message: "LEAF2 advertises A-D per-EVI and A-D per-ES — LEAF3 can now build its aliasing set" }],
       };
     },
-    whatChanged: () => ["LEAF3 now holds A-D per-EVI routes from both LEAF1 and LEAF2", "Eligible next-hop set for SERVER-A's MAC becomes { LEAF1, LEAF2 }"],
+    whatChanged: () => ["LEAF3 now holds A-D per-EVI AND All-Active A-D per-ES routes from both LEAF1 and LEAF2", "Eligible next-hop set for SERVER-A's MAC becomes { LEAF1, LEAF2 }"],
   },
   {
     id: "aliasing-decision-chamber",
     label: "EVPN Aliasing",
-    narrative: `Destination ${SERVER_A_MAC} → Type-2 route → ESI ${ESI.slice(-8)} → A-D per-EVI routes from LEAF1 and LEAF2 → eligible next-hops { LEAF1, LEAF2 }.`,
+    narrative: `Destination ${SERVER_A_MAC} → Type-2 route → ESI ${ESI.slice(-8)} → A-D per-EVI routes from LEAF1 and LEAF2, each backed by an active All-Active A-D per-ES route → eligible next-hops { LEAF1, LEAF2 }.`,
   },
   {
     id: "aliasing-vs-df",
@@ -426,12 +456,12 @@ export const evpnAliasingSteps: ScenarioStep<EvpnAliasingState>[] = [
   {
     id: "flow-a-leaf3-pipeline",
     label: "LEAF3 — Conceptual EVPN Aliasing Forwarding Pipeline",
-    narrative: "Destination MAC lookup → Type-2 route → ESI identified → A-D per-EVI lookup → eligible PE set → flow/ECMP selection → remote VTEP → VXLAN encapsulation.",
+    narrative: "Destination MAC lookup → Type-2 route → ESI identified → A-D per-EVI + All-Active per-ES check → eligible PE set → flow/ECMP selection → remote VTEP → VXLAN encapsulation.",
     packet: (state) => (state.aliasing?.selectedPe.A ? framePacket("f-flow-a-vxlan", "LEAF3", "SPINE1", `VXLAN toward ${state.aliasing.selectedPe.A} (Flow A)`, "VXLAN", { ...unicastFrame(), encapsulated: true, outerSrcVtep: VTEP_LOOPBACK.LEAF3, outerDstVtep: state.aliasing.selectedPe.A ? VTEP_LOOPBACK[state.aliasing.selectedPe.A] : undefined }) : undefined),
     run: (state) => {
       const pe = state.aliasing?.selectedPe.A ?? "LEAF1";
       return {
-        state: { ...state, packetAt: pe, journey: [...state.journey, { device: "LEAF3", input: `Known unicast → ${SERVER_A_MAC}`, lookup: `Type-2 → ESI ${ESI.slice(-8)} → A-D per-EVI eligible set {${(state.aliasing?.eligiblePEs ?? []).join(", ")}} → flow selects ${pe}`, action: "ALIAS_SELECT", output: `VXLAN encapsulated toward ${pe}` }] },
+        state: { ...state, packetAt: pe, journey: [...state.journey, { device: "LEAF3", input: `Known unicast → ${SERVER_A_MAC}`, lookup: `Type-2 → ESI ${ESI.slice(-8)} → A-D per-EVI + per-ES eligible set {${(state.aliasing?.eligiblePEs ?? []).join(", ")}} → flow selects ${pe}`, action: "ALIAS_SELECT", output: `VXLAN encapsulated toward ${pe}` }] },
         events: [{ type: "ROUTE_SELECTED", stepId: "flow-a-leaf3-pipeline", timestamp: Date.now(), message: `LEAF3 selects ${pe} as the aliasing next hop for Flow A` }],
       };
     },
@@ -464,7 +494,7 @@ export const evpnAliasingSteps: ScenarioStep<EvpnAliasingState>[] = [
     run: (state) => {
       const pe = state.aliasing?.selectedPe.B ?? "LEAF2";
       return {
-        state: { ...state, packetAt: "SERVER-A", journey: [...state.journey, { device: "LEAF3", input: `Known unicast → ${SERVER_A_MAC}`, lookup: `A-D per-EVI eligible set {${(state.aliasing?.eligiblePEs ?? []).join(", ")}} → flow selects ${pe}`, action: "ALIAS_SELECT", output: `VXLAN encapsulated toward ${pe}` }, { device: pe, input: `VXLAN(VNI ${VNI})`, lookup: `VNI ${VNI} → local ESI ${ESI.slice(-8)} → SERVER-A (no DF check needed)`, action: "LOCAL_DELIVER", output: "Delivered to SERVER-A" }] },
+        state: { ...state, packetAt: "SERVER-A", journey: [...state.journey, { device: "LEAF3", input: `Known unicast → ${SERVER_A_MAC}`, lookup: `A-D per-EVI + per-ES eligible set {${(state.aliasing?.eligiblePEs ?? []).join(", ")}} → flow selects ${pe}`, action: "ALIAS_SELECT", output: `VXLAN encapsulated toward ${pe}` }, { device: pe, input: `VXLAN(VNI ${VNI})`, lookup: `VNI ${VNI} → local ESI ${ESI.slice(-8)} → SERVER-A (no DF check needed)`, action: "LOCAL_DELIVER", output: "Delivered to SERVER-A" }] },
         events: [{ type: "PACKET_RECEIVED", stepId: "flow-b-delivered", timestamp: Date.now(), message: "SERVER-A receives Flow B via LEAF2" }],
       };
     },
@@ -473,7 +503,7 @@ export const evpnAliasingSteps: ScenarioStep<EvpnAliasingState>[] = [
   {
     id: "control-data-both-recap",
     label: "Control Builds The Set, Data Uses It",
-    narrative: "Control: LEAF1 Type-1 per-EVI + LEAF2 Type-1 per-EVI + Type-2 MAC → LEAF3 builds the alias set. Data: HOST-B → LEAF3 → (LEAF1 or LEAF2) → SERVER-A. The control-plane A-D signaling is what determines which paths the data plane may legitimately choose from.",
+    narrative: "Control: LEAF1 and LEAF2 Type-1 per-EVI + their All-Active Type-1 per-ES + Type-2 MAC → LEAF3 builds the alias set. Data: HOST-B → LEAF3 → (LEAF1 or LEAF2) → SERVER-A. The control-plane A-D signaling is what determines which paths the data plane may legitimately choose from.",
   },
   {
     id: "fail-es-attachment",
@@ -653,7 +683,7 @@ export const evpnAliasingSteps: ScenarioStep<EvpnAliasingState>[] = [
   {
     id: "route-type-recap",
     label: "The Full Route-Type Mental Map",
-    narrative: 'Type 1: "Ethernet-Segment reachability/state" (per-ES: attachment; per-EVI: aliasing). Type 2: "Where is this MAC/IP?" Type 3: "Who participates in this BUM domain?" Type 4: "Who else is attached to this Ethernet Segment?" (ES discovery/DF). Type 5: "Where is this IP prefix?"',
+    narrative: 'Type 1: "Ethernet-Segment reachability/state" (per-ES: attachment + redundancy mode, the prerequisite for using per-EVI; per-EVI: EVI participation for aliasing). Type 2: "Where is this MAC/IP?" Type 3: "Who participates in this BUM domain?" Type 4: "Who else is attached to this Ethernet Segment?" (ES discovery/DF). Type 5: "Where is this IP prefix?"',
   },
   {
     id: "complete",

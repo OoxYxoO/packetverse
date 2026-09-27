@@ -1,4 +1,5 @@
 import type { PacketLayer, PacketVisual, ScenarioStep } from "../types";
+import { MAX_ET, serviceCarving } from "./evpnMultihoming";
 
 /**
  * EVPN Single-Active Multihoming + EVPN-VPWS — the ninth lesson in
@@ -66,7 +67,7 @@ export type PbRole = "not-elected" | "primary" | "backup" | "ineligible";
 
 export interface PbCandidate {
   pe: PeId;
-  electionValue: string; // this lesson's basic/default algorithm: the candidate's own loopback
+  electionValue: string; // the candidate's loopback — ordered NUMERICALLY to assign ordinals
   available: boolean;
 }
 
@@ -78,23 +79,33 @@ export interface SingleActiveElection {
   backupPe?: PeId;
   reason: string;
   previousPrimary?: PeId;
+  /** Candidates in numeric loopback order with their computed ordinals. */
+  ordinals?: { pe: PeId; ip: string; ordinal: number }[];
 }
+
+export const SINGLE_ACTIVE_ALGORITHM = "Default DF election (RFC 7432 §8.5 service carving, used by RFC 8214 Single-Active): order candidate loopbacks numerically → ordinals 0…N−1 → Primary = ordinal (service ID mod N); Backup = the next ordinal";
 
 function candidateSet(pe1Failed: boolean): PbCandidate[] {
   return CEA_PES.filter((p) => !(pe1Failed && p === "PE1")).map((p) => ({ pe: p, electionValue: PE_LOOPBACK[p], available: true }));
 }
 
-/** Standards-valid but deliberately BASIC default election: lowest candidate loopback wins Primary. Real deployments may weight preference/priority — never call this the universal algorithm. */
-export function electSingleActivePrimary(candidates: PbCandidate[], _previousPrimary: PeId | undefined): { primaryPe?: PeId; backupPe?: PeId; reason: string } {
-  const available = candidates.filter((c) => c.available);
-  if (available.length === 0) return { reason: "No candidates available for this Ethernet Segment." };
-  const sorted = [...available].sort((a, b) => a.electionValue.localeCompare(b.electionValue));
-  const primaryPe = sorted[0].pe;
-  const backupPe = sorted[1]?.pe;
+/**
+ * Single-Active Primary/Backup via the default DF election (RFC 8214 §3.1 → RFC 7432 §8.5): numeric loopback ordering
+ * → ordinals → Primary = ordinal (serviceValue mod N); Backup = the next ordinal. The lowest loopback only decides who
+ * holds ordinal 0 — it does not win by itself. Preference/priority algorithms (RFC 8584) exist and are not modeled.
+ */
+export function electSingleActivePrimary(candidates: PbCandidate[], serviceValue: number, _previousPrimary?: PeId): { primaryPe?: PeId; backupPe?: PeId; reason: string; ordinals: { pe: PeId; ip: string; ordinal: number }[] } {
+  const { ordered, selectedOrdinal, selected } = serviceCarving(candidates, serviceValue);
+  const ordinals = ordered.map(({ candidate, ordinal }) => ({ pe: candidate.pe, ip: candidate.electionValue, ordinal }));
+  if (!selected || selectedOrdinal === undefined) return { reason: "No candidates available for this Ethernet Segment.", ordinals };
+  const primaryPe = selected.pe;
+  const backupPe = ordered.length > 1 ? ordered[(selectedOrdinal + 1) % ordered.length].candidate.pe : undefined;
+  const order = ordinals.map((o) => `${o.pe} ${o.ip} → ordinal ${o.ordinal}`).join(", ");
   return {
     primaryPe,
     backupPe,
-    reason: `${primaryPe} has the lowest candidate loopback (${sorted[0].electionValue}) among {${available.map((c) => c.pe).join(", ")}} — basic/default ordinal election.${backupPe ? ` ${backupPe} becomes Backup.` : " No surviving Backup candidate."}`,
+    ordinals,
+    reason: `Candidate loopbacks in numeric order: ${order}. Service ID ${serviceValue} mod ${ordered.length} = ${selectedOrdinal} → ordinal ${selectedOrdinal} → ${primaryPe} is Primary (P=1, B=0).${backupPe ? ` ${backupPe} holds the next ordinal → Backup (P=0, B=1).` : " No surviving Backup candidate."}`,
   };
 }
 
@@ -126,18 +137,46 @@ export function buildVpwsAdRoute(originPe: PeId, esi: string, role: PbRole | "re
   return { originPe, esi, vpwsServiceId: VPWS_SERVICE_ID, serviceLabel, role, l2Mtu, rd: RD_BASE[originPe], rt: RT, withdrawn: false };
 }
 
+/**
+ * Ethernet A-D per-ES route for CE-A's multihomed ES (RFC 7432 §8.2.1, usage unchanged by RFC 8214 §3.1): Ethernet Tag
+ * MAX-ET, and the ESI Label extended community's Single-Active flag = 1 — how PE3 learns this ES is Single-Active.
+ * Distinct from the per-EVI P/B flags (the service's Primary/Backup role). Control-plane only.
+ */
+export interface VpwsPerEsRoute {
+  originPe: PeId;
+  esi: string;
+  ethernetTag: number;
+  singleActive: boolean;
+  rd: string;
+  rt: string;
+  withdrawn: boolean;
+}
+export function buildVpwsPerEsRoute(originPe: PeId): VpwsPerEsRoute {
+  return { originPe, esi: ESI, ethernetTag: MAX_ET, singleActive: true, rd: RD_BASE[originPe], rt: RT, withdrawn: false };
+}
+
+/**
+ * The CE-A-side PE that PE3 may actually use: an active per-EVI route with the Primary role (P=1) AND an active per-ES
+ * route for the same ESI with Single-Active = 1 (RFC 7432 §8.4: a per-EVI route is never used for forwarding until the
+ * associated per-ES route is present). The single place this prerequisite is decided.
+ */
+export function usableCeaPrimary(routes: Partial<Record<PeId, VpwsAdRoute>>, perEsRoutes: Partial<Record<PeId, VpwsPerEsRoute>>): PeId | undefined {
+  return CEA_PES.find((p) => {
+    const evi = routes[p];
+    const es = perEsRoutes[p];
+    return !!evi && !evi.withdrawn && evi.role === "primary" && !!es && !es.withdrawn && es.singleActive && es.esi === evi.esi;
+  });
+}
+
 export function withdrawVpwsAdRoute(routes: Partial<Record<PeId, VpwsAdRoute>>, pe: PeId): Partial<Record<PeId, VpwsAdRoute>> {
   const route = routes[pe];
   if (!route) return routes;
   return { ...routes, [pe]: { ...route, withdrawn: true } };
 }
 
-/** For PE3: which CE-A-side PE is the current usable Primary? For PE1/PE2: the remote endpoint is always PE3. */
-export function discoverVpwsEndpoint(routes: Partial<Record<PeId, VpwsAdRoute>>, forPe: PeId): PeId | undefined {
-  if (forPe === "PE3") {
-    const primary = CEA_PES.find((p) => routes[p] && !routes[p]!.withdrawn && routes[p]!.role === "primary");
-    return primary;
-  }
+/** For PE3: the usable CE-A-side Primary (per-EVI + Single-Active per-ES). For PE1/PE2: PE3 — single-homed (ESI 0), so no per-ES route applies. */
+export function discoverVpwsEndpoint(routes: Partial<Record<PeId, VpwsAdRoute>>, perEsRoutes: Partial<Record<PeId, VpwsPerEsRoute>>, forPe: PeId): PeId | undefined {
+  if (forPe === "PE3") return usableCeaPrimary(routes, perEsRoutes);
   return routes.PE3 && !routes.PE3.withdrawn ? "PE3" : undefined;
 }
 
@@ -146,8 +185,8 @@ export function discoverVpwsEndpoint(routes: Partial<Record<PeId, VpwsAdRoute>>,
  * DISPOSITION PE advertised in its A-D per-EVI route, never its own. Pure — resolves only
  * from stored routes; undefined when no usable remote endpoint exists (no fallback label).
  */
-export function remoteServiceLabelFor(routes: Partial<Record<PeId, VpwsAdRoute>>, ingressPe: PeId): number | undefined {
-  const remote = discoverVpwsEndpoint(routes, ingressPe);
+export function remoteServiceLabelFor(routes: Partial<Record<PeId, VpwsAdRoute>>, perEsRoutes: Partial<Record<PeId, VpwsPerEsRoute>>, ingressPe: PeId): number | undefined {
+  const remote = discoverVpwsEndpoint(routes, perEsRoutes, ingressPe);
   const route = remote ? routes[remote] : undefined;
   return route && !route.withdrawn ? route.serviceLabel : undefined;
 }
@@ -157,9 +196,10 @@ export interface VpwsParameterCheck {
   reason: string;
 }
 
+/** RFC 8214 §3.1: a received non-zero L2 MTU is checked against the LOCAL MTU; on mismatch the remote PE MUST NOT be added as the EVPN destination. */
 export function validateVpwsParameters(localMtu: number, remoteMtu: number): VpwsParameterCheck {
-  if (localMtu !== remoteMtu) {
-    return { compatible: false, reason: `L2 MTU mismatch — local expects ${localMtu}, remote advertised ${remoteMtu}. The remote endpoint cannot become usable until this matches.` };
+  if (remoteMtu !== 0 && localMtu !== remoteMtu) {
+    return { compatible: false, reason: `L2 MTU mismatch — local MTU ${localMtu}, remote advertised ${remoteMtu}. The remote endpoint cannot become usable until this matches.` };
   }
   return { compatible: true, reason: `L2 MTU compatible (${localMtu}) — remote endpoint usable.` };
 }
@@ -168,20 +208,29 @@ export interface VpwsServiceState {
   serviceId: number;
   localAcVlan: number;
   remoteAcVlan: number;
-  pe3ExpectedMtu: number;
+  /** PE3's own local L2 MTU — always the same value PE3 advertises in its A-D per-EVI route. */
+  pe3LocalMtu: number;
   status: "down" | "up";
   reason: string;
 }
 
-export function installVpwsService(routes: Partial<Record<PeId, VpwsAdRoute>>, pe3ExpectedMtu: number): VpwsServiceState {
-  const primaryPe = CEA_PES.find((p) => routes[p] && !routes[p]!.withdrawn && routes[p]!.role === "primary");
+export function installVpwsService(routes: Partial<Record<PeId, VpwsAdRoute>>, perEsRoutes: Partial<Record<PeId, VpwsPerEsRoute>>): VpwsServiceState {
+  const primaryPe = usableCeaPrimary(routes, perEsRoutes);
   const primaryRoute = primaryPe ? routes[primaryPe] : undefined;
   const remoteRoute = routes.PE3;
+  const pe3LocalMtu = remoteRoute?.l2Mtu ?? CORRECT_L2_MTU;
   if (!primaryRoute || !remoteRoute || remoteRoute.withdrawn) {
-    return { serviceId: VPWS_SERVICE_ID, localAcVlan: LOCAL_AC_VLAN, remoteAcVlan: REMOTE_AC_VLAN, pe3ExpectedMtu, status: "down", reason: "No usable Primary/remote-endpoint pair yet." };
+    return { serviceId: VPWS_SERVICE_ID, localAcVlan: LOCAL_AC_VLAN, remoteAcVlan: REMOTE_AC_VLAN, pe3LocalMtu, status: "down", reason: "No usable Primary/remote-endpoint pair yet (needs the Primary's per-EVI route plus its Single-Active per-ES route, and PE3's per-EVI route)." };
   }
-  const check = validateVpwsParameters(pe3ExpectedMtu, primaryRoute.l2Mtu);
-  return { serviceId: VPWS_SERVICE_ID, localAcVlan: LOCAL_AC_VLAN, remoteAcVlan: REMOTE_AC_VLAN, pe3ExpectedMtu, status: check.compatible ? "up" : "down", reason: check.reason };
+  // Checked in both directions: PE3 checks the Primary's advertised MTU against its local MTU, and the Primary checks PE3's.
+  const check = validateVpwsParameters(pe3LocalMtu, primaryRoute.l2Mtu);
+  return { serviceId: VPWS_SERVICE_ID, localAcVlan: LOCAL_AC_VLAN, remoteAcVlan: REMOTE_AC_VLAN, pe3LocalMtu, status: check.compatible ? "up" : "down", reason: check.reason };
+}
+
+/** PE3's local L2 MTU changes — PE3 re-advertises its A-D per-EVI route carrying the new local value (local and advertised never diverge). */
+export function setPe3LocalMtu(routes: Partial<Record<PeId, VpwsAdRoute>>, mtu: number): Partial<Record<PeId, VpwsAdRoute>> {
+  const r = routes.PE3;
+  return r ? { ...routes, PE3: { ...r, l2Mtu: mtu } } : routes;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,24 +268,25 @@ function popTopLabel(pkt: VpwsPacketState): VpwsPacketState {
   return { ...pkt, labels: rest.map((l, i) => (i === 0 ? { ...l, bottomOfStack: true } : l)) };
 }
 
-export const TRANSPORT_LABEL = 16003;
+/** Provider transport label toward each destination PE (one per egress PE — never one label for every direction). */
+export const TRANSPORT_LABEL_TO: Record<PeId, number> = { PE1: 16001, PE2: 16002, PE3: 16003 };
 /** Each PE's OWN locally-allocated VPWS service label — what it advertises for others to push toward it (allocation only, never a forwarding choice). */
 export const LOCAL_SERVICE_LABEL: Record<PeId, number> = { PE1: 24500, PE2: 24501, PE3: 24502 };
 
-/** `serviceLabel` must be the disposition PE's advertised label (see remoteServiceLabelFor). */
-export function buildVpwsLabelStack(frame: EthernetFrame, serviceLabel: number): VpwsPacketState {
+/** Top: transport label toward the DISPOSITION PE; bottom: the service label that disposition PE advertised (see remoteServiceLabelFor). */
+export function buildVpwsLabelStack(frame: EthernetFrame, dispositionPe: PeId, serviceLabel: number): VpwsPacketState {
   let pkt: VpwsPacketState = { frame, labels: [] };
   pkt = pushLabel(pkt, serviceLabel, "service");
-  pkt = pushLabel(pkt, TRANSPORT_LABEL, "transport");
+  pkt = pushLabel(pkt, TRANSPORT_LABEL_TO[dispositionPe], "transport");
   return pkt;
 }
 /** Encapsulate only when a real downstream label exists — never invents one. */
-function labeledCustomerFrame(frame: EthernetFrame, serviceLabel: number | undefined): VpwsPacketState {
-  return serviceLabel === undefined ? { frame, labels: [] } : buildVpwsLabelStack(frame, serviceLabel);
+function labeledCustomerFrame(frame: EthernetFrame, dispositionPe: PeId, serviceLabel: number | undefined): VpwsPacketState {
+  return serviceLabel === undefined ? { frame, labels: [] } : buildVpwsLabelStack(frame, dispositionPe, serviceLabel);
 }
-/** Stack text for a disposition hop — the transport label over the given downstream service label. */
-function labeledStackText(serviceLabel: number | undefined): string {
-  return vpwsStackText(labeledCustomerFrame({ srcMac: "", dstMac: "" }, serviceLabel));
+/** Stack text for a disposition hop — the transport label toward that PE over the given downstream service label. */
+function labeledStackText(dispositionPe: PeId, serviceLabel: number | undefined): string {
+  return vpwsStackText(labeledCustomerFrame({ srcMac: "", dstMac: "" }, dispositionPe, serviceLabel));
 }
 /** Journey text rendered from an actual label stack, e.g. "[16003][24502][Ethernet]". */
 function vpwsStackText(pkt: VpwsPacketState): string {
@@ -312,11 +362,12 @@ export function failAttachmentCircuit(routes: Partial<Record<PeId, VpwsAdRoute>>
 
 export function selectVpwsPrimary(election: SingleActiveElection, pe1Failed: boolean): SingleActiveElection {
   const candidates = candidateSet(pe1Failed);
-  const { primaryPe, backupPe, reason } = electSingleActivePrimary(candidates, election.primaryPe);
-  return { ...election, candidates, primaryPe, backupPe, reason, previousPrimary: election.primaryPe };
+  const { primaryPe, backupPe, reason, ordinals } = electSingleActivePrimary(candidates, VPWS_SERVICE_ID, election.primaryPe);
+  return { ...election, candidates, primaryPe, backupPe, reason, ordinals, previousPrimary: election.primaryPe };
 }
 
 export function failoverVpwsService(state: { election: SingleActiveElection; perEviAdRoutes: Partial<Record<PeId, VpwsAdRoute>>; pe1AcFailed: boolean }): { election: SingleActiveElection; perEviAdRoutes: Partial<Record<PeId, VpwsAdRoute>> } {
+  // Service-specific failure: only PE1's per-EVI route for VPWS-500 is withdrawn — its per-ES route stays, the ES still serves other services.
   const withdrawn = withdrawVpwsAdRoute(state.perEviAdRoutes, "PE1");
   const election = selectVpwsPrimary(state.election, true);
   const newPrimary = election.primaryPe;
@@ -346,6 +397,8 @@ export interface EvpnVpwsState {
   bgpSessionUp: boolean;
   election: SingleActiveElection;
   perEviAdRoutes: Partial<Record<PeId, VpwsAdRoute>>;
+  /** Ethernet A-D per-ES routes for CE-A's Single-Active ES (PE1, PE2) — the prerequisite for using their per-EVI routes. */
+  perEsAdRoutes: Partial<Record<PeId, VpwsPerEsRoute>>;
   vpwsService?: VpwsServiceState;
 
   pe1AcFailed: boolean;
@@ -361,11 +414,12 @@ export interface EvpnVpwsState {
 }
 
 export function createEvpnVpwsState(): EvpnVpwsState {
-  const election: SingleActiveElection = { esi: ESI, algorithm: "Basic/default for this lesson (ordinal — lowest candidate loopback wins)", candidates: candidateSet(false), reason: "Not yet elected" };
+  const election: SingleActiveElection = { esi: ESI, algorithm: SINGLE_ACTIVE_ALGORITHM, candidates: candidateSet(false), reason: "Not yet elected" };
   return {
     bgpSessionUp: true,
     election,
     perEviAdRoutes: {},
+    perEsAdRoutes: {},
     pe1AcFailed: false,
     journey: [],
     direction: "ce-a-to-ce-b",
@@ -457,12 +511,13 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
   {
     id: "es-inspector",
     label: "Ethernet Segment Inspector",
-    narrative: `Redundancy Mode: SINGLE-ACTIVE. Primary: (not yet elected). Backup: (not yet elected). ESI: ${ESI}. Service: VPWS-${VPWS_SERVICE_ID} (built in Act 2). States stay explicit: NOT ELECTED, PRIMARY, BACKUP, INELIGIBLE — never a blind reuse of DF/NDF here.`,
+    narrative: `Redundancy Mode: SINGLE-ACTIVE. Primary: (not yet elected). Backup: (not yet elected). ESI: ${ESI}. Service: VPWS-${VPWS_SERVICE_ID} (built in Act 2). PE1 and PE2 each advertise an Ethernet A-D per-ES route for this ESI whose ESI Label community carries Single-Active flag = 1 — that is how PE3 learns the redundancy mode, and PE3 will not use either PE's per-EVI route without it. States stay explicit: NOT ELECTED, PRIMARY, BACKUP, INELIGIBLE — never a blind reuse of DF/NDF here.`,
+    run: (state) => ({ state: { ...state, perEsAdRoutes: { PE1: buildVpwsPerEsRoute("PE1"), PE2: buildVpwsPerEsRoute("PE2") } }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "es-inspector", timestamp: Date.now(), message: "PE1 and PE2 advertise Ethernet A-D per-ES routes (Single-Active flag = 1) for CE-A's ESI" }] }),
   },
   {
     id: "single-active-election",
     label: "Single-Active Election",
-    narrative: `Candidates: PE1 (${PE_LOOPBACK.PE1}), PE2 (${PE_LOOPBACK.PE2}). Election algorithm: basic/default for this lesson — lowest candidate loopback wins Primary. Other algorithms (priority/preference-based) exist and are not the only universal mechanism.`,
+    narrative: `Candidates: PE1 (${PE_LOOPBACK.PE1}), PE2 (${PE_LOOPBACK.PE2}). Default election (the RFC 7432 DF election that RFC 8214 uses for Single-Active): order the loopbacks numerically to assign ordinals 0, 1, …; the service ID (Ethernet Tag ${VPWS_SERVICE_ID}) mod N picks the Primary's ordinal, and the next ordinal is Backup. Other algorithms (priority/preference-based) exist and are not the only universal mechanism.`,
     run: (state) => ({ state: { ...state, election: selectVpwsPrimary(state.election, false) }, events: [{ type: "ROUTE_SELECTED", stepId: "single-active-election", timestamp: Date.now(), message: "Single-Active election computed — PE1 Primary, PE2 Backup" }] }),
   },
   {
@@ -531,9 +586,9 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     run: (state) => {
       const route = buildVpwsAdRoute("PE3", "", "remote", CORRECT_L2_MTU, LOCAL_SERVICE_LABEL.PE3);
       const perEviAdRoutes = { ...state.perEviAdRoutes, PE3: route };
-      return { state: { ...state, perEviAdRoutes, vpwsService: installVpwsService(perEviAdRoutes, CORRECT_L2_MTU) }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "pe3-advertises-adevi", timestamp: Date.now(), message: "PE3 advertises A-D per-EVI for VPWS-500 — remote endpoint CE-B" }] };
+      return { state: { ...state, perEviAdRoutes, vpwsService: installVpwsService(perEviAdRoutes, state.perEsAdRoutes) }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "pe3-advertises-adevi", timestamp: Date.now(), message: "PE3 advertises A-D per-EVI for VPWS-500 — remote endpoint CE-B" }] };
     },
-    whatChanged: () => ["Both sides now hold each other's A-D per-EVI route", "VPWS-500 establishes purely from A-D per-EVI signaling — no Type-2 route was needed"],
+    whatChanged: () => ["Both sides now hold each other's A-D per-EVI route (PE3 also holds PE1/PE2's Single-Active per-ES routes)", "VPWS-500 establishes from Ethernet A-D signaling alone — no Type-2 route was needed"],
   },
   {
     id: "vpws-route-discovery",
@@ -571,11 +626,11 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
   {
     id: "mpls-data-plane",
     label: "MPLS Data Plane — Two-Label Stack",
-    narrative: `Packet leaving PE1: [TRANSPORT LABEL ${TRANSPORT_LABEL}] [VPWS SERVICE LABEL ${LOCAL_SERVICE_LABEL.PE3} — the label PE3 advertised, not PE1's own] [CUSTOMER ETHERNET FRAME].`,
-    packet: (state) => vpwsPacket("frame-labeled", "PE1", "CORE", "MPLS-encapsulated — two-label stack", "MPLS", labeledCustomerFrame({ srcMac: CE_A_MAC, dstMac: CE_B_MAC }, remoteServiceLabelFor(state.perEviAdRoutes, "PE1"))),
+    narrative: `Packet leaving PE1: [TRANSPORT LABEL ${TRANSPORT_LABEL_TO.PE3} — toward PE3] [VPWS SERVICE LABEL ${LOCAL_SERVICE_LABEL.PE3} — the label PE3 advertised, not PE1's own] [CUSTOMER ETHERNET FRAME].`,
+    packet: (state) => vpwsPacket("frame-labeled", "PE1", "CORE", "MPLS-encapsulated — two-label stack", "MPLS", labeledCustomerFrame({ srcMac: CE_A_MAC, dstMac: CE_B_MAC }, "PE3", remoteServiceLabelFor(state.perEviAdRoutes, state.perEsAdRoutes, "PE1"))),
     run: (state) => {
-      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, "PE1");
-      const packet = labeledCustomerFrame({ srcMac: CE_A_MAC, dstMac: CE_B_MAC }, serviceLabel);
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, state.perEsAdRoutes, "PE1");
+      const packet = labeledCustomerFrame({ srcMac: CE_A_MAC, dstMac: CE_B_MAC }, "PE3", serviceLabel);
       return {
         state: { ...state, packetAt: "CORE", packet, journey: [...state.journey, { device: "PE1", input: serviceLabel === undefined ? "No usable remote endpoint" : `Remote service label ${serviceLabel} resolved (advertised by PE3)`, lookup: "Push VPWS service label, then transport label", action: "PUSH_LABELS", output: vpwsStackText(packet) }] },
         events: [{ type: "PACKET_SENT", stepId: "mpls-data-plane", timestamp: Date.now(), message: "PE1 encapsulates with a two-label MPLS stack" }],
@@ -591,7 +646,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     id: "core-transport-only",
     label: "CORE — Transport Forwarding Only",
     narrative: "[Transport][VPWS Service][Ethernet]. X-Ray highlights only the top transport label. CORE performs swap/transport forwarding — it never inspects customer MACs or selects a VPWS AC.",
-    run: (state) => ({ state: { ...state, packetAt: "PE3", journey: [...state.journey, { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap) — service label untouched", action: "TRANSPORT_FORWARD", output: `Forwarded toward PE3` }] }, events: [] }),
+    run: (state) => ({ state: { ...state, packetAt: "PE3", journey: [...state.journey, { device: "CORE", input: `Top label ${TRANSPORT_LABEL_TO.PE3}`, lookup: "Transport forwarding (swap) — service label untouched", action: "TRANSPORT_FORWARD", output: `Forwarded toward PE3` }] }, events: [] }),
   },
   {
     id: "pe3-disposition",
@@ -602,7 +657,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
       // The arriving packet carries PE3's own downstream-assigned label (what PE1 pushed).
       const serviceLabel = state.packet?.labels.find((l) => l.purpose === "service")?.value ?? state.perEviAdRoutes.PE3?.serviceLabel;
       return {
-        state: { ...state, packetAt: "CE-B", journey: [...state.journey, { device: "PE3", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-B AC (VLAN ${REMOTE_AC_VLAN})`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" }] },
+        state: { ...state, packetAt: "CE-B", journey: [...state.journey, { device: "PE3", input: labeledStackText("PE3", serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-B AC (VLAN ${REMOTE_AC_VLAN})`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" }] },
         events: [{ type: "PACKET_RECEIVED", stepId: "pe3-disposition", timestamp: Date.now(), message: "CE-B receives the customer frame" }],
       };
     },
@@ -618,8 +673,8 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     narrative: "CE-B → PE3 → selected remote PRIMARY = PE1 → provider core → PE1 → CE-A.",
     packet: () => vpwsPacket("frame-return", "CE-B", "PE3", "Customer Ethernet frame — CE-B → CE-A", "FRAME", { frame: { srcMac: CE_B_MAC, dstMac: CE_A_MAC }, labels: [] }),
     run: (state) => {
-      // PE3 pushes the label its remote endpoint (current Primary PE1) advertised.
-      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, "PE3");
+      // PE3 pushes the label its remote endpoint (current Primary PE1) advertised, under the transport label toward PE1.
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, state.perEsAdRoutes, "PE3");
       return {
         state: {
           ...state,
@@ -628,8 +683,8 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
           journey: [
             ...state.journey,
             { device: "PE3", input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint = current Primary (PE1)`, action: "SERVICE_LOOKUP", output: `Encapsulated toward PE1 with service label ${serviceLabel ?? "(none)"}` },
-            { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE1" },
-            { device: "PE1", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-A AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-A" },
+            { device: "CORE", input: `Top label ${TRANSPORT_LABEL_TO.PE1}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE1" },
+            { device: "PE1", input: labeledStackText("PE1", serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-A AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-A" },
           ],
         },
         events: [{ type: "PACKET_RECEIVED", stepId: "return-direction", timestamp: Date.now(), message: "CE-A receives the return frame via PE1 (Primary)" }],
@@ -659,7 +714,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
   {
     id: "failure-intro",
     label: "Now Fail PE1 ↔ CE-A's Attachment Circuit",
-    narrative: "Fail only PE1's AC to CE-A. PE1 device, underlay, BGP EVPN, and VTEP/transport all stay UP. Only the CE-A AC goes DOWN — the Primary forwarding path becomes unavailable.",
+    narrative: `Fail only PE1's VPWS-${VPWS_SERVICE_ID} attachment circuit to CE-A (VLAN ${LOCAL_AC_VLAN}). PE1 device, underlay, BGP EVPN, and transport all stay UP, and the Ethernet Segment itself stays up for PE1's other services (its per-ES route remains). Only this service's AC goes DOWN — the Primary forwarding path for VPWS-${VPWS_SERVICE_ID} becomes unavailable.`,
     run: (state) => ({ state: { ...state, pe1AcFailed: true }, events: [{ type: "BGP_STATE_CHANGED", stepId: "failure-intro", timestamp: Date.now(), message: "PE1's AC to CE-A becomes unavailable (PE1 itself remains healthy)" }] }),
   },
   {
@@ -675,7 +730,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     narrative: "BEFORE: Primary = PE1, Backup = PE2. FAILURE: PE1 AC DOWN. AFTER: Primary = PE2. With only two PEs in this Ethernet Segment, there is no third candidate to become a newly elected Backup.",
     run: (state) => {
       const result = failoverVpwsService({ election: state.election, perEviAdRoutes: state.perEviAdRoutes, pe1AcFailed: true });
-      const vpwsService = installVpwsService(result.perEviAdRoutes, state.vpwsService?.pe3ExpectedMtu ?? CORRECT_L2_MTU);
+      const vpwsService = installVpwsService(result.perEviAdRoutes, state.perEsAdRoutes);
       return { state: { ...state, election: result.election, perEviAdRoutes: result.perEviAdRoutes, vpwsService }, events: [{ type: "ROUTE_SELECTED", stepId: "primary-backup-failover", timestamp: Date.now(), message: "PE2 becomes the new Primary for VPWS-500" }] };
     },
     whatChanged: (prev, next) => [`Primary for ESI ${ESI.slice(-8)}: ${prev.election.primaryPe} → ${next.election.primaryPe}`],
@@ -688,7 +743,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
   {
     id: "pe3-failover-pipeline",
     label: "PE3 — Conceptual VPWS Failover Pipeline",
-    narrative: "A-D route withdrawal/update → identify VPWS-500 → primary endpoint state changes → backup PE becomes usable primary → service next hop updated → service label updated if required → forwarding state changed.",
+    narrative: "A-D per-EVI withdrawal/update → identify VPWS-500 → primary endpoint state changes → backup PE (still backed by its Single-Active per-ES route) becomes usable primary → service next hop updated → service label and transport label updated toward the new Primary → forwarding state changed.",
   },
   {
     id: "data-path-failover",
@@ -696,8 +751,8 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     narrative: "BEFORE: CE-B → PE3 → PE1 → CE-A. AFTER: CE-B → PE3 → PE2 → CE-A.",
     packet: () => vpwsPacket("frame-after-failover", "CE-B", "PE3", "Customer Ethernet frame — CE-B → CE-A (after failover)", "FRAME", { frame: { srcMac: CE_B_MAC, dstMac: CE_A_MAC }, labels: [] }),
     run: (state) => {
-      // PE1's route is withdrawn — PE3 now pushes the label the new Primary PE2 advertised.
-      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, "PE3");
+      // PE1's route is withdrawn — PE3 now pushes the label the new Primary PE2 advertised, under the transport label toward PE2.
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, state.perEsAdRoutes, "PE3");
       return {
         state: {
           ...state,
@@ -706,8 +761,8 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
           journey: [
             ...state.journey,
             { device: "PE3", input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint = new Primary (PE2)`, action: "SERVICE_LOOKUP", output: `Encapsulated toward PE2 with service label ${serviceLabel ?? "(none)"}` },
-            { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE2" },
-            { device: "PE2", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-A AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-A" },
+            { device: "CORE", input: `Top label ${TRANSPORT_LABEL_TO.PE2}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE2" },
+            { device: "PE2", input: labeledStackText("PE2", serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-A AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-A" },
           ],
         },
         events: [{ type: "PACKET_RECEIVED", stepId: "data-path-failover", timestamp: Date.now(), message: "CE-A receives the frame via the new Primary, PE2" }],
@@ -722,7 +777,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
   {
     id: "restore-pe1-ac",
     label: "PE1's Attachment Circuit Is Restored",
-    narrative: "PE1's AC to CE-A comes back up and re-advertises its A-D per-EVI route. This lesson's deterministic election always prefers PE1 when both are healthy — Primary reverts to PE1, and PE2 returns to Backup.",
+    narrative: `PE1's AC to CE-A comes back up and re-advertises its A-D per-EVI route. With both PEs available again, the same default election runs: ${VPWS_SERVICE_ID} mod 2 = 0 selects ordinal 0 (PE1) — Primary reverts to PE1, and PE2 returns to Backup.`,
     run: (state) => {
       const election = selectVpwsPrimary(state.election, false);
       const restoredPe1: VpwsAdRoute = { ...(state.perEviAdRoutes.PE1 ?? buildVpwsAdRoute("PE1", ESI, "primary", CORRECT_L2_MTU, LOCAL_SERVICE_LABEL.PE1)), withdrawn: false };
@@ -732,7 +787,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
         if (!r) return;
         routes = { ...routes, [p]: { ...r, role: p === election.primaryPe ? "primary" : p === election.backupPe ? "backup" : "ineligible" } };
       });
-      const vpwsService = installVpwsService(routes, state.vpwsService?.pe3ExpectedMtu ?? CORRECT_L2_MTU);
+      const vpwsService = installVpwsService(routes, state.perEsAdRoutes);
       return { state: { ...state, pe1AcFailed: false, election, perEviAdRoutes: routes, vpwsService }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "restore-pe1-ac", timestamp: Date.now(), message: "PE1 re-advertises its A-D per-EVI route — Primary reverts to PE1" }] };
     },
     whatChanged: (prev, next) => [`Primary for ESI ${ESI.slice(-8)}: ${prev.election.primaryPe} → ${next.election.primaryPe}`],
@@ -765,12 +820,13 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
   {
     id: "fault-injected",
     label: "VPWS-500 Remains DOWN",
-    narrative: "BGP EVPN is Established. The Type-1 per-EVI route is received. The remote endpoint exists. But VPWS-500 remains DOWN: PE1/PE2 advertise L2 MTU 9000; PE3 expects L2 MTU 1500. The remote endpoint must not become usable when the advertised non-zero MTU does not match the locally expected MTU.",
+    narrative: `BGP EVPN is Established. The Type-1 per-EVI route is received. The remote endpoint exists. But VPWS-500 remains DOWN: PE3's local L2 MTU is now ${FAULT_L2_MTU}, and its own A-D per-EVI route advertises ${FAULT_L2_MTU}, while the Primary advertises ${CORRECT_L2_MTU}. PE3 checks the received non-zero MTU (${CORRECT_L2_MTU}) against its local MTU (${FAULT_L2_MTU}) — mismatch — so it must not use the remote endpoint (and the Primary likewise rejects PE3's ${FAULT_L2_MTU}).`,
     run: (state) => {
-      const vpwsService = installVpwsService(state.perEviAdRoutes, FAULT_L2_MTU);
-      return { state: { ...state, mtuFault: true, vpwsService }, events: [{ type: "BGP_STATE_CHANGED", stepId: "fault-injected", timestamp: Date.now(), message: "PE3's expected L2 MTU set to 1500 — mismatch with PE2's advertised 9000 (deliberate fault)" }] };
+      const perEviAdRoutes = setPe3LocalMtu(state.perEviAdRoutes, FAULT_L2_MTU);
+      const vpwsService = installVpwsService(perEviAdRoutes, state.perEsAdRoutes);
+      return { state: { ...state, mtuFault: true, perEviAdRoutes, vpwsService }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "fault-injected", timestamp: Date.now(), message: `PE3's local L2 MTU set to ${FAULT_L2_MTU} — PE3 re-advertises its A-D per-EVI route with L2 MTU ${FAULT_L2_MTU}, mismatching the Primary's ${CORRECT_L2_MTU} (deliberate fault)` }] };
     },
-    whatChanged: () => ["PE3 expected L2 MTU: 9000 → 1500", "VPWS-500 status: UP → DOWN (remote endpoint received but not usable)"],
+    whatChanged: () => [`PE3 local L2 MTU: ${CORRECT_L2_MTU} → ${FAULT_L2_MTU}`, `PE3 advertised L2 MTU (A-D per-EVI): ${CORRECT_L2_MTU} → ${FAULT_L2_MTU}`, "VPWS-500 status: UP → DOWN (remote endpoint received but not usable)"],
   },
   {
     id: "trouble-intro",
@@ -786,14 +842,14 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
       options: [
         { id: "esi-mismatch", label: "PE1 and PE2 have different ESIs configured" },
         { id: "no-route", label: "The Type-1 per-EVI route was never received" },
-        { id: "mtu-mismatch", label: "A service-parameter incompatibility — the advertised and locally expected L2 MTU don't match" },
+        { id: "mtu-mismatch", label: "A service-parameter incompatibility — a received L2 MTU doesn't match the local L2 MTU" },
         { id: "df-issue", label: "PE2 isn't the DF" },
       ],
       correctOptionId: "mtu-mismatch",
       explanation: "The route exists, the remote endpoint is discovered — but the service parameters (L2 MTU) don't match, so the remote endpoint cannot become usable. This is a service-compatibility failure, not a routing or DF/election failure.",
       hints: [
         "Hint 1: BGP EVPN, the Type-1 per-EVI route, and remote-endpoint discovery are all confirmed healthy.",
-        "Hint 2: compare the L2 MTU PE1/PE2 advertise against the L2 MTU PE3 locally expects.",
+        "Hint 2: compare the L2 MTU the Primary advertises against PE3's own local (and advertised) L2 MTU.",
         "Hint 3: this has nothing to do with Primary/Backup election.",
       ],
     },
@@ -806,12 +862,13 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
   {
     id: "repair-challenge",
     label: "Apply The Fix",
-    narrative: "Make the VPWS L2 MTU compatible — change PE3's expected L2 MTU from 1500 to 9000.",
+    narrative: `Make the VPWS L2 MTU compatible — restore PE3's local L2 MTU from ${FAULT_L2_MTU} to ${CORRECT_L2_MTU}, so its advertised A-D per-EVI MTU returns to ${CORRECT_L2_MTU} as well.`,
     action: (state, payload) => {
       const choice = typeof payload === "object" && payload !== null && "choice" in payload ? String((payload as { choice: string }).choice) : "";
       if (choice !== "fix-mtu") return { state: { ...state, repairAttempt: { choice, correct: false } }, events: [] };
-      const vpwsService = installVpwsService(state.perEviAdRoutes, CORRECT_L2_MTU);
-      return { state: { ...state, mtuFault: false, vpwsService, repairAttempt: { choice, correct: true }, challengeSucceeded: true, challengeStage: "mtu-repaired" }, events: [{ type: "ROUTE_SELECTED", stepId: "repair-challenge", timestamp: Date.now(), message: "PE3's expected L2 MTU corrected to 9000 — VPWS-500 usable again" }] };
+      const perEviAdRoutes = setPe3LocalMtu(state.perEviAdRoutes, CORRECT_L2_MTU);
+      const vpwsService = installVpwsService(perEviAdRoutes, state.perEsAdRoutes);
+      return { state: { ...state, mtuFault: false, perEviAdRoutes, vpwsService, repairAttempt: { choice, correct: true }, challengeSucceeded: true, challengeStage: "mtu-repaired" }, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "repair-challenge", timestamp: Date.now(), message: `PE3's local L2 MTU restored to ${CORRECT_L2_MTU} and re-advertised — VPWS-500 usable again` }] };
     },
     requiresState: (state) => state.challengeSucceeded === true,
   },
@@ -822,8 +879,8 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     packet: (state) => vpwsPacket("frame-verify", "CE-A", state.election.primaryPe ?? "PE1", "Verification frame — CE-A → CE-B", "FRAME", { frame: { srcMac: CE_A_MAC, dstMac: CE_B_MAC }, labels: [] }),
     run: (state) => {
       const via = state.election.primaryPe ?? "PE1";
-      // The ingress Primary pushes the label the disposition PE (PE3) advertised.
-      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, via);
+      // The ingress Primary pushes the label the disposition PE (PE3) advertised, under the transport label toward PE3.
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, state.perEsAdRoutes, via);
       return {
         state: {
           ...state,
@@ -833,8 +890,8 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
           journey: [
             ...state.journey,
             { device: via, input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint PE3`, action: "SERVICE_LOOKUP", output: `Encapsulated toward PE3 with service label ${serviceLabel ?? "(none)"}` },
-            { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE3" },
-            { device: "PE3", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-B AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" },
+            { device: "CORE", input: `Top label ${TRANSPORT_LABEL_TO.PE3}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE3" },
+            { device: "PE3", input: labeledStackText("PE3", serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-B AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" },
           ],
         },
         events: [{ type: "PACKET_RECEIVED", stepId: "verify-repair", timestamp: Date.now(), message: `CE-B receives the verification frame via ${via} — VPWS-500 fully restored` }],
@@ -847,7 +904,7 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     narrative: "Now prove the redundancy still works: fail PE1's AC again and verify PE2 takes over.",
     run: (state) => {
       const result = failoverVpwsService({ election: state.election, perEviAdRoutes: state.perEviAdRoutes, pe1AcFailed: true });
-      const vpwsService = installVpwsService(result.perEviAdRoutes, state.vpwsService?.pe3ExpectedMtu ?? CORRECT_L2_MTU);
+      const vpwsService = installVpwsService(result.perEviAdRoutes, state.perEsAdRoutes);
       return { state: { ...state, pe1AcFailed: true, election: result.election, perEviAdRoutes: result.perEviAdRoutes, vpwsService, challengeStage: "failover-verified" }, events: [{ type: "BGP_STATE_CHANGED", stepId: "challenge-refail-pe1", timestamp: Date.now(), message: "PE1's AC fails again — PE2 takes over as Primary" }] };
     },
     whatChanged: (prev, next) => [`Primary: ${prev.election.primaryPe} → ${next.election.primaryPe}`, "VPWS-500 remains UP throughout the takeover"],
@@ -858,8 +915,8 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
     narrative: "Send CE-A → CE-B traffic once more, now through the new Primary.",
     packet: () => vpwsPacket("frame-challenge", "CE-A", "PE2", "Customer Ethernet frame — CE-A → CE-B (via PE2)", "FRAME", { frame: { srcMac: CE_A_MAC, dstMac: CE_B_MAC }, labels: [] }),
     run: (state) => {
-      // PE2 is the ingress here — it pushes PE3's advertised label, not its own.
-      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, "PE2");
+      // PE2 is the ingress here — it pushes PE3's advertised label, not its own, under the transport label toward PE3.
+      const serviceLabel = remoteServiceLabelFor(state.perEviAdRoutes, state.perEsAdRoutes, "PE2");
       return {
         state: {
           ...state,
@@ -869,8 +926,8 @@ export const evpnVpwsSteps: ScenarioStep<EvpnVpwsState>[] = [
           journey: [
             ...state.journey,
             { device: "PE2", input: "Customer Ethernet frame on AC", lookup: `Service lookup → VPWS-${VPWS_SERVICE_ID} → remote endpoint PE3`, action: "SERVICE_LOOKUP", output: `Encapsulated toward PE3 with service label ${serviceLabel ?? "(none)"}` },
-            { device: "CORE", input: `Top label ${TRANSPORT_LABEL}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE3" },
-            { device: "PE3", input: labeledStackText(serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-B AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" },
+            { device: "CORE", input: `Top label ${TRANSPORT_LABEL_TO.PE3}`, lookup: "Transport forwarding (swap)", action: "TRANSPORT_FORWARD", output: "Forwarded toward PE3" },
+            { device: "PE3", input: labeledStackText("PE3", serviceLabel), lookup: `Pop transport → read service label ${serviceLabel ?? "(none)"} → VPWS-${VPWS_SERVICE_ID} → CE-B AC`, action: "POP_SERVICE", output: "Customer frame forwarded to CE-B" },
           ],
         },
         events: [{ type: "PACKET_RECEIVED", stepId: "challenge-resend", timestamp: Date.now(), message: "CE-B receives traffic through PE2 — the virtual wire survived the failover" }],
