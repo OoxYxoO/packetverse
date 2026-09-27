@@ -46,12 +46,14 @@ const ACTION_LOOKUP_TYPE: Record<MhAction, string> = {
   DF_FORWARD_TO_ES: "Destination ES → DF Status",
   NDF_SUPPRESS: "Destination ES → DF Status",
   UNICAST_DELIVER: "MAC Lookup — DF/NDF Irrelevant",
+  ES_ATTACHMENT_UNAVAILABLE: "Destination ES → Local ES Attachment",
 };
 const ACTION_REASON: Record<MhAction, string> = {
   UNDERLAY_FORWARD: "LEAF3 replicates the broadcast toward every remote VTEP in the VNI's flood list — replication itself doesn't know or care about DF status at all.",
   DF_FORWARD_TO_ES: "This PE's DF status for this ESI/EVI is DF — it is the one PE permitted to forward BUM traffic onto the shared Ethernet Segment right now.",
   NDF_SUPPRESS: "This PE's DF status for this ESI/EVI is NON-DF — BUM delivery onto the segment is suppressed to avoid a duplicate. A deliberate forwarding decision, never a dropped or malformed packet.",
   UNICAST_DELIVER: "DF/NDF status only governs BUM forwarding toward the Ethernet Segment — ordinary unicast forwarding proceeds normally regardless of which PE happens to be DF.",
+  ES_ATTACHMENT_UNAVAILABLE: "This PE is still a VTEP in the VNI's flood list, so it still receives its VXLAN copy — but its own attachment to this Ethernet Segment is down (its Type-4 route is withdrawn), so it cannot deliver onto the ES.",
 };
 
 function findLastHop(journey: JourneyHop[], device: EvpnMultihomingDeviceId, action: MhAction): JourneyHop | undefined {
@@ -66,20 +68,20 @@ function ifacePairForHop(device: "LEAF1" | "LEAF2" | "LEAF3", action: MhAction):
   const servera = `${device}-servera`;
   const spine1 = `${device}-spine1`;
   if (action === "UNICAST_DELIVER") return { ingressInterfaceId: servera, egressInterfaceId: spine1 };
-  return { ingressInterfaceId: spine1, egressInterfaceId: action === "NDF_SUPPRESS" ? undefined : servera };
+  return { ingressInterfaceId: spine1, egressInterfaceId: action === "NDF_SUPPRESS" || action === "ES_ATTACHMENT_UNAVAILABLE" ? undefined : servera };
 }
 
 function hopToTrace(device: "LEAF1" | "LEAF2" | "LEAF3", hop: JourneyHop, stages: ProcessingStage[], activeStageId: string): DeviceProcessingTrace {
-  const isDecap = hop.action === "DF_FORWARD_TO_ES" || hop.action === "NDF_SUPPRESS";
+  const isDecap = hop.action === "DF_FORWARD_TO_ES" || hop.action === "NDF_SUPPRESS" || hop.action === "ES_ATTACHMENT_UNAVAILABLE";
   const isEncap = hop.action === "UNDERLAY_FORWARD";
-  const suppressed = hop.action === "NDF_SUPPRESS";
+  const suppressed = hop.action === "NDF_SUPPRESS" || hop.action === "ES_ATTACHMENT_UNAVAILABLE";
   const mutations: PacketMutation[] | undefined = isEncap
     ? [{ type: "ENCAPSULATE", detail: `VXLAN VNI ${VNI} — replica copies created toward the ES members` }]
     : isDecap
-      ? [{ type: "DECAPSULATE", detail: suppressed ? "VXLAN removed, then suppressed by NDF role — not forwarded onto the ES" : "VXLAN removed — forwarded onto the Ethernet Segment" }]
+      ? [{ type: "DECAPSULATE", detail: hop.action === "ES_ATTACHMENT_UNAVAILABLE" ? "VXLAN removed — local ES attachment unavailable, not delivered onto the ES" : suppressed ? "VXLAN removed, then suppressed by NDF role — not forwarded onto the ES" : "VXLAN removed — forwarded onto the Ethernet Segment" }]
       : undefined;
   const nextHopId = hop.action === "DF_FORWARD_TO_ES" ? "SERVER-A" : undefined;
-  const nextHopLabel = hop.action === "DF_FORWARD_TO_ES" ? "SERVER-A" : hop.action === "UNDERLAY_FORWARD" ? "LEAF1 + LEAF2 (both ES members)" : hop.action === "NDF_SUPPRESS" ? "(suppressed — no forwarding)" : "HOST-B (via underlay, not modeled further)";
+  const nextHopLabel = hop.action === "DF_FORWARD_TO_ES" ? "SERVER-A" : hop.action === "UNDERLAY_FORWARD" ? "LEAF1 + LEAF2 (VNI flood-list VTEPs)" : hop.action === "NDF_SUPPRESS" ? "(suppressed — no forwarding)" : hop.action === "ES_ATTACHMENT_UNAVAILABLE" ? "(ES attachment down — not delivered)" : "HOST-B (via underlay, not modeled further)";
   return {
     deviceId: device,
     ...ifacePairForHop(device, hop.action),
@@ -97,7 +99,7 @@ function hopToTrace(device: "LEAF1" | "LEAF2" | "LEAF3", hop: JourneyHop, stages
     nextHopLabel,
     reason: ACTION_REASON[hop.action],
     mutations,
-    forwardingAction: hop.action === "DF_FORWARD_TO_ES" ? "FORWARD TO ES" : hop.action === "NDF_SUPPRESS" ? "SUPPRESS ES DELIVERY" : undefined,
+    forwardingAction: hop.action === "DF_FORWARD_TO_ES" ? "FORWARD TO ES" : hop.action === "NDF_SUPPRESS" ? "SUPPRESS ES DELIVERY" : hop.action === "ES_ATTACHMENT_UNAVAILABLE" ? "ES ATTACHMENT DOWN" : undefined,
   };
 }
 
@@ -184,6 +186,10 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
     const hop = findLastHop(state.journey, "LEAF2", "UNICAST_DELIVER");
     if (hop) return hopToTrace("LEAF2", hop, BUM_PIPELINE_STAGES, "forward-or-suppress");
   }
+  if (currentStepId === "resend-bum-after-failure" && leaf === "LEAF1" && state.leaf1Failed) {
+    const hop = findLastHop(state.journey, "LEAF1", "ES_ATTACHMENT_UNAVAILABLE");
+    if (hop) return hopToTrace("LEAF1", hop, BUM_PIPELINE_STAGES, "forward-or-suppress");
+  }
   if ((currentStepId === "resend-bum-after-failure" || currentStepId === "verify-single-df") && leaf === state.dfState.winner) {
     const hop = findLastHop(state.journey, leaf, "DF_FORWARD_TO_ES");
     if (hop) return hopToTrace(leaf, hop, BUM_PIPELINE_STAGES, "forward-or-suppress");
@@ -192,6 +198,7 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
   if (i >= bumStart) {
     const base: DeviceProcessingTrace = { deviceId: leaf, stages: BUM_PIPELINE_STAGES, completedStageIds: [] };
     if (state.replicaStage === "none") return { ...base, completedStageIds: state.journey.some((h) => h.device === leaf) ? allIds(BUM_PIPELINE_STAGES) : [] };
+    if (leaf === "LEAF1" && state.leaf1Failed) return { ...base, activeStageId: "forward-or-suppress", completedStageIds: ["vxlan-decap", "vni", "dest-bum", "dest-es"], forwardingAction: "ES ATTACHMENT DOWN", lookupType: ACTION_LOOKUP_TYPE.ES_ATTACHMENT_UNAVAILABLE, reason: ACTION_REASON.ES_ATTACHMENT_UNAVAILABLE };
     const isDf = shouldForwardBumToEs(leaf, state.dfState);
     return { ...base, activeStageId: "forward-or-suppress", completedStageIds: ["vxlan-decap", "vni", "dest-bum", "dest-es", "df-status"], forwardingAction: isDf ? "FORWARD TO ES" : "SUPPRESS ES DELIVERY", lookupType: ACTION_LOOKUP_TYPE[isDf ? "DF_FORWARD_TO_ES" : "NDF_SUPPRESS"], reason: ACTION_REASON[isDf ? "DF_FORWARD_TO_ES" : "NDF_SUPPRESS"] };
   }
@@ -272,8 +279,9 @@ export function dfTabRowsFor(state: EvpnMultihomingState, leaf: LeafId) {
     { label: "Ethernet Segment", value: ESI },
     { label: "Ethernet Tag / EVI", value: s.evi },
     { label: "Election Algorithm", value: s.algorithm },
-    { label: "Candidate PEs", value: s.candidates.map((c) => c.leaf).join(", ") || "(none)" },
-    { label: "Candidate Values", value: s.candidates.map((c) => `${c.leaf}=${c.electionValue}`).join(", ") || "(none)" },
+    { label: "Candidate PEs (active Type 4)", value: s.candidates.map((c) => c.leaf).join(", ") || "(none)" },
+    { label: "Numeric IP Order → Ordinal", value: s.ordinals?.map((o) => `${o.leaf} ${o.ip} → ${o.ordinal}`).join(", ") || "(not yet elected)" },
+    { label: "Service Value (VLAN) mod N", value: s.ordinals?.length ? `${s.serviceValue ?? VLAN} mod ${s.ordinals.length} = ${(s.serviceValue ?? VLAN) % s.ordinals.length}` : "(not yet elected)" },
     { label: "Winner", value: s.winner ?? "(none)" },
     { label: "Local Role", value: { "not-elected": "Not elected", df: "DF", ndf: "NDF" }[dfRoleFor(s, leaf)] },
     { label: "Previous Winner", value: s.previousWinner ?? "(none)" },
@@ -284,10 +292,11 @@ export function dfTabRowsFor(state: EvpnMultihomingState, leaf: LeafId) {
 export function evpnRibRowsFor(state: EvpnMultihomingState, leaf: LeafId): EvpnRibRow[] {
   const rows: EvpnRibRow[] = [];
   const t1 = state.type1Routes[leaf === "LEAF2" ? "LEAF1" : leaf] ?? state.type1Routes.LEAF1;
-  if (leaf !== "LEAF3" && t1) t1.forEach((r) => rows.push({ routeType: "1", summary: `ESI ${r.esi.slice(-8)} (${r.scope})`, nextHop: VTEP_LOOPBACK[r.originLeaf] }));
+  if (leaf !== "LEAF3" && t1) t1.forEach((r) => rows.push({ routeType: "1", summary: `ESI ${r.esi.slice(-8)} (${r.scope})`, nextHop: VTEP_LOOPBACK[r.originLeaf], extra: r.scope === "per-evi" ? [{ label: "Ethernet Tag", value: String(r.ethernetTag) }, { label: "VNI (label)", value: String(r.vniLabel) }] : [{ label: "Ethernet Tag", value: "MAX-ET" }, { label: "Single-Active flag", value: r.singleActive ? "1" : "0 (All-Active)" }] }));
   if (leaf !== "LEAF3") rows.push({ routeType: "2", summary: `${state.leaf1Failed && leaf === "LEAF1" ? "—" : "DD:DD:DD:DD:DD:33 / 10.10.10.33"}`, nextHop: "(local, via ES)" });
   rows.push({ routeType: "3", summary: `VNI ${VNI} membership`, nextHop: "(all participating leafs)" });
-  if (leaf !== "LEAF3" && state.type4Routes[leaf]) rows.push({ routeType: "4", summary: `ESI ${ESI.slice(-8)}`, nextHop: VTEP_LOOPBACK[leaf], extra: [{ label: "DF", value: state.dfState.winner === leaf ? "Yes" : "No" }] });
+  const t4 = leaf !== "LEAF3" ? state.type4Routes[leaf] : undefined;
+  if (t4) rows.push({ routeType: "4", summary: `ESI ${ESI.slice(-8)}${t4.withdrawn ? " — WITHDRAWN" : ""}`, nextHop: VTEP_LOOPBACK[leaf], extra: [{ label: "ES-Import RT", value: t4.esImportRt }, { label: "DF", value: !t4.withdrawn && state.dfState.winner === leaf ? "Yes" : "No" }] });
   return rows;
 }
 
@@ -328,9 +337,10 @@ export function buildMultihomingCliCommands(state: EvpnMultihomingState, leaf: L
   const esJuniper: CliOutput = { cmd: "show evpn instance esi " + ESI, output: `ESI: ${ESI}    Mode: all-active    DF: ${state.dfState.winner}` };
   const t1Cisco: CliOutput = { cmd: "show bgp l2vpn evpn route-type 1", output: `RD ${VTEP_LOOPBACK[leaf]}:${VNI}    ESI ${ESI.slice(-8)}` };
   const t1Juniper: CliOutput = { cmd: "show route table bgp.evpn.0 match-prefix 1:*", output: `1:${VTEP_LOOPBACK[leaf]}:${VNI}:0:${ESI.slice(-8)}` };
-  const t4Cisco: CliOutput = { cmd: "show bgp l2vpn evpn route-type 4", output: `ESI ${ESI.slice(-8)}    Originator ${VTEP_LOOPBACK[leaf]}` };
+  const t4Route = state.type4Routes[leaf];
+  const t4Cisco: CliOutput = { cmd: "show bgp l2vpn evpn route-type 4", output: t4Route ? `ESI ${ESI.slice(-8)}    Originator ${VTEP_LOOPBACK[leaf]}    ES-Import RT ${t4Route.esImportRt}${t4Route.withdrawn ? "    (withdrawn)" : ""}` : "(no local Type-4 route yet)" };
   const t4Juniper: CliOutput = { cmd: "show route table bgp.evpn.0 match-prefix 4:*", output: `4:${VTEP_LOOPBACK[leaf]}:${ESI.slice(-8)}` };
-  const dfCisco: CliOutput = { cmd: "show evpn ethernet-segment esi " + ESI + " designated-forwarder", output: `DF: ${state.dfState.winner}    Algorithm: default (service-carving not modeled)` };
+  const dfCisco: CliOutput = { cmd: "show evpn ethernet-segment esi " + ESI + " designated-forwarder", output: `DF: ${state.dfState.winner ?? "(not elected)"}    Algorithm: default service carving (VLAN ${VLAN} mod N)` };
   const dfJuniper: CliOutput = { cmd: "show evpn designated-forwarder", output: `ESI ${ESI.slice(-8)}: DF=${state.dfState.winner}` };
   return [
     { id: "es", label: "ethernet-segment", cisco: esCisco, juniper: esJuniper },

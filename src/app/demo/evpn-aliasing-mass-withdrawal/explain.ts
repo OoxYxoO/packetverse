@@ -28,7 +28,7 @@ export function explainNode(state: EvpnAliasingState, nodeId: EvpnAliasingDevice
     else if (alreadyActed && hop) currentAction = `Already done: ${hop.lookup} → ${hop.action}.`;
     return {
       ...base,
-      controlPlaneRole: "Not part of ESI " + ESI.slice(-8) + " — builds its aliasing set purely from Type-2 + A-D per-EVI routes received from LEAF1 and LEAF2.",
+      controlPlaneRole: "Not part of ESI " + ESI.slice(-8) + " — builds its aliasing set from the Type-2 route plus, for each of LEAF1 and LEAF2, an A-D per-EVI route backed by an active All-Active A-D per-ES route.",
       dataPlaneRole: "Selects one eligible next hop per flow toward SERVER-A — a deterministic flow abstraction, never per-packet round robin.",
       currentAction,
       packetBefore: hop?.input,
@@ -48,7 +48,7 @@ export function explainNode(state: EvpnAliasingState, nodeId: EvpnAliasingDevice
   else currentAction = `Attached to ESI ${ESI.slice(-8)}; advertises A-D per-EVI and A-D per-ES. ${eligible ? "Currently an eligible known-unicast next hop." : "No longer an eligible next hop — pruned by Mass Withdrawal."}`;
   return {
     ...base,
-    controlPlaneRole: `Advertises A-D per-EVI (aliasing) and A-D per-ES (fast-failure signaling) for ESI ${ESI.slice(-8)} — does not re-run DF election here (see the Multihoming lesson).`,
+    controlPlaneRole: `Advertises A-D per-EVI (EVI participation, used for aliasing only together with the per-ES route) and A-D per-ES (All-Active redundancy mode + fast-failure signaling) for ESI ${ESI.slice(-8)} — does not re-run DF election here (see the Multihoming lesson).`,
     dataPlaneRole: failed ? "Cannot deliver known-unicast traffic to SERVER-A — its local ES attachment is down." : "Decapsulates VXLAN and delivers directly to SERVER-A for any flow that selects it — no DF status check is involved in known-unicast delivery.",
     currentAction,
     packetBefore: hop?.input,
