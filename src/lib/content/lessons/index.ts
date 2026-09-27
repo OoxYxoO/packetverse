@@ -13,6 +13,7 @@ export const lessons: Lesson[] = [
     difficulty: "beginner",
     prerequisites: [],
     estimatedMinutes: 15,
+    simulationPath: "/demo/ethernet-switching",
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Two hosts on the same wire need to reach each other, but IP means nothing to a switch — it only sees frames." },
@@ -57,6 +58,7 @@ export const lessons: Lesson[] = [
     difficulty: "beginner",
     prerequisites: [],
     estimatedMinutes: 20,
+    simulationPath: "/demo/ipv4-basics",
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Every host can't be its own broadcast domain — networks need to be grouped and routed between." },
@@ -71,6 +73,7 @@ export const lessons: Lesson[] = [
     difficulty: "associate",
     prerequisites: ["ethernet-switching"],
     estimatedMinutes: 18,
+    simulationPath: "/demo/vlan-fundamentals",
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Every device in one broadcast domain sees every broadcast — that doesn't scale, and it doesn't separate departments." },
