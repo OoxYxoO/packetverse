@@ -25,7 +25,12 @@ import {
   type LeafId,
 } from "@/lib/sim-engine/scenarios/evpnAliasingMassWithdrawal";
 import { GraphTopologyViewer } from "@/components/network/GraphTopologyViewer";
-import { GraphPacket } from "@/components/network/GraphPacket";
+import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
+import { resolveBriefing } from "@/components/lesson/briefing";
+import { bubblePacket } from "@/components/lesson/mplsStack";
+import { evpnMhCallout } from "@/components/lesson/evpnMultihomingCallout";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { ForwardingDecisionCard } from "@/components/protocol/ForwardingDecisionCard";
 import { PacketJourneyTimeline } from "@/components/protocol/PacketJourneyTimeline";
@@ -75,6 +80,15 @@ import {
   packetFramesFor,
   traceFor,
 } from "./deviceTrace";
+import { evpnAliasingNames } from "./addressNames";
+import { EVPNAL_BRIEFING_NOTES, EVPNAL_BRIEFING_PHASES } from "./briefing";
+import { EVPNAL_LESSON_SECTIONS, EvpnAliasingLessonGuideContent } from "./LessonGuideContent";
+import { EVPNAL_DEEP_DIVE_SECTIONS, EvpnAliasingDeepDiveContent } from "./DeepDiveContent";
+
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "HOST-B → SERVER-A · per-EVI + per-ES · eligible set · incident", sections: EVPNAL_LESSON_SECTIONS, content: <EvpnAliasingLessonGuideContent /> },
+  { id: "deep", label: "EVPN Aliasing + Mass Withdrawal Deep Dive", hint: "Aliasing, forwarding eligibility and mass withdrawal in general", sections: EVPNAL_DEEP_DIVE_SECTIONS, content: <EvpnAliasingDeepDiveContent /> },
+];
 
 const REPAIR_OPTIONS = [
   { id: "make-leaf2-df", label: "Make LEAF2 the DF" },
@@ -141,6 +155,7 @@ export default function EvpnAliasingMassWithdrawalDemo() {
   const [xrayMode, setXrayMode] = useState(true);
   const [macCountExample, setMacCountExample] = useState<1 | 100 | 1000>(1);
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
@@ -157,9 +172,6 @@ export default function EvpnAliasingMassWithdrawalDemo() {
   const augmented = withEvpnMesh(baseNodes, baseEdges, viewMode === "physical" && sessionActive);
   const nodes = augmented.nodes;
   const edges = augmented.edges.map((e) => ({ ...e, state: "full" as const }));
-  const activeNodeIds = activePacket ? [activePacket.from, activePacket.to] : [];
-  const packetFrom = activePacket ? nodes.find((n) => n.id === activePacket.from) : undefined;
-  const packetTo = activePacket ? nodes.find((n) => n.id === activePacket.to) : undefined;
 
   const focusIndices = state.packetAt === "SPINE1" ? outerIpLayerIndex(activePacket) : undefined;
   const lastHop = state.journey[state.journey.length - 1];
@@ -191,7 +203,6 @@ export default function EvpnAliasingMassWithdrawalDemo() {
     active: activePacket ? (e.a === activePacket.from && e.b === activePacket.to) || (e.b === activePacket.from && e.a === activePacket.to) : false,
     onPath: visitedDevices.has(e.a as EvpnAliasingDeviceId) && visitedDevices.has(e.b as EvpnAliasingDeviceId),
   }));
-  const activePacket3D: ActivePacket3D | undefined = activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to) ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to } : undefined;
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
@@ -263,6 +274,13 @@ export default function EvpnAliasingMassWithdrawalDemo() {
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && isFabricDevice(historicalDeviceId) && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
   const historicalInterfaces = historicalDeviceId && isFabricDevice(historicalDeviceId) && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+
+  // Bubble + 3D callout read the SHOWN packet: a historical chip selection shows that step's own stored
+  // packet (built from its frozen state), never the live one; control-plane fields only ever appear for BGP UPDATEs.
+  const shownPacket: PacketVisual | undefined = historicalCursor !== undefined ? historicalPacket : activePacket;
+  const calloutFor = (p: PacketVisual) => evpnMhCallout(p, evpnAliasingNames);
+  const shownPacket3D: ActivePacket3D | undefined =
+    shownPacket && nodes3D.some((n) => n.id === shownPacket.from) && nodes3D.some((n) => n.id === shownPacket.to) ? { packet: shownPacket, fromId: shownPacket.from, toId: shownPacket.to, callout: calloutFor(shownPacket) } : undefined;
 
   function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
     if (target.kind === "stage" && deviceTrace) {
@@ -424,15 +442,57 @@ export default function EvpnAliasingMassWithdrawalDemo() {
 
   const sceneProps = { nodes: nodes3D, links: links3D, regions: regions3D };
 
+  const briefing = currentStep ? resolveBriefing(currentStep.id, currentStep.label, EVPNAL_BRIEFING_PHASES, EVPNAL_BRIEFING_NOTES) : undefined;
+  const actionPending = !isComplete && !questionActive && !!currentStep?.requiresState && !canAdvance;
+  const actionPendingLabel = "Repair pending — apply it in the panel to continue";
+
+  /** 2D is overview-only — leaving 3D exits device mode so the panels match what is shown. */
+  function handleViewModeChange(v: "physical" | "logical" | "3d") {
+    setViewMode(v);
+    if (v !== "3d") {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  const selectNode2D = (id: string) => {
+    setSelectedNodeId(id as EvpnAliasingDeviceId);
+    setPacketSelected(false);
+    setSelectedLinkId(undefined);
+    setInspectorSurface("device");
+    setHistoricalIndex(undefined);
+  };
+
+  const graph2D = (focus?: boolean) => (
+    <div className={focus ? "relative h-full overflow-hidden [&>div]:!h-full [&>div]:rounded-none [&>div]:border-0" : "relative"}>
+      <GraphTopologyViewer nodes={nodes} edges={edges} activeNodeIds={shownPacket ? [shownPacket.from, shownPacket.to] : []} regions={viewMode === "physical" ? GRAPH_REGIONS : []} onNodeClick={focus ? selectNode2D : undefined}>
+        {shownPacket &&
+          (() => {
+            const pkt = shownPacket;
+            const from = nodes.find((n) => n.id === pkt.from);
+            const to = nodes.find((n) => n.id === pkt.to);
+            if (!from || !to) return null;
+            const cc = calloutFor(pkt);
+            return <GraphPacketBubble packet={bubblePacket(pkt, cc)} from={from} to={to} title={cc.title} scope={`${pkt.from} → ${pkt.to}`} onSelect={() => setPacketSelected(true)} />;
+          })()}
+      </GraphTopologyViewer>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
         <Badge tone="cyan" className="mb-3">EVPN Aliasing + Mass Withdrawal · Route Type 1 Deep Dive</Badge>
         <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">Many Paths, One Fast Failure Signal</h1>
         <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
           The same multihomed SERVER-A from the Multihoming lesson — but now for known-unicast traffic. Watch LEAF3
           discover multiple usable paths through Aliasing, then rapidly prune a failed one through Mass Withdrawal.
         </p>
+      </div>
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="EVPN Aliasing + Mass Withdrawal" subtitle={`ESI …${ESI.slice(-8)} · All-Active · VNI ${VNI}`} tabs={GUIDE_TABS} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -465,7 +525,7 @@ export default function EvpnAliasingMassWithdrawalDemo() {
       </div>
 
       <div className="mb-6 flex flex-wrap gap-3">
-        <TopologyModeSwitcher options={[{ value: "physical", label: "Physical Topology" }, { value: "logical", label: "Logical (ESI) View" }, { value: "3d", label: "3D View" }]} value={viewMode} onChange={setViewMode} />
+        <TopologyModeSwitcher options={[{ value: "physical", label: "Physical Topology" }, { value: "logical", label: "Logical (ESI) View" }, { value: "3d", label: "3D View" }]} value={viewMode} onChange={handleViewModeChange} />
         {viewMode === "3d" && (
           <>
             <TopologyModeSwitcher
@@ -495,7 +555,7 @@ export default function EvpnAliasingMassWithdrawalDemo() {
               ) : (
               <NetworkScene3D
                 {...sceneProps}
-                activePacket={inDeviceMode ? undefined : activePacket3D}
+                activePacket={inDeviceMode ? undefined : shownPacket3D}
                 onSelectRegion={(id) => { setSelectedRegionId(id); setSelectedNodeId(undefined); setSelectedLinkId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
                 selectedRegionId={selectedRegionId}
                 onSelectNode={(id) => { setSelectedNodeId(id as EvpnAliasingDeviceId); setSelectedRegionId(undefined); setSelectedLinkId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
@@ -579,21 +639,25 @@ export default function EvpnAliasingMassWithdrawalDemo() {
             </>
           ) : (
             <>
-              <GraphTopologyViewer nodes={nodes} edges={edges} activeNodeIds={activeNodeIds} regions={viewMode === "physical" ? GRAPH_REGIONS : []}>
-                {activePacket && packetFrom && packetTo && <GraphPacket packet={activePacket} from={packetFrom} to={packetTo} />}
-              </GraphTopologyViewer>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                {focusMode ? <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" /> : graph2D()}
+              </TopologyFrame>
               {lastHop && <ForwardingDecisionCard router={lastHop.device} input={lastHop.input} lookup={lastHop.lookup} action={lastHop.action} output={lastHop.output} />}
             </>
           )}
 
-          {!isComplete && currentStep && (
-            <GlassPanel strong className="p-6">
-              <div className="mb-2 flex items-center gap-2">
-                <Badge tone="muted">Step {index + 1} / {totalSteps}</Badge>
-                <span className="text-xs text-pv-text-faint">{currentStep.label}</span>
-              </div>
-              <p className="text-sm leading-relaxed text-pv-text">{currentStep.narrative}</p>
-            </GlassPanel>
+          {!isComplete && currentStep && briefing && (
+            <MissionBriefingCard
+              stepNumber={index + 1}
+              totalSteps={totalSteps}
+              title={currentStep.label}
+              phase={briefing.phase}
+              objective={briefing.objective}
+              context={currentStep.narrative}
+              doingNow={briefing.doingNow}
+              takeaway={briefing.takeaway}
+              questionPending={questionActive}
+            />
           )}
 
           {!isComplete && currentStep?.question && <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />}
@@ -738,38 +802,42 @@ export default function EvpnAliasingMassWithdrawalDemo() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
+              <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={viewMode === "3d" ? "3d" : "2d"} onChange={(v) => handleViewModeChange(v === "3d" ? "3d" : viewMode === "3d" ? "physical" : viewMode)} />
+              {viewMode === "3d" && (
+              <>
               <TopologyModeSwitcher
                 options={[{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "packetFollow", label: "Packet Follow" }, { value: "freeOrbit", label: "Free Orbit" }]}
                 value={cameraMode}
                 onChange={handleCameraModeChange}
               />
               {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+              </>
+              )}
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">Step {index + 1} / {totalSteps}</Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label}</span>
+            !isComplete && currentStep && briefing ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={briefing.objective} questionPending={questionActive} />
+                {actionPending && (
+                  <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-pv-warning">
+                    {actionPendingLabel}
+                  </span>
+                )}
               </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Prediction pending — answer in the panel to continue
-                </span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Lesson complete</span>
+            )
           }
           canvas={
+            viewMode !== "3d" ? (
+              graph2D(true)
+            ) : (
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
               <NetworkScene3D
                 {...sceneProps}
-                activePacket={inDeviceMode ? undefined : activePacket3D}
+                activePacket={inDeviceMode ? undefined : shownPacket3D}
                 onSelectRegion={(id) => { setSelectedRegionId(id); setSelectedNodeId(undefined); setSelectedLinkId(undefined); setPacketSelected(false); }}
                 selectedRegionId={selectedRegionId}
                 onSelectNode={(id) => { setSelectedNodeId(id as EvpnAliasingDeviceId); setSelectedRegionId(undefined); setSelectedLinkId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
@@ -801,6 +869,7 @@ export default function EvpnAliasingMassWithdrawalDemo() {
                 }
               />
             </div>
+            )
           }
           inspector={
             currentStep?.question ? (
@@ -863,6 +932,23 @@ export default function EvpnAliasingMassWithdrawalDemo() {
                 </div>
                 <HopInspectorPanel trace={historicalTrace} deviceName={historicalDeviceId ?? "—"} interfaces={historicalInterfaces} />
                 <PacketDiffViewer before={historicalTrace.packetBeforeFrames} after={historicalTrace.packetAfterFrames} beforeText={historicalTrace.packetBefore} afterText={historicalTrace.packetAfter} mutations={historicalTrace.mutations} />
+              </div>
+            ) : historicalCursor !== undefined ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-pv-violet">Historical — {historicalStep?.label}</span>
+                  </div>
+                  <button type="button" onClick={() => setHistoricalIndex(undefined)} className="text-[11px] font-semibold uppercase tracking-wide text-pv-text-faint transition-colors hover:text-pv-cyan-soft">
+                    Return to Current →
+                  </button>
+                </div>
+                <GlassPanel className="p-4">
+                  <p className="text-xs text-pv-text-muted">
+                    {historicalDeviceId ?? "This step"} has no fabric forwarding pipeline to inspect — the topology shows this step&apos;s own packet.
+                  </p>
+                </GlassPanel>
               </div>
             ) : focusTrace ? (
               <div className="space-y-3">
@@ -933,7 +1019,7 @@ export default function EvpnAliasingMassWithdrawalDemo() {
                 followPacket={cameraMode === "packetFollow"}
                 onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
                 view3D={viewMode === "3d"}
-                onToggleView3D={() => setViewMode((v) => (v === "3d" ? "physical" : "3d"))}
+                onToggleView3D={() => handleViewModeChange(viewMode === "3d" ? "physical" : "3d")}
               />
             </div>
           }
