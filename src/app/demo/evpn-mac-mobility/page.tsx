@@ -23,7 +23,12 @@ import {
   type EvpnMobilityState,
 } from "@/lib/sim-engine/scenarios/evpnMacMobility";
 import { GraphTopologyViewer } from "@/components/network/GraphTopologyViewer";
-import { GraphPacket } from "@/components/network/GraphPacket";
+import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
+import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
+import { MissionBriefingCard, MissionBriefingStrip } from "@/components/lesson/MissionBriefingCard";
+import { resolveBriefing } from "@/components/lesson/briefing";
+import { bubblePacket } from "@/components/lesson/mplsStack";
+import { evpnCallout } from "@/components/lesson/evpnCallout";
 import { PacketInspector } from "@/components/network/PacketInspector";
 import { ForwardingDecisionCard } from "@/components/protocol/ForwardingDecisionCard";
 import { PacketJourneyTimeline } from "@/components/protocol/PacketJourneyTimeline";
@@ -57,6 +62,15 @@ import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import { explainNode } from "./explain";
 import { buildMobilityCliCommands, buildSpineCliCommands, evpnRibRowsFor, interfacesFor, linkDetailFor, mobilityTabRowsFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { evpnMobilityNames } from "./addressNames";
+import { EVPNM_BRIEFING_NOTES, EVPNM_BRIEFING_PHASES } from "./briefing";
+import { EVPNM_LESSON_SECTIONS, EvpnMacMobilityLessonGuideContent } from "./LessonGuideContent";
+import { EVPNM_DEEP_DIVE_SECTIONS, EvpnMacMobilityDeepDiveContent } from "./DeepDiveContent";
+
+const GUIDE_TABS: LessonGuideTab[] = [
+  { id: "lesson", label: "This Lesson", hint: "HOST-A moves LEAF1 → LEAF2 · mobility sequence · stale-path incident", sections: EVPNM_LESSON_SECTIONS, content: <EvpnMacMobilityLessonGuideContent /> },
+  { id: "deep", label: "EVPN MAC Mobility Deep Dive", hint: "RFC 7432 §15 MAC Mobility in general", sections: EVPNM_DEEP_DIVE_SECTIONS, content: <EvpnMacMobilityDeepDiveContent /> },
+];
 
 const FABRIC_DEVICES: ("LEAF1" | "SPINE1" | "LEAF2" | "LEAF3")[] = ["LEAF1", "SPINE1", "LEAF2", "LEAF3"];
 
@@ -112,6 +126,7 @@ export default function EvpnMacMobilityDemo() {
   const [followEndpointOpen, setFollowEndpointOpen] = useState(false);
   const [staleDemoActive, setStaleDemoActive] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
@@ -128,9 +143,6 @@ export default function EvpnMacMobilityDemo() {
   const augmented = withEvpnMesh(baseNodes, baseEdges, viewMode === "physical" && sessionActive);
   const nodes = augmented.nodes;
   const edges = augmented.edges.map((e) => ({ ...e, state: "full" as const }));
-  const activeNodeIds = activePacket ? [activePacket.from, activePacket.to] : [];
-  const packetFrom = activePacket ? nodes.find((n) => n.id === activePacket.from) : undefined;
-  const packetTo = activePacket ? nodes.find((n) => n.id === activePacket.to) : undefined;
 
   const focusIndicesFor = (device: EvpnMobilityDeviceId | undefined, packet: typeof activePacket) => {
     if (device === "SPINE1") return outerIpLayerIndex(packet);
@@ -173,11 +185,6 @@ export default function EvpnMacMobilityDemo() {
         : false,
     onPath: visitedDevices.has(e.a as EvpnMobilityDeviceId) && visitedDevices.has(e.b as EvpnMobilityDeviceId),
   }));
-  const activePacket3D: ActivePacket3D | undefined = stalePkt
-    ? { packet: stalePkt, fromId: stalePkt.from, toId: stalePkt.to }
-    : activePacket && nodes3D.some((n) => n.id === activePacket.from) && nodes3D.some((n) => n.id === activePacket.to)
-      ? { packet: activePacket, fromId: activePacket.from, toId: activePacket.to }
-      : undefined;
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   const selectedNode3D = nodes3D.find((n) => n.id === selectedNodeId);
 
@@ -249,6 +256,13 @@ export default function EvpnMacMobilityDemo() {
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && isFabricDevice(historicalDeviceId) && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
   const historicalInterfaces = historicalDeviceId && isFabricDevice(historicalDeviceId) && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+
+  // Bubble + 3D callout read the SHOWN packet: a historical chip selection shows that step's own stored
+  // packet (built from its frozen state), never the live one; control-plane fields only ever appear for BGP UPDATEs.
+  const shownPacket: PacketVisual | undefined = historicalCursor !== undefined ? historicalPacket : stalePkt ?? activePacket;
+  const calloutFor = (p: PacketVisual) => evpnCallout(p, evpnMobilityNames);
+  const shownPacket3D: ActivePacket3D | undefined =
+    shownPacket && nodes3D.some((n) => n.id === shownPacket.from) && nodes3D.some((n) => n.id === shownPacket.to) ? { packet: shownPacket, fromId: shownPacket.from, toId: shownPacket.to, callout: calloutFor(shownPacket) } : undefined;
 
   function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
     if (target.kind === "stage" && deviceTrace) {
@@ -402,15 +416,57 @@ export default function EvpnMacMobilityDemo() {
     regions: regions3D,
   };
 
+  const briefing = currentStep ? resolveBriefing(currentStep.id, currentStep.label, EVPNM_BRIEFING_PHASES, EVPNM_BRIEFING_NOTES) : undefined;
+  const actionPending = !isComplete && !questionActive && !!currentStep?.requiresState && !canAdvance;
+  const actionPendingLabel = currentStep?.id === "move-host" ? "Action pending — move HOST-A in the panel to continue" : "Repair pending — apply it in the panel to continue";
+
+  /** 2D is overview-only — leaving 3D exits device mode so the panels match what is shown. */
+  function handleViewModeChange(v: "physical" | "logical" | "3d") {
+    setViewMode(v);
+    if (v !== "3d") {
+      setCameraMode("overview");
+      setEnteredDeviceId(undefined);
+      setFocusedObject(undefined);
+    }
+  }
+
+  const selectNode2D = (id: string) => {
+    setSelectedNodeId(id as EvpnMobilityDeviceId);
+    setPacketSelected(false);
+    setSelectedLinkId(undefined);
+    setInspectorSurface("device");
+    setHistoricalIndex(undefined);
+  };
+
+  const graph2D = (focus?: boolean) => (
+    <div className={focus ? "relative h-full overflow-hidden [&>div]:!h-full [&>div]:rounded-none [&>div]:border-0" : "relative"}>
+      <GraphTopologyViewer nodes={nodes} edges={edges} activeNodeIds={shownPacket ? [shownPacket.from, shownPacket.to] : []} regions={viewMode === "physical" ? GRAPH_REGIONS : []} onNodeClick={focus ? selectNode2D : undefined}>
+        {shownPacket &&
+          (() => {
+            const pkt = shownPacket;
+            const from = nodes.find((n) => n.id === pkt.from);
+            const to = nodes.find((n) => n.id === pkt.to);
+            if (!from || !to) return null;
+            const cc = calloutFor(pkt);
+            return <GraphPacketBubble packet={bubblePacket(pkt, cc)} from={from} to={to} title={cc.title} scope={`${pkt.from} → ${pkt.to}`} onSelect={() => setPacketSelected(true)} />;
+          })()}
+      </GraphTopologyViewer>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
-      <div className="mb-6">
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
         <Badge tone="cyan" className="mb-3">EVPN MAC Mobility · Sequence-Based Endpoint Relocation</Badge>
         <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">The Same Endpoint, A New Location</h1>
         <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
           HOST-A physically moves from LEAF1 to LEAF2 — same MAC, same IP. Watch a newer Type 2 advertisement, marked
           with a higher mobility sequence, teach every remote VTEP where it actually lives now.
         </p>
+      </div>
+        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="EVPN MAC Mobility" subtitle="HOST-A · VNI 10010 · MAC Mobility extended community" tabs={GUIDE_TABS} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -443,7 +499,7 @@ export default function EvpnMacMobilityDemo() {
       </div>
 
       <div className="mb-6 flex flex-wrap gap-3">
-        <TopologyModeSwitcher options={[{ value: "physical", label: "Physical Topology" }, { value: "logical", label: "Logical (Identity/Location) View" }, { value: "3d", label: "3D View" }]} value={viewMode} onChange={setViewMode} />
+        <TopologyModeSwitcher options={[{ value: "physical", label: "Physical Topology" }, { value: "logical", label: "Logical (Identity/Location) View" }, { value: "3d", label: "3D View" }]} value={viewMode} onChange={handleViewModeChange} />
         {viewMode === "3d" && (
           <>
             <TopologyModeSwitcher
@@ -490,7 +546,7 @@ export default function EvpnMacMobilityDemo() {
               ) : (
               <NetworkScene3D
                 {...sceneProps}
-                activePacket={inDeviceMode ? undefined : activePacket3D}
+                activePacket={inDeviceMode ? undefined : shownPacket3D}
                 onSelectNode={(id) => { setSelectedNodeId(id as EvpnMobilityDeviceId); setSelectedLinkId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
                 onSelectLink={(id) => { setSelectedLinkId(id); setSelectedNodeId(undefined); setPacketSelected(false); }}
                 onFocusLink={setFocusedObject}
@@ -569,20 +625,29 @@ export default function EvpnMacMobilityDemo() {
             </>
           ) : (
             <>
-              <GraphTopologyViewer nodes={nodes} edges={edges} activeNodeIds={activeNodeIds} regions={viewMode === "physical" ? GRAPH_REGIONS : []}>
-                {activePacket && packetFrom && packetTo && <GraphPacket packet={activePacket} from={packetFrom} to={packetTo} />}
-              </GraphTopologyViewer>
+              <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
+                {focusMode ? <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" /> : graph2D()}
+              </TopologyFrame>
               {lastHop && <ForwardingDecisionCard router={lastHop.device} input={lastHop.input} lookup={lastHop.lookup} action={lastHop.action} output={lastHop.output} />}
             </>
           )}
 
+          {!isComplete && currentStep && briefing && (
+            <MissionBriefingCard
+              stepNumber={index + 1}
+              totalSteps={totalSteps}
+              title={currentStep.label}
+              phase={briefing.phase}
+              objective={briefing.objective}
+              context={currentStep.narrative}
+              doingNow={briefing.doingNow}
+              takeaway={briefing.takeaway}
+              questionPending={questionActive}
+            />
+          )}
+
           {!isComplete && currentStep && (
-            <GlassPanel strong className="p-6">
-              <div className="mb-2 flex items-center gap-2">
-                <Badge tone="muted">Step {index + 1} / {totalSteps}</Badge>
-                <span className="text-xs text-pv-text-faint">{currentStep.label}</span>
-              </div>
-              <p className="text-sm leading-relaxed text-pv-text">{currentStep.narrative}</p>
+            <div className="flex flex-wrap gap-2 empty:hidden [&>button]:mt-0">
               {currentStep.id === "move-host" && (
                 <Button className="mt-4" onClick={() => engine.act({})} disabled={state.moveCount >= 1}>
                   {state.moveCount >= 1 ? "✓ HOST-A Moved To LEAF2" : "[ MOVE HOST-A TO LEAF2 ]"}
@@ -593,7 +658,7 @@ export default function EvpnMacMobilityDemo() {
                   {staleDemoActive ? "Sending toward stale LEAF1 entry…" : "Show What Stale Forwarding Would Look Like →"}
                 </Button>
               )}
-            </GlassPanel>
+            </div>
           )}
 
           {!isComplete && currentStep?.question && <PredictionQuestion question={currentStep.question} selectedOptionId={lastAnswer?.stepId === currentStep.id ? lastAnswer.optionId : undefined} onAnswer={handleAnswer} />}
@@ -706,38 +771,42 @@ export default function EvpnMacMobilityDemo() {
           onClose={() => setFocusMode(false)}
           toolbar={
             <>
+              <LessonGuideButton compact onClick={() => setGuideOpen(true)} />
+              <TopologyModeSwitcher options={[{ value: "3d", label: "3D" }, { value: "2d", label: "2D" }]} value={viewMode === "3d" ? "3d" : "2d"} onChange={(v) => handleViewModeChange(v === "3d" ? "3d" : viewMode === "3d" ? "physical" : viewMode)} />
+              {viewMode === "3d" && (
+              <>
               <TopologyModeSwitcher
                 options={[{ value: "overview", label: "Overview" }, { value: "device", label: "Device" }, { value: "packetFollow", label: "Packet Follow" }, { value: "freeOrbit", label: "Free Orbit" }]}
                 value={cameraMode}
                 onChange={handleCameraModeChange}
               />
               {inDeviceMode && <TopologyModeSwitcher options={[{ value: "off", label: "Exterior" }, { value: "on", label: "X-Ray" }]} value={deviceXray ? "on" : "off"} onChange={(v) => setDeviceXray(v === "on")} tone="violet" />}
+              </>
+              )}
             </>
           }
           header={
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <div className="flex min-w-0 items-center gap-2">
-                <Badge tone="muted">Step {index + 1} / {totalSteps}</Badge>
-                <span className="truncate text-xs font-medium text-pv-text">{currentStep?.label}</span>
+            !isComplete && currentStep && briefing ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <MissionBriefingStrip stepNumber={index + 1} totalSteps={totalSteps} title={currentStep.label} phase={briefing.phase} objective={briefing.objective} questionPending={questionActive} />
+                {actionPending && (
+                  <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-pv-warning">
+                    {actionPendingLabel}
+                  </span>
+                )}
               </div>
-              {questionActive ? (
-                <span className="shrink-0 rounded-full border border-pv-warning/40 bg-pv-warning/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-pv-warning">
-                  Prediction pending — answer in the panel to continue
-                </span>
-              ) : (
-                currentStep?.narrative && (
-                  <p className="min-w-0 flex-1 truncate text-[11px] text-pv-text-faint" title={currentStep.narrative}>
-                    {currentStep.narrative}
-                  </p>
-                )
-              )}
-            </div>
+            ) : (
+              <span className="text-xs font-semibold text-pv-success">Lesson complete</span>
+            )
           }
           canvas={
+            viewMode !== "3d" ? (
+              graph2D(true)
+            ) : (
             <div className="h-full [&>div]:h-full [&>div]:rounded-none [&>div]:border-0">
               <NetworkScene3D
                 {...sceneProps}
-                activePacket={inDeviceMode ? undefined : activePacket3D}
+                activePacket={inDeviceMode ? undefined : shownPacket3D}
                 onSelectNode={(id) => { setSelectedNodeId(id as EvpnMobilityDeviceId); setSelectedLinkId(undefined); setPacketSelected(false); setInspectorSurface("device"); setHistoricalIndex(undefined); }}
                 onSelectLink={(id) => setSelectedLinkId(id)}
                 onFocusLink={setFocusedObject}
@@ -767,6 +836,7 @@ export default function EvpnMacMobilityDemo() {
                 }
               />
             </div>
+            )
           }
           inspector={
             currentStep?.question ? (
@@ -842,6 +912,23 @@ export default function EvpnMacMobilityDemo() {
                 <HopInspectorPanel trace={historicalTrace} deviceName={historicalDeviceId ?? "—"} interfaces={historicalInterfaces} />
                 <PacketDiffViewer before={historicalTrace.packetBeforeFrames} after={historicalTrace.packetAfterFrames} beforeText={historicalTrace.packetBefore} afterText={historicalTrace.packetAfter} mutations={historicalTrace.mutations} />
               </div>
+            ) : historicalCursor !== undefined ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-lg border border-pv-violet/40 bg-pv-violet/10 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-pv-violet" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-pv-violet">Historical — {historicalStep?.label}</span>
+                  </div>
+                  <button type="button" onClick={() => setHistoricalIndex(undefined)} className="text-[11px] font-semibold uppercase tracking-wide text-pv-text-faint transition-colors hover:text-pv-cyan-soft">
+                    Return to Current →
+                  </button>
+                </div>
+                <GlassPanel className="p-4">
+                  <p className="text-xs text-pv-text-muted">
+                    {historicalDeviceId ?? "This step"} has no fabric forwarding pipeline to inspect — the topology shows this step&apos;s own packet.
+                  </p>
+                </GlassPanel>
+              </div>
             ) : focusTrace ? (
               <div className="space-y-3">
                 {inDeviceMode && <TopologyModeSwitcher options={[{ value: "hop", label: "Hop" }, { value: "device", label: "Device" }]} value={inspectorSurface} onChange={setInspectorSurface} tone="violet" />}
@@ -910,7 +997,7 @@ export default function EvpnMacMobilityDemo() {
                 followPacket={cameraMode === "packetFollow"}
                 onToggleFollowPacket={() => handleCameraModeChange(cameraMode === "packetFollow" ? "overview" : "packetFollow")}
                 view3D={viewMode === "3d"}
-                onToggleView3D={() => setViewMode((v) => (v === "3d" ? "physical" : "3d"))}
+                onToggleView3D={() => handleViewModeChange(viewMode === "3d" ? "physical" : "3d")}
               />
             </div>
           }
