@@ -289,6 +289,9 @@ function type2Packet(id: string, from: LeafId, to: LeafId, route: RemoteHostRout
       { label: "IP Address", value: route.ip },
       { label: "Route Target", value: route.rt },
       { label: "Next Hop", value: VTEP_LOOPBACK[route.originLeaf] },
+      // Symmetric IRB (RFC 9135) control-plane fields — BGP route attributes only, never tenant data-packet headers.
+      { label: "Label2 / IP-VRF VNI (symmetric IRB)", value: `${L3_VNI} (VRF ${VRF})` },
+      { label: "EVPN Router's MAC Extended Community", value: `${ROUTER_MAC[route.originLeaf]} (${route.originLeaf} routing MAC — inner destination MAC on the L3 VNI)` },
     ] }],
   };
 }

@@ -7,6 +7,7 @@ import {
   VNI,
   VTEP_LOOPBACK,
   evpnMobilitySteps,
+  mobilityEcText,
   physicalEdgesFor,
   type EvpnMobilityDeviceId,
   type EvpnMobilityState,
@@ -38,7 +39,7 @@ const LEAF_INITIAL_LOCAL_LEARN_STAGES: ProcessingStage[] = [
   { id: "src-mac", label: "Source MAC Learned" },
   { id: "src-ip", label: "Source IP Association" },
   { id: "now-local", label: "Endpoint Now Local" },
-  { id: "gen-route", label: "Generate Type-2 Route (Sequence 0)" },
+  { id: "gen-route", label: "Generate Initial Type-2 Route" },
 ];
 const LEAF_MOVED_LOCAL_LEARN_STAGES: ProcessingStage[] = [
   { id: "access-event", label: "Access Port Event" },
@@ -170,7 +171,7 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
   const repairIndex = stepIndex("repair-challenge");
   const secondMoveIndex = stepIndex("second-move-optional");
 
-  // LEAF1's very first local learn (sequence 0) — no packet, a genuine access-port event.
+  // LEAF1's very first local learn — no packet, a genuine access-port event. Its first advertisement carries no MAC Mobility EC.
   if (device === "LEAF1" && (i === localLearnIndex || i === type2Seq0Index)) {
     const route = state.hostARoutes[0];
     return {
@@ -181,10 +182,10 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
       completedStageIds: i === type2Seq0Index ? allIds(LEAF_INITIAL_LOCAL_LEARN_STAGES) : ["access-event", "vlan10", "src-mac", "src-ip", "now-local"],
       lookupType: "Local MAC Learning",
       lookupKey: HOST_A_MAC,
-      lookupResult: i === type2Seq0Index && route ? `Type-2 route generated and advertised — MAC ${route.mac}, sequence ${route.mobilitySeq}` : "First time seen locally — no prior EVPN entry exists for this MAC",
+      lookupResult: i === type2Seq0Index && route ? `Type-2 route generated and advertised — MAC ${route.mac}, ${mobilityEcText(route)}` : "First time seen locally — no prior EVPN entry exists for this MAC",
       packetBefore: "No prior EVPN entry",
-      packetAfter: route ? `Type-2 advertised — sequence ${route.mobilitySeq}` : undefined,
-      reason: "The very first advertisement for any endpoint always starts at mobility sequence 0 — there's nothing to compare against yet.",
+      packetAfter: route ? `Type-2 advertised — ${mobilityEcText(route)}` : undefined,
+      reason: "An endpoint's first advertisement carries no MAC Mobility Extended Community; for mobility comparison its effective sequence is treated as 0 — there's nothing to compare against yet.",
     };
   }
 
@@ -198,8 +199,8 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
       completedStageIds: ["access-event", "vlan10", "src-mac", "src-ip", "existing-remote", "now-local"],
       lookupType: "Local MAC Learning + Existing Remote Check",
       lookupKey: HOST_A_MAC,
-      lookupResult: "Existing remote EVPN entry found for this MAC (via LEAF1, sequence 0) — endpoint is now local here",
-      packetBefore: "Remote entry: sequence 0 via LEAF1",
+      lookupResult: state.hostARoutes[0] ? `Existing remote EVPN entry found for this MAC (via ${state.hostARoutes[0].originLeaf}, ${mobilityEcText(state.hostARoutes[0])}) — endpoint is now local here` : "Existing remote EVPN entry found for this MAC — endpoint is now local here",
+      packetBefore: state.hostARoutes[0] ? `Remote entry: ${mobilityEcText(state.hostARoutes[0])} via ${state.hostARoutes[0].originLeaf}` : undefined,
       packetAfter: "Local — will generate a newer Type-2 route",
       reason: "LEAF2 already has a remote entry for this exact MAC from the earlier Type-2 advertisement — seeing it locally now means the endpoint moved, not that it's a duplicate.",
     };
@@ -214,10 +215,10 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
       completedStageIds: allIds(LEAF_MOVED_LOCAL_LEARN_STAGES),
       lookupType: "Type-2 Advertisement",
       lookupKey: HOST_A_MAC,
-      lookupResult: route ? `Advertised — MAC ${route.mac}, sequence ${route.mobilitySeq}, next-hop ${route.nextHop}` : undefined,
+      lookupResult: route ? `Advertised — MAC ${route.mac}, ${mobilityEcText(route)}, next-hop ${route.nextHop}` : undefined,
       packetBefore: "Local, not yet advertised",
-      packetAfter: route ? `Advertised — sequence ${route.mobilitySeq}` : undefined,
-      reason: "Same BGP UPDATE mechanism as the very first advertisement — only the mobility sequence and next-hop actually differ.",
+      packetAfter: route ? `Advertised — ${mobilityEcText(route)}` : undefined,
+      reason: "Same BGP UPDATE mechanism as the first advertisement — but this mobility advertisement now carries the MAC Mobility Extended Community with a higher sequence, and a new next hop. Receiving it is LEAF1's trigger to withdraw its previous advertisement.",
     };
   }
 
@@ -232,19 +233,20 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
       activeStageId: "state-updated",
       completedStageIds: ["bgp-update", "route-type-2", "mac-ip-identity", "existing-route", "compare-seq", "newer-selected", "vtep-changed"],
       lookupType: "Mobility Sequence Comparison",
-      lookupKey: `${HOST_A_MAC} — existing sequence ${oldRoute?.mobilitySeq ?? 0} (${oldRoute?.originLeaf}) vs. received sequence ${newRoute?.mobilitySeq ?? 1} (${newRoute?.originLeaf})`,
-      lookupResult: `Sequence ${newRoute?.mobilitySeq} > ${oldRoute?.mobilitySeq} — newer advertisement selected`,
+      lookupKey: oldRoute && newRoute ? `${HOST_A_MAC} — existing ${mobilityEcText(oldRoute)} (${oldRoute.originLeaf}) vs. received ${mobilityEcText(newRoute)} (${newRoute.originLeaf})` : HOST_A_MAC,
+      lookupResult: oldRoute && newRoute ? `Sequence ${newRoute.mobilitySeq} > ${oldRoute.mobilitySeq} — newer advertisement selected` : undefined,
       nextHopId: newRoute?.originLeaf,
       nextHopLabel: newRoute?.originLeaf,
-      packetBefore: oldRoute ? `Selected: sequence ${oldRoute.mobilitySeq} via ${oldRoute.originLeaf}` : undefined,
-      packetAfter: newRoute ? `Selected: sequence ${newRoute.mobilitySeq} via ${newRoute.originLeaf}` : undefined,
-      reason: "MAC Mobility comparison: a strictly higher sequence number identifies the newer advertisement for the same MAC/IP identity — never a packet-hop count, never a timestamp.",
+      packetBefore: oldRoute ? `Selected: ${mobilityEcText(oldRoute)} via ${oldRoute.originLeaf}` : undefined,
+      packetAfter: newRoute ? `Selected: ${mobilityEcText(newRoute)} via ${newRoute.originLeaf}` : undefined,
+      reason: "MAC Mobility comparison: a strictly higher sequence number identifies the newer advertisement for the same MAC/IP identity — never a packet-hop count, never a timestamp. The previous owner (LEAF1) withdraws its old advertisement; it is not kept as an alternative.",
     };
   }
 
   // LEAF3's comparison FAILING (the fault) and being repaired.
   if (device === "LEAF3" && (i === faultIndex || i === repairIndex)) {
     const stale = state.selectedRouteByLeaf.LEAF3;
+    const received = state.hostARoutes[1];
     const failed = i === faultIndex || (i === repairIndex && !state.challengeSucceeded);
     return {
       deviceId: "LEAF3",
@@ -252,12 +254,12 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
       stages: LEAF_MOBILITY_UPDATE_STAGES,
       activeStageId: failed ? "compare-seq" : "state-updated",
       completedStageIds: failed ? ["bgp-update", "route-type-2", "mac-ip-identity", "existing-route"] : allIds(LEAF_MOBILITY_UPDATE_STAGES),
-      lookupType: failed ? "Mobility Sequence Comparison (NOT APPLIED)" : "Mobility Sequence Comparison (Repaired)",
-      lookupKey: `${HOST_A_MAC} — received sequence 1 (LEAF2)`,
-      lookupResult: failed ? "Comparison logic did not act on the newer route — kept sequence 0 / LEAF1" : "Comparison re-applied — sequence 1 / LEAF2 now selected",
-      packetBefore: "Received: sequence 1 via LEAF2",
-      packetAfter: failed ? `Still selected: sequence ${stale?.mobilitySeq ?? 0} via ${stale?.originLeaf ?? "LEAF1"} (STALE)` : `Selected: sequence ${stale?.mobilitySeq} via ${stale?.originLeaf}`,
-      reason: failed ? "The newer route arrived and was received correctly; LEAF3's own selection logic simply failed to replace the older entry. Receiving a route is not the same as selecting it." : "LEAF3's mobility comparison was re-run against every route it has on file, correctly selecting the highest sequence.",
+      lookupType: failed ? "Mobility Selection (STALE — not updated)" : "Mobility Selection (Repaired)",
+      lookupKey: received ? `${HOST_A_MAC} — received ${mobilityEcText(received)} (${received.originLeaf})` : HOST_A_MAC,
+      lookupResult: failed ? `Local selection state did not update — a stale entry still points at the obsolete ${stale?.originLeaf ?? "LEAF1"} location (effective sequence ${stale?.mobilitySeq ?? 0}), whose advertisement was withdrawn` : received ? `Selection re-derived — ${mobilityEcText(received)} via ${received.originLeaf} now selected` : undefined,
+      packetBefore: received ? `Received: ${mobilityEcText(received)} via ${received.originLeaf}` : undefined,
+      packetAfter: failed ? `Still selected: obsolete location ${stale?.originLeaf ?? "LEAF1"} (effective sequence ${stale?.mobilitySeq ?? 0}) — STALE local entry` : stale ? `Selected: ${mobilityEcText(stale)} via ${stale.originLeaf}` : undefined,
+      reason: failed ? "The newer route arrived and was received correctly; LEAF3's own local selection/forwarding state simply failed to update, so it keeps a stale entry for the obsolete location. That old advertisement is withdrawn — not a valid alternative. Receiving a route is not the same as selecting it." : "LEAF3's selection state was re-derived from the current mobility information: the highest sequence is selected and the stale entry is replaced.",
     };
   }
 
@@ -272,10 +274,10 @@ export function traceFor(device: "LEAF1" | "SPINE1" | "LEAF2" | "LEAF3", state: 
       completedStageIds: allIds(LEAF_MOVED_LOCAL_LEARN_STAGES),
       lookupType: "Local MAC Learning + Mobility Advertisement",
       lookupKey: HOST_A_MAC,
-      lookupResult: route ? `Advertised — sequence ${route.mobilitySeq}, same mechanism as every earlier move` : undefined,
-      packetBefore: "Remote entry: sequence 1 via LEAF2",
-      packetAfter: route ? `Local — advertised sequence ${route.mobilitySeq}` : undefined,
-      reason: "The exact same local-learn → generate → advertise sequence as the very first move — proving this isn't a one-time special case.",
+      lookupResult: route ? `Advertised — ${mobilityEcText(route)}, same mechanism as every earlier move` : undefined,
+      packetBefore: state.hostARoutes.length > 1 ? `Remote entry: ${mobilityEcText(state.hostARoutes[state.hostARoutes.length - 2])} via ${state.hostARoutes[state.hostARoutes.length - 2].originLeaf}` : undefined,
+      packetAfter: route ? `Local — advertised with ${mobilityEcText(route)}` : undefined,
+      reason: "The exact same local-learn → generate → advertise sequence as the first move — a mobility advertisement carrying the MAC Mobility Extended Community, and the previous owner (LEAF2) withdraws its older advertisement.",
     };
   }
 
@@ -361,7 +363,10 @@ export function evpnRibRowsFor(state: EvpnMobilityState, leaf: LeafId): EvpnRibR
       nextHop: selected.nextHop,
       rd: selected.rd,
       rt: selected.rt,
-      extra: leaf === state.hostALocation ? [{ label: "Source", value: "Local" }] : [{ label: "Mobility", value: `Seq ${selected.mobilitySeq}` }],
+      extra:
+        leaf === state.hostALocation
+          ? [{ label: "Source", value: "Local" }]
+          : [{ label: "Mobility", value: mobilityEcText(selected) }, ...(selected.stale ? [{ label: "State", value: "STALE local entry — advertisement withdrawn" }] : [])],
     });
   }
   const hostBEntry = state.macTables[leaf]?.find((e) => e.ip !== HOST_A_IP);
@@ -378,9 +383,10 @@ export function mobilityTabRowsFor(state: EvpnMobilityState, leaf: LeafId) {
     { label: "IP", value: HOST_A_IP },
     { label: "Current Location", value: isLocal ? `${leaf} (local)` : (selected?.originLeaf ?? "unknown") },
     { label: "Previous Location", value: previous ? previous.originLeaf : "—" },
-    { label: "Mobility Sequence", value: selected ? String(selected.mobilitySeq) : "—" },
+    { label: "Effective Mobility Sequence", value: selected ? String(selected.mobilitySeq) : "—" },
+    { label: "MAC Mobility EC", value: selected ? (selected.mobilityEcSequence === undefined ? "Not carried (first advertisement)" : `Sequence ${selected.mobilityEcSequence}`) : "—" },
     { label: "Last Change", value: state.moveCount > 0 ? `Move #${state.moveCount}` : "none yet" },
-    { label: "Selected EVPN Route", value: selected ? `seq ${selected.mobilitySeq} via ${selected.originLeaf}` : "none" },
+    { label: "Selected EVPN Route", value: selected ? `seq ${selected.mobilitySeq} via ${selected.originLeaf}${selected.stale ? " — STALE local entry (advertisement withdrawn)" : ""}` : "none" },
   ];
 }
 
@@ -425,8 +431,9 @@ export function buildMobilityCliCommands(state: EvpnMobilityState, leaf: LeafId)
   const selected = isLocal ? state.hostARoutes[state.hostARoutes.length - 1] : state.selectedRouteByLeaf[leaf];
   const macCisco: CliOutput = { cmd: "show mac address-table", output: isLocal ? `${HOST_A_MAC}    dynamic    Vlan${VLAN}    (local)` : `(no local entry — see l2route for remote reachability)` };
   const macJuniper: CliOutput = { cmd: "show bridge mac-table", output: isLocal ? `${HOST_A_MAC}    vlan.${VLAN}    Local` : `(no local entry)` };
-  const evpnCisco: CliOutput = { cmd: "show l2route evpn mac-ip all", output: selected ? `MAC ${HOST_A_MAC}    Seq ${selected.mobilitySeq}    Next-hop ${selected.nextHop}` : "(no route yet)" };
-  const evpnJuniper: CliOutput = { cmd: "show evpn database", output: selected ? `MAC/IP: ${HOST_A_MAC}    Seq num: ${selected.mobilitySeq}    Remote PE: ${selected.nextHop}` : "(no route yet)" };
+  const staleNote = selected?.stale ? "    (STALE local entry)" : "";
+  const evpnCisco: CliOutput = { cmd: "show l2route evpn mac-ip all", output: selected ? `MAC ${HOST_A_MAC}    Seq ${selected.mobilitySeq}    Next-hop ${selected.nextHop}${staleNote}` : "(no route yet)" };
+  const evpnJuniper: CliOutput = { cmd: "show evpn database", output: selected ? `MAC/IP: ${HOST_A_MAC}    Seq num: ${selected.mobilitySeq}    Remote PE: ${selected.nextHop}${staleNote}` : "(no route yet)" };
   return [
     { id: "mac", label: "mac table", cisco: macCisco, juniper: macJuniper },
     { id: "evpn", label: "evpn / mobility", cisco: evpnCisco, juniper: evpnJuniper },

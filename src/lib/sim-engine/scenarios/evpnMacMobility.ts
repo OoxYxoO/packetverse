@@ -45,8 +45,8 @@ function rdFor(leaf: LeafId): string {
 export const TERMS: { term: string; expansion: string; meaning: string }[] = [
   { term: "MAC Mobility", expansion: "Extended Community", meaning: "A sequence number on a Type 2 route that lets a NEWER advertisement for the same MAC/IP win over an older one — the mechanism, not a packet-hop counter." },
   { term: "Endpoint Identity", expansion: "MAC + IP, Unchanged", meaning: "The thing that moves is the ATTACHMENT — the endpoint's own MAC and IP never change during a legitimate move." },
-  { term: "Sequence 0 → 1", expansion: "Newer Wins", meaning: "Every time an endpoint re-appears at a new location, its Type 2 route is re-advertised with a higher sequence number." },
-  { term: "Selected Route", expansion: "Not Just Received", meaning: "A remote VTEP can receive a newer route and still keep forwarding to the old one if its own comparison/selection state is broken — receiving ≠ selecting." },
+  { term: "Sequence 0 → 1", expansion: "Newer Wins", meaning: "The first advertisement carries no MAC Mobility Extended Community and is treated as sequence 0; every time the endpoint re-appears at a new location, its Type 2 route is re-advertised carrying the community with a higher sequence number." },
+  { term: "Selected Route", expansion: "Not Just Received", meaning: "A remote VTEP can receive the newer route and still keep forwarding to the obsolete location if its own selection/forwarding state is stale — receiving ≠ selecting." },
   { term: "Mobility ≠ Multihoming", expansion: "Different Problems", meaning: "Mobility: an endpoint moves from one location to another. Multihoming: an endpoint is intentionally attached to multiple VTEPs at once. Not the same." },
 ];
 
@@ -62,12 +62,20 @@ export interface Type2Route {
   rt: string;
   nextHop: string;
   originLeaf: LeafId;
+  /** Effective sequence used by mobility comparison. RFC 7432 §15: a route with no MAC Mobility Extended Community is treated as sequence 0. */
   mobilitySeq: number;
-  /** True only on a leaf's own SELECTED reference during the "kept the old route" fault demonstration — never on the route's own historical record. */
+  /** Sequence actually CARRIED in a MAC Mobility Extended Community — undefined when the route carries none (an endpoint's first advertisement, RFC 7432 §15). */
+  mobilityEcSequence?: number;
+  /** True only on a leaf's own SELECTED reference during the stale-selection fault demonstration — never on the route's own historical record. */
   stale?: boolean;
 }
-function makeHostARoute(originLeaf: LeafId, mobilitySeq: number): Type2Route {
-  return { mac: HOST_A_MAC, ip: HOST_A_IP, vni: VNI, rd: rdFor(originLeaf), rt: EVPN_EXPORT_RT, nextHop: VTEP_LOOPBACK[originLeaf], originLeaf, mobilitySeq };
+function makeHostARoute(originLeaf: LeafId, mobilitySeq: number, carriesMobilityEc: boolean): Type2Route {
+  return { mac: HOST_A_MAC, ip: HOST_A_IP, vni: VNI, rd: rdFor(originLeaf), rt: EVPN_EXPORT_RT, nextHop: VTEP_LOOPBACK[originLeaf], originLeaf, mobilitySeq, mobilityEcSequence: carriesMobilityEc ? mobilitySeq : undefined };
+}
+
+/** One wording for a route's mobility information, shared by the packet view and the device trace so they always agree. */
+export function mobilityEcText(route: Pick<Type2Route, "mobilitySeq" | "mobilityEcSequence">): string {
+  return route.mobilityEcSequence === undefined ? `no MAC Mobility EC (effective sequence ${route.mobilitySeq})` : `MAC Mobility EC sequence ${route.mobilityEcSequence}`;
 }
 
 export interface MacTableEntry {
@@ -91,7 +99,8 @@ export interface JourneyHop {
 export interface EvpnMobilityState {
   bgpSessionUp: boolean;
   hostALocation: LeafId; // where HOST-A is PHYSICALLY attached right now
-  hostARoutes: Type2Route[]; // every Type-2 route HOST-A has ever had advertised, oldest first
+  /** PacketVerse HISTORY of every Type-2 advertisement HOST-A has had, oldest first — kept for comparison teaching and the fault demo. NOT the active EVPN RIB: once a newer mobility advertisement exists, the previous owner withdraws its older one (RFC 7432 §15). */
+  hostARoutes: Type2Route[];
   selectedRouteByLeaf: Partial<Record<LeafId, Type2Route>>; // which HOST-A route each OTHER leaf currently selects for forwarding — this is where the fault lives (LEAF3's)
   macTables: Record<LeafId, MacTableEntry[]>;
 
@@ -138,10 +147,16 @@ export function moveEndpoint(state: EvpnMobilityState, toLeaf: LeafId): EvpnMobi
   return { ...state, hostALocation: toLeaf, macTables };
 }
 
-/** LEAF observes HOST-A locally and builds a newer Type 2 route — sequence strictly increases from whatever HOST-A's own last advertisement was. */
+/**
+ * LEAF observes HOST-A locally and builds a Type 2 route. RFC 7432 §15: the endpoint's FIRST advertisement carries no
+ * MAC Mobility Extended Community (effective sequence 0); every later advertisement after a move carries the community
+ * with a sequence one greater than the last one received. Presence is decided by "is this the first advertisement",
+ * never by the sequence value itself.
+ */
 export function originateMobilityRoute(state: EvpnMobilityState, fromLeaf: LeafId): { state: EvpnMobilityState; route: Type2Route } {
-  const lastSeq = state.hostARoutes.length ? state.hostARoutes[state.hostARoutes.length - 1].mobilitySeq : -1;
-  const route = makeHostARoute(fromLeaf, lastSeq + 1);
+  const initial = state.hostARoutes.length === 0;
+  const lastSeq = initial ? -1 : state.hostARoutes[state.hostARoutes.length - 1].mobilitySeq;
+  const route = makeHostARoute(fromLeaf, lastSeq + 1, !initial);
   const macTables = { ...state.macTables, [fromLeaf]: [...state.macTables[fromLeaf].filter((e) => e.mac !== HOST_A_MAC), { mac: HOST_A_MAC, ip: HOST_A_IP, source: "local" as const, mobilitySeq: route.mobilitySeq }] };
   return { state: { ...state, hostARoutes: [...state.hostARoutes, route], macTables }, route };
 }
@@ -151,7 +166,7 @@ export function compareMobilityRoutes(oldRoute: Type2Route, newRoute: Type2Route
   return newRoute.mobilitySeq > oldRoute.mobilitySeq ? newRoute : oldRoute;
 }
 
-/** What a receiving leaf SHOULD select given everything it's received so far for this MAC — the fault (brief §21) is a leaf failing to apply this correctly, not this function being wrong. */
+/** What a receiving leaf SHOULD select given the mobility information for this MAC — the highest effective sequence identifies the current advertisement (older ones are withdrawn by their originators; `routes` may include that history). The fault (brief §21) is a leaf whose local selection state fails to follow this, not this function being wrong. */
 export function selectEndpointLocation(routes: Type2Route[]): Type2Route | undefined {
   return routes.reduce((best, r) => (!best || r.mobilitySeq > best.mobilitySeq ? r : best), undefined as Type2Route | undefined);
 }
@@ -237,7 +252,7 @@ function type2Packet(id: string, from: LeafId, to: LeafId, route: Type2Route): P
     protocol: "BGP",
     from,
     to,
-    summary: `EVPN Type 2 — ${route.mac} (mobility seq ${route.mobilitySeq})`,
+    summary: `EVPN Type 2 — ${route.mac} · ${mobilityEcText(route)}`,
     badge: "EVPN UPDATE",
     layers: [{ name: "BGP UPDATE (EVPN)", color: "var(--pv-proto-bgp)", fields: [
       { label: "AFI/SAFI", value: "L2VPN EVPN" },
@@ -247,7 +262,10 @@ function type2Packet(id: string, from: LeafId, to: LeafId, route: Type2Route): P
       { label: "IP Address", value: route.ip },
       { label: "Route Target", value: route.rt },
       { label: "Next Hop", value: route.nextHop },
-      { label: "MAC Mobility Extended Community — Sequence", value: String(route.mobilitySeq) },
+      route.mobilityEcSequence === undefined
+        ? { label: "MAC Mobility Extended Community", value: "Not carried — first advertisement" }
+        : { label: "MAC Mobility Extended Community — Sequence", value: String(route.mobilityEcSequence) },
+      { label: "Effective Mobility Sequence (comparison)", value: String(route.mobilitySeq) },
     ] }],
   };
 }
@@ -278,7 +296,7 @@ export const evpnMobilitySteps: ScenarioStep<EvpnMobilityState>[] = [
   {
     id: "leaf1-local-learn",
     label: "LEAF1 Learns HOST-A Locally",
-    narrative: `LEAF1 learns HOST-A on its own access port: MAC ${HOST_A_MAC}, IP ${HOST_A_IP}, LOCAL. Mobility Sequence: 0 — every endpoint's very first advertisement starts at sequence 0.`,
+    narrative: `LEAF1 learns HOST-A on its own access port: MAC ${HOST_A_MAC}, IP ${HOST_A_IP}, LOCAL. Its first advertisement will carry no MAC Mobility Extended Community — for mobility processing, its effective sequence is treated as 0.`,
     run: (state) => {
       const macTables = { ...state.macTables, LEAF1: [{ mac: HOST_A_MAC, ip: HOST_A_IP, source: "local" as const, mobilitySeq: 0 }] };
       return { state: { ...state, bgpSessionUp: true, macTables }, events: [{ type: "MAC_LEARNED", stepId: "leaf1-local-learn", timestamp: Date.now(), message: "LEAF1 learns HOST-A locally" }, { type: "BGP_STATE_CHANGED", stepId: "leaf1-local-learn", timestamp: Date.now(), message: "LEAF1 ↔ LEAF2 ↔ LEAF3 BGP EVPN mesh Established" }] };
@@ -286,20 +304,20 @@ export const evpnMobilitySteps: ScenarioStep<EvpnMobilityState>[] = [
   },
   {
     id: "type2-seq0-advertised",
-    label: "Type 2, Sequence 0",
-    narrative: "LEAF1 builds and advertises HOST-A's Type 2 route — Mobility Sequence 0, the baseline every future move will be compared against.",
+    label: "Type 2, Initial Advertisement",
+    narrative: "LEAF1 builds and advertises HOST-A's Type 2 route. As an endpoint's first advertisement it carries no MAC Mobility Extended Community; for mobility comparison its effective sequence is 0 — the baseline every future move will be compared against.",
     packet: (state) => (state.hostARoutes[0] ? type2Packet("t2-seq0", "LEAF1", "LEAF3", state.hostARoutes[0]) : undefined),
     run: (state) => {
       const { state: next, route } = originateMobilityRoute(state, "LEAF1");
       const selectedRouteByLeaf = { LEAF2: route, LEAF3: route };
-      return { state: { ...next, selectedRouteByLeaf }, events: [{ type: "VPN_ROUTE_CREATED", stepId: "type2-seq0-advertised", timestamp: Date.now(), message: "LEAF1 advertises HOST-A, mobility sequence 0" }] };
+      return { state: { ...next, selectedRouteByLeaf }, events: [{ type: "VPN_ROUTE_CREATED", stepId: "type2-seq0-advertised", timestamp: Date.now(), message: "LEAF1 advertises HOST-A — no MAC Mobility EC (effective sequence 0)" }] };
     },
-    whatChanged: () => ["LEAF2 and LEAF3: learn HOST-A remotely, via LEAF1, mobility sequence 0"],
+    whatChanged: () => ["LEAF2 and LEAF3: learn HOST-A remotely, via LEAF1 — no MAC Mobility EC, effective sequence 0"],
   },
   {
     id: "remote-learn-recap",
     label: "Remote VTEPs Agree",
-    narrative: `LEAF2 and LEAF3 both now show: HOST-A, MAC ${HOST_A_MAC}, IP ${HOST_A_IP}, remote VTEP LEAF1, sequence 0.`,
+    narrative: `LEAF2 and LEAF3 both now show: HOST-A, MAC ${HOST_A_MAC}, IP ${HOST_A_IP}, remote VTEP LEAF1, effective sequence 0 (no MAC Mobility EC on the route).`,
   },
   {
     id: "send-before-move",
@@ -354,12 +372,12 @@ export const evpnMobilitySteps: ScenarioStep<EvpnMobilityState>[] = [
   {
     id: "mobility-community-intro",
     label: "The MAC Mobility Extended Community",
-    narrative: "Only now does the mechanism get a name: the MAC Mobility Extended Community — a sequence number attached to a Type 2 route. A higher sequence identifies a newer mobility advertisement for this exact MAC. It is control-plane information carried on the BGP route, never a packet-hop counter and never present in an ordinary data packet.",
+    narrative: "Only now does the mechanism get a name: the MAC Mobility Extended Community — a sequence number attached to a Type 2 route. A higher sequence identifies a newer mobility advertisement for this exact MAC. It is control-plane information carried on the BGP route, never a packet-hop counter and never present in an ordinary data packet. HOST-A's first advertisement did not carry it at all; this move is the first time it appears.",
   },
   {
     id: "route-comparison",
     label: "MAC Mobility Comparison",
-    narrative: "OLD (sequence 0, via LEAF1) vs. NEW (sequence 1, via LEAF2) — same MAC, same IP, same VNI. Only next-hop and sequence differ. The new route wins because its sequence is higher.",
+    narrative: "OLD (no MAC Mobility EC — effective sequence 0, via LEAF1) vs. NEW (MAC Mobility EC sequence 1, via LEAF2) — same MAC, same IP, same VNI. Only next-hop and sequence differ. The new advertisement wins because its sequence is higher.",
     run: (state) => {
       const { state: next } = originateMobilityRoute(state, "LEAF2");
       return { state: next, events: [{ type: "VPN_ROUTE_CREATED", stepId: "route-comparison", timestamp: Date.now(), message: "LEAF2 generates a newer Type 2 route for HOST-A, mobility sequence 1" }] };
@@ -368,7 +386,7 @@ export const evpnMobilitySteps: ScenarioStep<EvpnMobilityState>[] = [
   {
     id: "type2-seq1-advertised",
     label: "BGP EVPN UPDATE — Sequence 1",
-    narrative: "LEAF2 advertises the moved endpoint over the exact same BGP UPDATE mechanism every earlier EVPN route type reused.",
+    narrative: "LEAF2 advertises the moved endpoint over the exact same BGP UPDATE mechanism every earlier EVPN route type reused — now carrying the MAC Mobility Extended Community, sequence 1. LEAF1 no longer has HOST-A locally; receiving this route is its trigger to withdraw its own previous advertisement for HOST-A (RFC 7432 §15).",
     packet: (state) => (state.hostARoutes[1] ? type2Packet("t2-seq1", "LEAF2", "LEAF3", state.hostARoutes[1]) : undefined),
     run: (state) => ({ state, events: [{ type: "MPBGP_VPN_ROUTE_ADVERTISED", stepId: "type2-seq1-advertised", timestamp: Date.now(), message: "LEAF2 advertises HOST-A, mobility sequence 1" }] }),
   },
@@ -387,13 +405,13 @@ export const evpnMobilitySteps: ScenarioStep<EvpnMobilityState>[] = [
   {
     id: "remote-mac-before-after",
     label: "Before / After — LEAF3's Remote MAC Entry",
-    narrative: `BEFORE: HOST-A, REMOTE, VTEP LEAF1. AFTER: HOST-A, REMOTE, VTEP LEAF2. The old entry doesn't sit alongside the new one as an equally valid alternative — it's replaced, because the mobility comparison determined it's no longer current.`,
+    narrative: `BEFORE: HOST-A, REMOTE, VTEP LEAF1. AFTER: HOST-A, REMOTE, VTEP LEAF2. The old entry doesn't sit alongside the new one as an equally valid alternative — it's replaced, because the mobility comparison determined it's no longer current, and LEAF1 has withdrawn the old advertisement.`,
     whatChanged: () => ["LEAF3: HOST-A remote VTEP — BEFORE: LEAF1 (seq 0)", "LEAF3: HOST-A remote VTEP — AFTER: LEAF2 (seq 1)"],
   },
   {
     id: "route-lifecycle-recap",
     label: "Old Route, New Route, Selected Route",
-    narrative: "Four distinct things, not one: the OLD route (seq 0, still exists in history) — the NEW route (seq 1) — the SELECTED route (whichever one comparison says is current) — and the forwarding entry (what LEAF3 actually installs, following the selected route). A route isn't deleted just because it stopped being selected.",
+    narrative: "Keep four things apart: the PREVIOUS advertisement (effective sequence 0 via LEAF1) — withdrawn by LEAF1 once the newer mobility advertisement appeared, and kept in this lesson only as history — the CURRENT advertisement (MAC Mobility EC sequence 1 via LEAF2) — the SELECTED route (what comparison says is current) — and the forwarding entry (what LEAF3 actually installs from the selected route). Keeping the old record in PacketVerse history does not mean it is still active in the EVPN RIB.",
   },
   {
     id: "send-after-move",
@@ -440,17 +458,17 @@ export const evpnMobilitySteps: ScenarioStep<EvpnMobilityState>[] = [
   {
     id: "break-intro",
     label: "Break The Fabric",
-    narrative: "Everything has worked cleanly so far. Time to inject one controlled, educational fault: LEAF3 receives the newer Type 2 route but its mobility comparison state is broken, so it incorrectly keeps the older one. This is a simulation fault built to teach the decision chain — not a claim about a common vendor bug.",
+    narrative: "Everything has worked cleanly so far. Time to inject one controlled, educational fault: LEAF3 receives the newer Type 2 route, but its local selection/forwarding state fails to update — it keeps a stale entry pointing at HOST-A's obsolete LEAF1 location, even though that old advertisement has been withdrawn. This is a simulation fault built to teach the decision chain — not a claim about a common vendor bug.",
   },
   {
     id: "fault-injected",
-    label: "LEAF3's Mobility Comparison Fails",
-    narrative: "Physical, underlay, VTEP reachability, BGP EVPN, and the new Type 2 route's arrival are all still healthy. LEAF3 simply fails to act on the comparison — it keeps forwarding to LEAF1.",
+    label: "LEAF3's Mobility Selection Goes Stale",
+    narrative: "Physical, underlay, VTEP reachability, BGP EVPN, and the new Type 2 route's arrival are all still healthy. LEAF3's own selection state simply fails to update: it retains a stale selected/forwarding entry for the obsolete LEAF1 location and keeps forwarding there.",
     run: (state) => ({
       state: { ...state, selectedRouteByLeaf: { ...state.selectedRouteByLeaf, LEAF3: { ...state.hostARoutes[0], stale: true } }, macTables: { ...state.macTables, LEAF3: [...state.macTables.LEAF3.filter((e) => e.mac !== HOST_A_MAC), { mac: HOST_A_MAC, ip: HOST_A_IP, source: "remote" as const, remoteVtep: VTEP_LOOPBACK.LEAF1, mobilitySeq: 0, stale: true }] }, faultActive: true },
-      events: [{ type: "BGP_UPDATE_RECEIVED", stepId: "fault-injected", timestamp: Date.now(), message: "LEAF3 receives sequence 1 but its mobility comparison state incorrectly keeps sequence 0" }],
+      events: [{ type: "BGP_UPDATE_RECEIVED", stepId: "fault-injected", timestamp: Date.now(), message: "LEAF3 receives sequence 1 but its stale local selection still points at the obsolete LEAF1 location (effective sequence 0)" }],
     }),
-    whatChanged: () => ["LEAF3: mobility comparison broken — kept sequence 0 / LEAF1 despite receiving sequence 1"],
+    whatChanged: () => ["LEAF3: selection state stale — still points at the obsolete LEAF1 location (effective sequence 0) despite receiving MAC Mobility EC sequence 1"],
   },
   {
     id: "trouble-intro",
@@ -470,7 +488,7 @@ export const evpnMobilitySteps: ScenarioStep<EvpnMobilityState>[] = [
         { id: "underlay", label: "Underlay reachability to LEAF2" },
       ],
       correctOptionId: "comparison",
-      explanation: "LEAF3 received the newer, sequence-1 route just fine — its own comparison/selection logic simply failed to act on it, so it kept forwarding to the older, sequence-0 location. Receiving a route is not the same as selecting it.",
+      explanation: "LEAF3 received the newer, sequence-1 route just fine — its own selection state simply failed to update, so a stale local entry kept forwarding to the obsolete sequence-0 location, whose advertisement had already been withdrawn. Receiving a route is not the same as selecting it.",
       hints: [
         "Hint 1: the new Type 2 route did arrive at LEAF3 — this isn't a BGP session or reachability problem.",
         "Hint 2: MAC/IP identity matches perfectly on both routes — that's not what's broken.",
@@ -481,7 +499,7 @@ export const evpnMobilitySteps: ScenarioStep<EvpnMobilityState>[] = [
   {
     id: "diagnostic-layers",
     label: "Layer By Layer",
-    narrative: "A newer route can be fully received and still not win, if the receiving leaf's own comparison/selection logic doesn't act on it. Received ≠ selected — the same principle as every earlier 'route known ≠ usable' lesson, now applied to mobility specifically.",
+    narrative: "A newer route can be fully received while the receiving leaf keeps forwarding on stale local state, if its own selection logic doesn't act on it. Received ≠ selected — the same principle as every earlier 'route known ≠ usable' lesson, now applied to mobility specifically.",
   },
   {
     id: "repair-challenge",
@@ -515,14 +533,14 @@ export const evpnMobilitySteps: ScenarioStep<EvpnMobilityState>[] = [
   {
     id: "second-move-optional",
     label: "Optional — HOST-A Moves Again",
-    narrative: "HOST-A moves once more: LEAF2 → LEAF1. Watch the sequence progress again — 1 → 2 — proving this isn't a one-time special case, it's the same mechanism every time an endpoint moves.",
+    narrative: "HOST-A moves once more: LEAF2 → LEAF1. LEAF1 re-advertises HOST-A carrying the MAC Mobility Extended Community with sequence 2 (1 → 2) — a mobility advertisement, not a first advertisement — and LEAF2 withdraws its sequence-1 advertisement. The same mechanism every time an endpoint moves.",
     run: (state) => {
       const moved = moveEndpoint(state, "LEAF1");
       const { state: next, route } = originateMobilityRoute(moved, "LEAF1");
       const macTables = { ...next.macTables, LEAF3: [...next.macTables.LEAF3.filter((e) => e.mac !== HOST_A_MAC), { mac: HOST_A_MAC, ip: HOST_A_IP, source: "remote" as const, remoteVtep: VTEP_LOOPBACK.LEAF1, mobilitySeq: route.mobilitySeq }] };
       return { state: { ...next, macTables, selectedRouteByLeaf: { ...next.selectedRouteByLeaf, LEAF3: route }, moveCount: 2 }, events: [{ type: "VPN_ROUTE_CREATED", stepId: "second-move-optional", timestamp: Date.now(), message: "HOST-A moves again — mobility sequence 2" }] };
     },
-    whatChanged: () => ["HOST-A: LEAF2 → LEAF1", "Mobility sequence: 1 → 2", "LEAF3: remote VTEP updated to LEAF1 again"],
+    whatChanged: () => ["HOST-A: LEAF2 → LEAF1", "MAC Mobility EC sequence: 1 → 2", "LEAF3: remote VTEP updated to LEAF1 again"],
   },
   {
     id: "mobility-vs-multihoming",
