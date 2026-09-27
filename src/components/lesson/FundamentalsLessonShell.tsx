@@ -161,7 +161,14 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
   const regions3D = layoutRegionsTo3D(c.regions ?? []);
   const links3D: Link3DData[] = edges.map((e) => ({ id: e.id, a: e.a, b: e.b, label: e.label, active: shownPacket ? (e.a === shownPacket.from && e.b === shownPacket.to) || (e.b === shownPacket.from && e.a === shownPacket.to) : false, onPath: false }));
   const shownPacket3D: ActivePacket3D | undefined = shownPacket && nodes3D.some((n) => n.id === shownPacket.from) && nodes3D.some((n) => n.id === shownPacket.to) ? { packet: shownPacket, fromId: shownPacket.from, toId: shownPacket.to, callout: c.callout(shownPacket, shownState) } : undefined;
-  const floodCopies3D: FloodCopy3D[] | undefined = copies.length ? copies.map((cp) => ({ id: cp.id, fromId: cp.fromId, toId: cp.toId, callout: c.callout(cp.packet, shownState) })) : undefined;
+  // Flood copies carry a title-only callout (as in the BGP RR / VPLS lessons): the main packet's callout already lists every
+  // flood port, and full-detail copies would stack over neighbouring devices.
+  const floodCopies3D: FloodCopy3D[] | undefined = copies.length
+    ? copies.map((cp) => {
+        const cc = c.callout(cp.packet, shownState);
+        return { id: cp.id, fromId: cp.fromId, toId: cp.toId, callout: { title: cc.title, color: cc.color } };
+      })
+    : undefined;
 
   const questionActive = !isComplete && !!currentStep?.question && lastAnswer?.stepId !== currentStep.id;
   const isEnterable = (id: string | undefined): id is string => !!id && c.enterable.includes(id);

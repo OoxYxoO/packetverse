@@ -72,11 +72,11 @@ const config: FundamentalsLessonConfig<EthState> = {
   guide: { title: "Ethernet & Switching", subtitle: "SW1 · 00:11:22:33:44:0A / 0B / 0C · ge-0/0/1–4", tabs: GUIDE_TABS },
   briefing: { phases: ETH_BRIEFING_PHASES, notes: ETH_BRIEFING_NOTES },
   nodes: (s) => [
-    { id: "HOST-A", label: "HOST-A", subLabel: "…:44:0A", x: 12, y: 22, kind: "laptop" },
-    { id: "HOST-C", label: "HOST-C", subLabel: "…:44:0C", x: 12, y: 80, kind: "laptop" },
+    { id: "HOST-A", label: "HOST-A", subLabel: "…:44:0A", x: 10, y: 20, kind: "laptop" },
+    { id: "HOST-C", label: "HOST-C", subLabel: "…:44:0C", x: 26, y: 84, kind: "laptop" },
     { id: "SW1", label: "SW1", subLabel: `FDB ${s.fdb.SW1.length}`, x: 45, y: 50, kind: "switch" },
-    { id: "DESK-SW", label: "DESK-SW", subLabel: "unmanaged", x: 68, y: 82, kind: "switch" },
-    hostBAtSw1(s) ? { id: "HOST-B", label: "HOST-B", subLabel: "…:44:0B", x: 82, y: 20, kind: "laptop" } : { id: "HOST-B", label: "HOST-B", subLabel: "…:44:0B · hot desk", x: 92, y: 52, kind: "laptop" },
+    { id: "DESK-SW", label: "DESK-SW", subLabel: "unmanaged", x: 70, y: 84, kind: "switch" },
+    hostBAtSw1(s) ? { id: "HOST-B", label: "HOST-B", subLabel: "…:44:0B", x: 88, y: 20, kind: "laptop" } : { id: "HOST-B", label: "HOST-B", subLabel: "…:44:0B · hot desk", x: 92, y: 56, kind: "laptop" },
   ],
   edges: (s) => [
     { id: "a-sw1", a: "HOST-A", b: "SW1", label: "ge-0/0/1" },
