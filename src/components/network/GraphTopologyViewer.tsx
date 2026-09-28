@@ -26,6 +26,8 @@ export interface GraphEdge {
   /** Short text label shown at the edge midpoint instead of/alongside cost (e.g. "eBGP" / "iBGP"). */
   label?: string;
   state?: GraphEdgeState;
+  /** Optional shift (percent units) so two parallel links between the same pair of nodes stay distinguishable. Omitted = drawn centre to centre, exactly as before. */
+  offset?: { dx: number; dy: number };
 }
 
 export interface GraphRegion {
@@ -117,14 +119,16 @@ export function GraphTopologyViewer({
           if (!a || !b) return null;
           const style = EDGE_STYLE[edge.state ?? "down"];
           const isBest = bestPathEdgeIds.includes(edge.id);
+          const dx = edge.offset?.dx ?? 0;
+          const dy = edge.offset?.dy ?? 0;
           return (
             <g key={edge.id}>
               {isBest && (
                 <line
-                  x1={a.x}
-                  y1={a.y}
-                  x2={b.x}
-                  y2={b.y}
+                  x1={a.x + dx}
+                  y1={a.y + dy}
+                  x2={b.x + dx}
+                  y2={b.y + dy}
                   stroke="var(--pv-cyan)"
                   strokeWidth={1.4}
                   strokeLinecap="round"
@@ -133,10 +137,10 @@ export function GraphTopologyViewer({
                 />
               )}
               <line
-                x1={a.x}
-                y1={a.y}
-                x2={b.x}
-                y2={b.y}
+                x1={a.x + dx}
+                y1={a.y + dy}
+                x2={b.x + dx}
+                y2={b.y + dy}
                 stroke={style.stroke}
                 strokeDasharray={style.dash}
                 strokeWidth={isBest ? 0.7 : 0.4}
@@ -161,8 +165,8 @@ export function GraphTopologyViewer({
         const text = edge.label ?? (edge.cost !== undefined ? String(edge.cost) : undefined);
         if (!text) return null;
         const isBest = bestPathEdgeIds.includes(edge.id);
-        const midX = (a.x + b.x) / 2;
-        const midY = (a.y + b.y) / 2;
+        const midX = (a.x + b.x) / 2 + (edge.offset?.dx ?? 0);
+        const midY = (a.y + b.y) / 2 + (edge.offset?.dy ?? 0);
         return (
           <div
             key={`label-${edge.id}`}

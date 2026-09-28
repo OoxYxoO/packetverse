@@ -37,7 +37,12 @@ export interface FloodCopy3D {
   toId: string;
   /** Optional readable bubble for this copy — see `ActivePacket3D.callout`. */
   callout?: PacketCallout3D;
+  /** Optional world-space shift — see `ActivePacket3D.offset`. */
+  offset?: [number, number, number];
 }
+
+/** Applies an optional parallel-link offset; returns the same position when there is none. */
+const shift = (p: [number, number, number], o?: [number, number, number]): [number, number, number] => (o ? [p[0] + o[0], p[1] + o[1], p[2] + o[2]] : p);
 
 interface NetworkScene3DProps {
   nodes: Node3DData[];
@@ -121,7 +126,7 @@ export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSele
                 const from = positionById.get(l.a);
                 const to = positionById.get(l.b);
                 if (!from || !to) return null;
-                return <NetworkLink3D key={l.id} id={l.id} from={from} to={to} label={l.label} active={l.active} onPath={l.onPath} visualState={l.visualState} onSelect={onSelectLink} selected={selectedLinkId === l.id} onFocus={onFocusLink} />;
+                return <NetworkLink3D key={l.id} id={l.id} from={shift(from, l.offset)} to={shift(to, l.offset)} label={l.label} active={l.active} onPath={l.onPath} visualState={l.visualState} onSelect={onSelectLink} selected={selectedLinkId === l.id} onFocus={onFocusLink} />;
               })}
               {nodes.map((n, i) => (
                 <NetworkNode3D key={n.id} node={n} onSelect={onSelectNode} phase={i * 1.35} />
@@ -132,13 +137,13 @@ export function NetworkScene3D({ nodes, links, activePacket, floodCopies, onSele
                   const from = positionById.get(activePacket.fromId);
                   const to = positionById.get(activePacket.toId);
                   if (!from || !to) return null;
-                  return <Packet3D id={activePacket.packet.id} from={from} to={to} onSelect={onSelectPacket} selected={packetSelected} callout={activePacket.callout} />;
+                  return <Packet3D id={activePacket.packet.id} from={shift(from, activePacket.offset)} to={shift(to, activePacket.offset)} onSelect={onSelectPacket} selected={packetSelected} callout={activePacket.callout} />;
                 })()}
               {floodCopies?.map((c) => {
                 const from = positionById.get(c.fromId);
                 const to = positionById.get(c.toId);
                 if (!from || !to) return null;
-                return <Packet3D key={c.id} id={c.id} from={from} to={to} color={THEME.warning} duration={1.6} onSelect={() => onSelectFloodCopy?.(c.id)} selected={selectedFloodCopyId === c.id} callout={c.callout} />;
+                return <Packet3D key={c.id} id={c.id} from={shift(from, c.offset)} to={shift(to, c.offset)} color={THEME.warning} duration={1.6} onSelect={() => onSelectFloodCopy?.(c.id)} selected={selectedFloodCopyId === c.id} callout={c.callout} />;
               })}
             </>
           ) : (

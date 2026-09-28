@@ -18,8 +18,8 @@ export const learningPaths: LearningPath[] = [
       { id: "icmp", label: "ICMP", lessonId: "icmp-diagnostics", status: "available" },
       { id: "tcp-udp", label: "TCP/UDP", lessonId: "tcp-three-way-handshake", status: "available" },
       { id: "dhcp-dns", label: "DHCP/DNS", lessonId: "dhcp-dns", status: "available" },
-      { id: "switching", label: "Switching", status: "locked" },
-      { id: "routing", label: "Routing", status: "locked" },
+      { id: "switching", label: "Switching", lessonId: "switching-fundamentals", status: "available" },
+      { id: "routing", label: "Routing", lessonId: "routing-fundamentals", status: "available" },
     ],
   },
   {
