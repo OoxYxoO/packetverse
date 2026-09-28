@@ -32,9 +32,9 @@ export const learningPaths: LearningPath[] = [
       { id: "lacp", label: "LACP", lessonId: "lacp-link-aggregation", status: "available" },
       { id: "ospf", label: "OSPF", lessonId: "ospf-fundamentals", status: "available" },
       { id: "bgp", label: "BGP", lessonId: "bgp-fundamentals", status: "locked" },
-      { id: "firewall", label: "Firewall", status: "locked" },
-      { id: "vpn", label: "VPN", status: "locked" },
-      { id: "sd-wan", label: "SD-WAN", status: "locked" },
+      { id: "firewall", label: "Firewall", lessonId: "firewall-stateful-security", status: "available" },
+      { id: "vpn", label: "VPN", lessonId: "ipsec-site-to-site-vpn", status: "available" },
+      { id: "sd-wan", label: "SD-WAN", lessonId: "sdwan-path-selection", status: "available" },
     ],
   },
   {
