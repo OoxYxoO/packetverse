@@ -28,8 +28,8 @@ export const learningPaths: LearningPath[] = [
     description: "Access to WAN — the path most campus network engineers live in.",
     nodes: [
       { id: "vlan", label: "VLAN", lessonId: "vlan-fundamentals", status: "available" },
-      { id: "stp", label: "STP", status: "locked" },
-      { id: "lacp", label: "LACP", status: "locked" },
+      { id: "stp", label: "STP", lessonId: "stp-rstp", status: "available" },
+      { id: "lacp", label: "LACP", lessonId: "lacp-link-aggregation", status: "available" },
       { id: "ospf", label: "OSPF", lessonId: "ospf-fundamentals", status: "available" },
       { id: "bgp", label: "BGP", lessonId: "bgp-fundamentals", status: "locked" },
       { id: "firewall", label: "Firewall", status: "locked" },
