@@ -26,7 +26,7 @@ import { PacketDiffViewer } from "@/components/network3d/PacketDiffViewer";
 import { HopTimeline } from "@/components/network3d/HopTimeline";
 import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/PacketFlowControls";
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
-import type { ActivePacket3D, CameraMode, DeviceInterfaceData, DeviceProcessingTrace, InspectorSurface, Link3DData, Node3DStatus, NodeExplanation, PacketCallout3D, PacketStackFrame } from "@/components/network3d/types";
+import type { ActivePacket3D, CameraMode, DeviceInterfaceData, DeviceProcessingTrace, InspectorSurface, Link3DData, LinkVisualState, Node3DStatus, NodeExplanation, PacketCallout3D, PacketStackFrame } from "@/components/network3d/types";
 import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "./LessonGuideDialog";
 import { MissionBriefingCard, MissionBriefingStrip } from "./MissionBriefingCard";
 import { resolveBriefing, type BriefingPhaseDef, type BriefingStepNote } from "./briefing";
@@ -45,6 +45,8 @@ export interface ShellFloodCopy {
   fromId: string;
   toId: string;
   packet: PacketVisual;
+  /** The edge this copy travels, when two parallel edges join the same nodes (optional). */
+  edgeId?: string;
 }
 export interface ShellTable {
   title: string;
@@ -52,6 +54,10 @@ export interface ShellTable {
 }
 export interface ShellEdge extends GraphEdge {
   down?: boolean;
+  /** 3D counterpart of `offset` for parallel links (optional). */
+  offset3D?: [number, number, number];
+  /** Explicit 3D link state, e.g. "disabled" (optional; omitted = the renderer's default styling). */
+  visual3D?: LinkVisualState;
 }
 export interface FundamentalsLessonConfig<S extends { hops: FundHop[] }> {
   lessonId: string;
@@ -80,6 +86,8 @@ export interface FundamentalsLessonConfig<S extends { hops: FundHop[] }> {
   /** 3D callout / 2D bubble title for a packet, given the state it belongs to (decisions come from that state, never from the packet). */
   callout: (p: PacketVisual, s: S) => PacketCallout3D;
   floodCopies?: (s: S, stepId: string) => ShellFloodCopy[];
+  /** The edge the main packet travels, when two parallel edges join the same nodes (optional). */
+  packetEdgeId?: (s: S) => string | undefined;
   nodeBadges?: (id: string, s: S) => string[] | undefined;
   repair: { stepId: string; prompt: string; options: { id: string; label: string }[]; correctId: string; success: string; wrongFeedback: Record<string, string>; attempt: (s: S) => { choice: string; correct: boolean } | undefined };
   diagnostics: { fromStepId: string; layers: (s: S) => DiagnosticLayer[] };
@@ -150,6 +158,13 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
   const nodes = c.nodes(shownState);
   const edges = c.edges(shownState).map((e) => ({ ...e, state: e.down ? ("down" as const) : ("full" as const) }));
   const copies = c.floodCopies?.(shownState, shownStepId) ?? [];
+  const packetEdgeId = c.packetEdgeId?.(shownState);
+  const edgeById = (id: string | undefined) => (id ? edges.find((e) => e.id === id) : undefined);
+  /** A 2D endpoint moved onto a parallel edge's offset line. */
+  const onEdge2D = (p: { x: number; y: number }, id: string | undefined) => {
+    const o = edgeById(id)?.offset;
+    return o ? { x: p.x + o.dx, y: p.y + o.dy } : p;
+  };
 
   const nodes3D = layoutTo3D(nodes).map((n) => {
     let status: Node3DStatus = "idle";
@@ -159,14 +174,25 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
     return { ...n, status, badges: c.nodeBadges?.(n.id, shownState) };
   });
   const regions3D = layoutRegionsTo3D(c.regions ?? []);
-  const links3D: Link3DData[] = edges.map((e) => ({ id: e.id, a: e.a, b: e.b, label: e.label, active: shownPacket ? (e.a === shownPacket.from && e.b === shownPacket.to) || (e.b === shownPacket.from && e.a === shownPacket.to) : false, onPath: false }));
-  const shownPacket3D: ActivePacket3D | undefined = shownPacket && nodes3D.some((n) => n.id === shownPacket.from) && nodes3D.some((n) => n.id === shownPacket.to) ? { packet: shownPacket, fromId: shownPacket.from, toId: shownPacket.to, callout: c.callout(shownPacket, shownState) } : undefined;
+  const links3D: Link3DData[] = edges.map((e) => ({
+    id: e.id,
+    a: e.a,
+    b: e.b,
+    label: e.label,
+    active: shownPacket ? ((e.a === shownPacket.from && e.b === shownPacket.to) || (e.b === shownPacket.from && e.a === shownPacket.to)) && (!packetEdgeId || packetEdgeId === e.id) : false,
+    onPath: false,
+    ...(e.offset3D ? { offset: e.offset3D } : {}),
+    ...(e.visual3D ? { visualState: e.visual3D } : {}),
+  }));
+  const shownPacket3D: ActivePacket3D | undefined = shownPacket && nodes3D.some((n) => n.id === shownPacket.from) && nodes3D.some((n) => n.id === shownPacket.to) ? { packet: shownPacket, fromId: shownPacket.from, toId: shownPacket.to, callout: c.callout(shownPacket, shownState), ...(edgeById(packetEdgeId)?.offset3D ? { offset: edgeById(packetEdgeId)?.offset3D } : {}) } : undefined;
   // Flood copies carry a title-only callout (as in the BGP RR / VPLS lessons): the main packet's callout already lists every
   // flood port, and full-detail copies would stack over neighbouring devices.
   const floodCopies3D: FloodCopy3D[] | undefined = copies.length
     ? copies.map((cp) => {
         const cc = c.callout(cp.packet, shownState);
-        return { id: cp.id, fromId: cp.fromId, toId: cp.toId, callout: { title: cc.title, color: cc.color } };
+        // A copy on a parallel link beside the main packet keeps its marker but not a second, overlapping callout.
+        const besideMain = !!shownPacket && cp.fromId === shownPacket.from && cp.toId === shownPacket.to && cp.edgeId !== packetEdgeId;
+        return { id: cp.id, fromId: cp.fromId, toId: cp.toId, callout: besideMain ? undefined : { title: cc.title, color: cc.color }, ...(edgeById(cp.edgeId)?.offset3D ? { offset: edgeById(cp.edgeId)?.offset3D } : {}) };
       })
     : undefined;
 
@@ -276,17 +302,18 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
             const to = nodes.find((n) => n.id === pkt.to);
             if (!from || !to) return null;
             const cc = c.callout(pkt, shownState);
-            return <GraphPacketBubble packet={bubblePacket(pkt, cc)} from={from} to={to} title={cc.title} scope={`${pkt.from} → ${pkt.to}`} onSelect={() => setPacketSelected(true)} />;
+            return <GraphPacketBubble packet={bubblePacket(pkt, cc)} from={onEdge2D(from, packetEdgeId)} to={onEdge2D(to, packetEdgeId)} title={cc.title} scope={`${pkt.from} → ${pkt.to}`} onSelect={() => setPacketSelected(true)} />;
           })()}
         {/* Phone width: copies keep their moving dots in 3D, but in 2D only the main bubble (whose text lists every flood port) is labelled. */}
         {(narrow ? [] : copies)
-          .filter((cp) => !(shownPacket && cp.fromId === shownPacket.from && cp.toId === shownPacket.to))
+          .filter((cp) => !(shownPacket && cp.fromId === shownPacket.from && cp.toId === shownPacket.to && cp.edgeId === packetEdgeId))
           .map((cp) => {
             const from = nodes.find((n) => n.id === cp.fromId);
             const to = nodes.find((n) => n.id === cp.toId);
             if (!from || !to) return null;
             const cc = c.callout(cp.packet, shownState);
-            return <GraphPacketBubble key={cp.id} compact packet={bubblePacket(cp.packet, cc)} from={from} to={to} title={cc.title} />;
+            const besideMain = !!shownPacket && cp.fromId === shownPacket.from && cp.toId === shownPacket.to;
+            return <GraphPacketBubble key={cp.id} compact markerOnly={besideMain} packet={bubblePacket(cp.packet, cc)} from={onEdge2D(from, cp.edgeId)} to={onEdge2D(to, cp.edgeId)} title={cc.title} />;
           })}
       </GraphTopologyViewer>
     </div>

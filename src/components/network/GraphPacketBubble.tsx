@@ -15,6 +15,8 @@ interface GraphPacketBubbleProps {
   compact?: boolean;
   /** Overrides the derived title, e.g. "Reflected UPDATE" for a copy. */
   title?: string;
+  /** Only the moving marker, no bubble — for a copy travelling a parallel link right beside the labelled packet. */
+  markerOnly?: boolean;
 }
 
 const START = 0.2;
@@ -30,7 +32,7 @@ const clampX = (x: number) => Math.min(80, Math.max(20, x));
  * card, and the bubble flips below the path near the top edge, so neither
  * hides behind a device.
  */
-export function GraphPacketBubble({ packet, from, to, scope, onSelect, compact, title: titleOverride }: GraphPacketBubbleProps) {
+export function GraphPacketBubble({ packet, from, to, scope, onSelect, compact, title: titleOverride, markerOnly }: GraphPacketBubbleProps) {
   const color = PROTOCOL_HEX[packet.protocol];
   const derived = packetMessageLabel(packet);
   const title = titleOverride ?? derived.title;
@@ -54,6 +56,7 @@ export function GraphPacketBubble({ packet, from, to, scope, onSelect, compact, 
           type="button"
           onClick={onSelect}
           disabled={!onSelect}
+          hidden={markerOnly}
           className="pointer-events-auto absolute text-left disabled:cursor-default"
           style={{ translate: bubbleShift }}
           initial={{ left: `${clampX(a.x)}%`, top: `${a.y}%` }}

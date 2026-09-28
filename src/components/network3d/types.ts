@@ -75,6 +75,8 @@ export interface Link3DData {
    * unmodified.
    */
   visualState?: LinkVisualState;
+  /** Optional world-space shift so two parallel links between the same pair of nodes stay distinguishable. Omitted = drawn centre to centre, exactly as before. */
+  offset?: [number, number, number];
 }
 
 /** The animated in-flight packet, positioned between two existing node ids. */
@@ -84,6 +86,8 @@ export interface ActivePacket3D {
   toId: string;
   /** Optional readable, camera-facing bubble riding above the packet (e.g. "ARP Request · Broadcast"). When set, the packet also travels on a raised path and stops just short of the destination device instead of sinking into its chassis. Opt-in; omitting it keeps the original bare-marker behavior. */
   callout?: PacketCallout3D;
+  /** Optional world-space shift matching `Link3DData.offset`, so a packet rides the parallel link it is actually on. */
+  offset?: [number, number, number];
 }
 
 export interface PacketCallout3D {
