@@ -15,6 +15,7 @@ export function stpTables(device: StpDevice, s: StpState): Table[] {
           { label: "Root ID", value: `${bidText(b.rootId)} (${bidName(b.rootId)})` },
           { label: "Root Path Cost", value: String(b.cost) },
           { label: "Root Port", value: b.rootPort ?? "none — this bridge is the root it knows" },
+          { label: "Message Age it sends", value: `${b.messageAge} (root sends 0; +1 per relaying bridge)` },
         ],
       },
       { title: "RSTP ports", rows: portSummary(s, sw).map((p) => ({ label: p.port, value: `${p.peer} · link ${p.up ? "up" : "down"} · ${p.link === "edge" ? "edge" : p.rstp ? "RSTP" : "RSTP OFF"} · ${roleShort(p.role)} / ${p.state}` })) },

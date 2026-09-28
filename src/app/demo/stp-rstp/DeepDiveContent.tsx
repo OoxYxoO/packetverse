@@ -204,6 +204,9 @@ export function StpDeepDiveContent() {
         <p>
           The Flags byte carries the sending port&apos;s role and its Learning/Forwarding state, plus the Proposal, Agreement and topology-change bits. These are real protocol fields. The decisions they lead to live in each bridge&apos;s state.
         </p>
+        <p>
+          The Port ID is a 16-bit value: port priority in the top 4 bits (in steps of 16), port number in the low 12. Priority 128 on port 2 is <Mono>0x8002</Mono>. Message Age is a timer, not a metric: the root sends 0, each bridge relaying root information adds to it, and Max Age (20) bounds it. In this lesson it rises by one per bridge hop from the root. It has nothing to do with Root Path Cost, even though both happen to grow in step on this equal-cost triangle.
+        </p>
       </GuideSection>
 
       <GuideSection id="std-vector" eyebrow="Comparison" title="Priority vectors" tone="ip">
@@ -281,7 +284,8 @@ export function StpDeepDiveContent() {
         <Glossary
           items={[
             { term: "Priority vector", def: "{Root ID, Root Path Cost, Bridge ID, Port ID} compared in order." },
-            { term: "Port ID", def: "Port priority + port number, e.g. 0x8002 = 128.2." },
+            { term: "Port ID", def: "16 bits: priority in the top 4 bits (steps of 16) + 12-bit port number, e.g. 0x8002 = priority 128, port 2." },
+            { term: "Message Age", def: "BPDU timer field: 0 from the root, increased by each relaying bridge; unrelated to Root Path Cost." },
             { term: "Proposal / Agreement", def: "RSTP handshake that lets a point-to-point port forward quickly." },
             { term: "Topology change", def: "Event that makes bridges flush non-edge MAC entries." },
             { term: "Edge port", def: "Host-facing port that forwards immediately; loses edge status if a BPDU arrives." },

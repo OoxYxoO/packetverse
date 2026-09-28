@@ -68,8 +68,25 @@ export const STP_PORTS: Record<StpSw, StpPort[]> = {
 export const HOST_ATTACH: Record<StpHost, { sw: StpSw; port: string }> = { "HOST-A": { sw: "SW1", port: "ge-0/0/10" }, "HOST-B": { sw: "SW2", port: "ge-0/0/10" }, "HOST-C": { sw: "SW3", port: "ge-0/0/10" } };
 export const pk = (sw: StpSw, port: string) => `${sw}:${port}`;
 export const portDef = (sw: StpSw, port: string) => STP_PORTS[sw].find((p) => p.port === port)!;
-export const portIdOf = (sw: StpSw, port: string) => PORT_PRIORITY * 4096 + portDef(sw, port).num;
-export const portIdText = (id: number) => `0x${id.toString(16).toUpperCase().padStart(4, "0")} (${Math.floor(id / 4096)}.${id % 4096})`;
+/**
+ * IEEE 802.1D-2004 Port Identifier — a 16-bit value: the port priority (0–240 in steps of 16) occupies the top 4 bits
+ * and the port number (1–4095) the low 12 bits. For the user-facing priority value that is (priority << 8) | port,
+ * e.g. priority 128 port 1 → 0x8001, port 2 → 0x8002, port 23 → 0x8017.
+ */
+export function encodePortId(priority: number, portNumber: number): number {
+  if (!Number.isInteger(priority) || priority < 0 || priority > 240 || priority % 16 !== 0) throw new Error(`Port priority ${priority} must be 0–240 in steps of 16`);
+  if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 0x0fff) throw new Error(`Port number ${portNumber} must be 1–4095`);
+  return (priority << 8) | portNumber;
+}
+export const portIdOf = (sw: StpSw, port: string) => encodePortId(PORT_PRIORITY, portDef(sw, port).num);
+/** 0x8002 (128.2): the encoded 16-bit value, then priority (top 4 bits × 16) and port number (low 12 bits). */
+export const portIdText = (id: number) => `0x${id.toString(16).toUpperCase().padStart(4, "0")} (${(id >> 12) * 16}.${id & 0x0fff})`;
+/**
+ * BPDU Message Age: the root sends 0; a bridge relaying root information adds MESSAGE_AGE_INCREMENT to the age it
+ * received on its Root Port. This teaching scenario models the increment as 1 per bridge hop from the root. It is a
+ * timer field and is tracked separately from Root Path Cost (a path metric).
+ */
+export const MESSAGE_AGE_INCREMENT = 1;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Priority vectors
@@ -90,6 +107,8 @@ export interface Vector {
   cost: number;
   senderId: BridgeId;
   senderPortId: number;
+  /** BPDU Message Age carried with this information — not part of the priority-vector comparison. */
+  messageAge: number;
 }
 export const cmpVector = (a: Vector, b: Vector) => cmpBid(a.rootId, b.rootId) || a.cost - b.cost || cmpBid(a.senderId, b.senderId) || a.senderPortId - b.senderPortId;
 export const vectorText = (v: Vector) => `Root ${bidName(v.rootId)} · cost ${v.cost} · from ${bidName(v.senderId)} ${portIdText(v.senderPortId).split(" ")[0]}`;
@@ -153,25 +172,27 @@ export interface BridgeInfo {
   rootId: BridgeId;
   cost: number;
   rootPort?: string;
+  /** Message Age this bridge puts in the BPDUs it sends (0 when it is, or believes it is, the root). */
+  messageAge: number;
 }
 export function bridgeInfo(s: StpState, sw: StpSw): BridgeInfo {
-  const own: BridgeInfo = { rootId: bridgeIdOf(sw), cost: 0 };
+  const own: BridgeInfo = { rootId: bridgeIdOf(sw), cost: 0, messageAge: 0 };
   let best: { v: Vector; port: string; localId: number } | undefined;
   for (const p of STP_PORTS[sw]) {
     if (p.link === "edge" || !linkIsUp(s, p) || !participates(s, sw, p.port)) continue;
     const r = s.rx[pk(sw, p.port)];
     if (!r) continue;
-    const v: Vector = { ...r, cost: r.cost + LINK_COST };
+    const v: Vector = { ...r, cost: r.cost + LINK_COST, messageAge: r.messageAge + MESSAGE_AGE_INCREMENT };
     const localId = portIdOf(sw, p.port);
     if (!best || cmpVector(v, best.v) < 0 || (cmpVector(v, best.v) === 0 && localId < best.localId)) best = { v, port: p.port, localId };
   }
-  if (best && cmpBid(best.v.rootId, own.rootId) < 0) return { rootId: best.v.rootId, cost: best.v.cost, rootPort: best.port };
+  if (best && cmpBid(best.v.rootId, own.rootId) < 0) return { rootId: best.v.rootId, cost: best.v.cost, rootPort: best.port, messageAge: best.v.messageAge };
   return own;
 }
 /** The vector this bridge advertises out of `port` when that port is Designated. */
 export function designatedVector(s: StpState, sw: StpSw, port: string): Vector {
   const b = bridgeInfo(s, sw);
-  return { rootId: b.rootId, cost: b.cost, senderId: bridgeIdOf(sw), senderPortId: portIdOf(sw, port) };
+  return { rootId: b.rootId, cost: b.cost, senderId: bridgeIdOf(sw), senderPortId: portIdOf(sw, port), messageAge: b.messageAge };
 }
 export function portRole(s: StpState, sw: StpSw, port: string): PortRole {
   const p = portDef(sw, port);
@@ -282,7 +303,7 @@ export function bpdu(s: StpState, id: string, sw: StpSw, port: string): PacketVi
           { label: "Root Path Cost", value: String(v.cost) },
           { label: "Bridge ID", value: bidText(v.senderId) },
           { label: "Port ID", value: portIdText(v.senderPortId) },
-          { label: "Message Age", value: v.cost === 0 ? "0" : String(v.cost / LINK_COST) },
+          { label: "Message Age", value: String(v.messageAge) },
           { label: "Max Age", value: "20" },
           { label: "Hello Time", value: "2" },
           { label: "Forward Delay", value: "15" },
