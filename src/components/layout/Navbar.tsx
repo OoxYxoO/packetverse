@@ -7,9 +7,12 @@ import { Button } from "@/components/ui/Button";
 
 const links = [
   { href: "/learn", label: "Learning Map" },
+  { href: "/lessons", label: "Lessons" },
   { href: "/demo/first-connection", label: "Interactive Demo" },
   { href: "/dashboard", label: "Dashboard" },
 ];
+
+const isActive = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
 export function Navbar() {
   const pathname = usePathname();
@@ -28,9 +31,10 @@ export function Navbar() {
             <Link
               key={l.href}
               href={l.href}
+              aria-current={isActive(pathname, l.href) ? "page" : undefined}
               className={clsx(
                 "rounded-full px-4 py-2 text-sm transition-colors",
-                pathname === l.href ? "bg-white/[0.06] text-pv-text" : "text-pv-text-muted hover:text-pv-text",
+                isActive(pathname, l.href) ? "bg-white/[0.06] text-pv-text" : "text-pv-text-muted hover:text-pv-text",
               )}
             >
               {l.label}
