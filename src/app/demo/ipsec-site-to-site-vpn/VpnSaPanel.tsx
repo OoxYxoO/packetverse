@@ -28,7 +28,7 @@ export function VpnSaPanel({ s }: { s: VpnState }) {
             <Row k="Anti-replay highest" v={`GW-B ${c!.rxAB} · GW-A ${c!.rxBA}`} />
           </>
         ) : (
-          <p className="text-pv-text-faint">No ESP SAs — protected traffic cannot be sent.</p>
+          <p className="text-pv-text-faint">{s.childStatus === "DELETING" ? "INFORMATIONAL Delete in progress — the ESP SA pair is being removed." : "No ESP SAs — protected traffic cannot be sent."}</p>
         )}
         {s.lastNotify && <Row k="Last notify" v={s.lastNotify} tone="text-pv-danger" />}
       </div>

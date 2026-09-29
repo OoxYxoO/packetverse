@@ -37,6 +37,7 @@ function vpnCallout(p: PacketVisual, s: VpnState): PacketCallout3D {
 function tunnelEdge(s: VpnState): ShellEdge {
   const base = { id: "tunnel", a: "GW-A", b: "GW-B", offset: { dx: 0, dy: -24 }, offset3D: [0, 0, -1.3] as [number, number, number] };
   if (s.child && s.childStatus === "INSTALLED") return { ...base, label: "IPsec · IKE SA + CHILD SA (ESP)" };
+  if (s.ike.phase === "ESTABLISHED" && s.childStatus === "DELETING") return { ...base, label: "IKE SA up · CHILD SA being deleted", down: true, visual3D: "controlPlane" };
   if (s.ike.phase === "ESTABLISHED") return { ...base, label: `IKE SA up · no CHILD SA${s.childStatus.startsWith("FAILED") ? " (TS_UNACCEPTABLE)" : ""}`, down: true, visual3D: "controlPlane" };
   return { ...base, label: s.ike.phase === "NONE" ? "no SA yet" : `IKE: ${s.ike.phase}`, down: true, visual3D: "controlPlane" };
 }
@@ -91,7 +92,7 @@ const config: FundamentalsLessonConfig<VpnState> = {
   tablesFor: (d, s) => vpnTables(d as VpnDevice, s),
   callout: vpnCallout,
   floodCopies: (s) => s.flood,
-  nodeBadges: (id, s) => (id === "GW-A" || id === "GW-B" ? [`IKE ${s.ike.phase === "ESTABLISHED" ? "UP" : s.ike.phase === "NONE" ? "—" : "…"}`, `CHILD ${s.childStatus === "INSTALLED" ? "UP" : s.childStatus === "NONE" ? "—" : s.childStatus === "NEGOTIATING" ? "…" : "FAIL"}`] : undefined),
+  nodeBadges: (id, s) => (id === "GW-A" || id === "GW-B" ? [`IKE ${s.ike.phase === "ESTABLISHED" ? "UP" : s.ike.phase === "NONE" ? "—" : "…"}`, `CHILD ${s.childStatus === "INSTALLED" ? "UP" : s.childStatus === "NONE" ? "—" : s.childStatus === "NEGOTIATING" ? "…" : s.childStatus === "DELETING" ? "DEL" : "FAIL"}`] : undefined),
   repair: {
     stepId: "repair-challenge",
     prompt: "The IKE SA is up and authenticated, but CREATE_CHILD_SA keeps failing with TS_UNACCEPTABLE. Which change fixes it?",

@@ -9,7 +9,7 @@ export const VPN_BRIEFING_PHASES: BriefingPhaseDef[] = [
   { phase: { label: "Encrypt", tone: "mpls" }, objective: "Wrap a private packet in ESP tunnel mode.", steps: ["predict-inner", "ping-send", "predict-outer", "esp-encrypt", "predict-observer"] },
   { phase: { label: "Decrypt", tone: "ip" }, objective: "Recover the original packet at the far gateway.", steps: ["esp-decrypt", "esp-deliver"] },
   { phase: { label: "Return", tone: "tcp" }, objective: "Send the reply back on the other one-way SA.", steps: ["reply-send", "reply-encrypt", "reply-decrypt", "reply-deliver", "seq-more"] },
-  { phase: { label: "Incident", tone: "danger" }, objective: "Site A can't reach Site B, yet the peer shows up. Investigate.", steps: ["incident-intro", "child-delete", "child-delete-rx", "inc-ping", "inc-ccsa-req", "inc-ccsa-rx", "inc-ts-resp", "inc-ts-rx"] },
+  { phase: { label: "Incident", tone: "danger" }, objective: "Site A can't reach Site B, yet the peer shows up. Investigate.", steps: ["incident-intro", "child-delete", "child-delete-rx", "child-delete-resp", "inc-ping", "inc-ccsa-req", "inc-ccsa-rx", "inc-ts-resp", "inc-ts-rx"] },
   { phase: { label: "Diagnose", tone: "danger" }, objective: "Diagnosis pending.", steps: ["predict-ts", "predict-ike-healthy", "diagnostic-layers"] },
   { phase: { label: "Repair pending", tone: "warning" }, objective: "Choose the change that fixes the cause you identified.", steps: ["repair-challenge"] },
   { phase: { label: "Verify", tone: "success" }, objective: "Negotiate a new CHILD SA and prove ESP flows again.", steps: ["ver-ccsa-req", "ver-ccsa-rx", "ver-ccsa-resp", "ver-ccsa-done", "ver-esp", "ver-esp-rx", "ver-reply"] },

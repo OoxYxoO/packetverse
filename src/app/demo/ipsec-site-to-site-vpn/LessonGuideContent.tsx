@@ -351,6 +351,9 @@ export function VpnLessonGuideContent() {
         <DiagramFrame caption="TS_UNACCEPTABLE travels inside the encrypted IKE exchange.">
           <IncidentDiagram />
         </DiagramFrame>
+        <p>
+          First the CHILD SA was deleted with one INFORMATIONAL exchange (type 37, Message ID 2, inside SK): GW-A&apos;s request carried a Delete naming its inbound SPI <Mono>{BA}</Mono>, and GW-B&apos;s response carried a Delete naming its own inbound SPI <Mono>{AB}</Mono> — one Delete per direction, each named by the side that receives on it. The IKE SA stayed ESTABLISHED.
+        </p>
         <p>After the CHILD SA was deleted, GW-A asked for a new one for 10.10.10.0/24 ↔ 10.20.20.0/24. GW-B&apos;s policy had been edited to 10.10.20.0/24 on the Site-A side, so it refused with Notify 38. The peer was reachable and authenticated all along — only the data SAs were missing.</p>
       </GuideSection>
 

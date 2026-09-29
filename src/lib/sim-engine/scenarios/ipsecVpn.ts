@@ -76,7 +76,7 @@ export interface ChildSa {
   rxAB: number;
   rxBA: number;
 }
-export type ChildStatus = "NONE" | "NEGOTIATING" | "INSTALLED" | "FAILED — TS_UNACCEPTABLE";
+export type ChildStatus = "NONE" | "NEGOTIATING" | "INSTALLED" | "DELETING" | "FAILED — TS_UNACCEPTABLE";
 export interface VpnState {
   hops: FundHop[];
   packet?: PacketVisual;
@@ -213,7 +213,7 @@ export function deleteMsg(resp: boolean, spi: number): IkeMsg {
     msgId: 2,
     response: resp,
     spiR: IKE_SPI_R,
-    payloads: [{ name: `INFORMATIONAL ${resp ? "response" : "request"} contents — ${TEACH}`, color: "#fbbf24", fields: [{ label: "Delete", value: `Protocol 3 (ESP) · SPI ${spiText(spi)} (${resp ? "GW-B" : "GW-A"}'s inbound SPI of the CHILD SA)` }] }],
+    payloads: [{ name: `INFORMATIONAL ${resp ? "response" : "request"} contents — ${TEACH}`, color: "#fbbf24", fields: [{ label: "Delete", value: `Protocol ID 3 (ESP) · SPI Size 4 · # of SPIs 1 · SPI ${spiText(spi)} (${resp ? "GW-B" : "GW-A"}'s inbound SPI of the CHILD SA)` }] }],
     length: IKE_HDR + skLen(DELETE_ONE),
     next: "46 (SK)",
     firstInner: "42 (Delete)",
@@ -814,14 +814,26 @@ export const ipsecSteps: ScenarioStep<VpnState>[] = [
     id: "child-delete",
     label: "The CHILD SA is deleted",
     narrative: `The CHILD SA reaches its lifetime. GW-A deletes it with an INFORMATIONAL exchange (Exchange Type 37, Message ID 2), a Delete payload naming its inbound SPI ${spiText(CHILD_SPIS.first.ba)} — inside SK. The IKE SA is not touched.`,
-    run: (s) => ({ state: ikeSend(s, "child-delete", "GW-A", deleteMsg(false, CHILD_SPIS.first.ba), 0x5a20, { action: "INFORMATIONAL · DELETE →", reason: "Deleting a CHILD SA is itself an IKE exchange, protected by the IKE SA. Only the ESP SA pair goes away.", key: "CHILD SA lifetime", result: "Delete sent", patch: { ike: { ...s.ike, lastExchange: "INFORMATIONAL (37) request", lastMsgId: 2 } } }), events: [ev("PACKET_SENT", "child-delete", "Delete")] }),
+    run: (s) => ({ state: ikeSend(s, "child-delete", "GW-A", deleteMsg(false, CHILD_SPIS.first.ba), 0x5a20, { action: "INFORMATIONAL · DELETE →", reason: "Deleting a CHILD SA is itself an IKE exchange, protected by the IKE SA. Only the ESP SA pair goes away.", key: "CHILD SA lifetime", result: "Delete sent · awaiting response", patch: { childStatus: "DELETING", ike: { ...s.ike, lastExchange: "INFORMATIONAL (37) request", lastMsgId: 2 } } }), events: [ev("PACKET_SENT", "child-delete", "Delete")] }),
     packet: pkt,
   },
   {
     id: "child-delete-rx",
-    label: "Both sides drop the CHILD SA",
-    narrative: `GW-B removes the pair and answers with its own Delete (for its inbound SPI ${spiText(CHILD_SPIS.first.ab)}) in the INFORMATIONAL response. Result: IKE SA ESTABLISHED, no CHILD SA. The next protected packet will need a new one.`,
-    run: (s) => ({ state: ikeReceive(s, "child-delete-rx", "GW-B", deleteMsg(false, CHILD_SPIS.first.ba), 0x5a20, { active: "sa", details: { sa: `delete ${spiText(CHILD_SPIS.first.ab)} / ${spiText(CHILD_SPIS.first.ba)}`, ike: "IKE SA unchanged · INFORMATIONAL response with Delete" }, action: "CHILD SA DELETED", reason: "The control channel (IKE SA) is still healthy; only the data SAs were removed.", key: "INFORMATIONAL Delete", result: "CHILD SA removed · IKE SA ESTABLISHED", patch: { child: undefined, childStatus: "NONE", ike: { ...s.ike, lastExchange: "INFORMATIONAL (37) response", lastMsgId: 2 } } }), events: [ev("PACKET_RECEIVED", "child-delete-rx", "CHILD SA deleted")] }),
+    label: "GW-B deletes its half",
+    narrative: `GW-B decrypts the INFORMATIONAL request with the IKE SA keys and reads the Delete for GW-A's inbound SPI ${spiText(CHILD_SPIS.first.ba)}. That SPI belongs to a CHILD SA pair, so GW-B deletes the whole pair: its outbound SA toward ${spiText(CHILD_SPIS.first.ba)} and its own inbound SA ${spiText(CHILD_SPIS.first.ab)}. The request shown is still GW-A's (Message ID 2, request); GW-B's answer is the next step.`,
+    run: (s) => ({ state: ikeReceive(s, "child-delete-rx", "GW-B", deleteMsg(false, CHILD_SPIS.first.ba), 0x5a20, { active: "sa", details: { ike: "INFORMATIONAL request · Message ID 2 · SK decrypted with the IKE SA keys", sa: `Delete names GW-A's inbound SPI ${spiText(CHILD_SPIS.first.ba)} → delete the pair (${spiText(CHILD_SPIS.first.ba)} out · ${spiText(CHILD_SPIS.first.ab)} in)` }, action: "DELETE REQUEST RECEIVED", reason: "A Delete payload names the SENDER's inbound SA. GW-B removes the paired SAs and will name its own inbound SPI in the response so GW-A can remove the other direction.", key: "INFORMATIONAL request (Delete)", result: "GW-B's CHILD SA pair deleted · response next", patch: { childStatus: "DELETING", ike: { ...s.ike, lastExchange: "INFORMATIONAL (37) request received", lastMsgId: 2 } } }), events: [ev("PACKET_RECEIVED", "child-delete-rx", "Delete request")] }),
+    packet: pkt,
+  },
+  {
+    id: "child-delete-resp",
+    label: "GW-B's Delete response",
+    narrative: `GW-B answers with the INFORMATIONAL response — Exchange Type 37, the same Message ID 2, Response flag set, inside SK — carrying its own Delete for its inbound SPI ${spiText(CHILD_SPIS.first.ab)}. GW-A removes the other direction. Result: IKE SA ESTABLISHED, no CHILD SA. The next protected packet will need a new one.`,
+    run: (s) => {
+      const m = deleteMsg(true, CHILD_SPIS.first.ab);
+      const sent = ikeSend(s, "child-delete-resp", "GW-B", m, 0x6b20, { action: "INFORMATIONAL · DELETE ←", reason: "The normal response to a CHILD SA Delete contains a Delete for the paired SA in the other direction — named by GW-B's inbound SPI.", key: "INFORMATIONAL response (Delete)", result: "response sent" });
+      const got = ikeReceive(sent, "child-delete-resp", "GW-A", m, 0x6b20, { active: "sa", details: { ike: "INFORMATIONAL response · Message ID 2 · IKE SA still ESTABLISHED", sa: `Delete names GW-B's inbound SPI ${spiText(CHILD_SPIS.first.ab)} → CHILD SA pair gone` }, action: "CHILD SA DELETED", reason: "Both directions are now gone. The control channel (IKE SA) is untouched; only the data SAs were removed.", key: "INFORMATIONAL response (Delete)", result: "CHILD SA removed · IKE SA ESTABLISHED", patch: { child: undefined, childStatus: "NONE", ike: { ...s.ike, lastExchange: "INFORMATIONAL (37) response", lastMsgId: 2 } } });
+      return { state: got, events: [ev("PACKET_RECEIVED", "child-delete-resp", "CHILD SA deleted")] };
+    },
     packet: pkt,
     whatChanged: (_p, n) => [ikeLine(n), childLine(n)],
   },
