@@ -56,9 +56,10 @@ export default function DashboardPage() {
             <h2 className="mb-4 text-sm font-semibold text-pv-text">Learning Paths</h2>
             <div className="space-y-5">
               {learningPaths.map((path) => {
-                const lessonNodes = path.nodes.filter((n) => n.lessonId);
-                const completedCount = lessonNodes.filter((n) => n.lessonId && completedLessons.includes(n.lessonId)).length;
-                const pct = lessonNodes.length ? (completedCount / lessonNodes.length) * 100 : 0;
+                // Distinct lesson IDs: two roadmap concepts served by one lesson count once.
+                const lessonIds = [...new Set(path.nodes.flatMap((n) => (n.lessonId ? [n.lessonId] : [])))];
+                const completedCount = lessonIds.filter((id) => completedLessons.includes(id)).length;
+                const pct = lessonIds.length ? (completedCount / lessonIds.length) * 100 : 0;
                 return (
                   <ProgressBar
                     key={path.id}
