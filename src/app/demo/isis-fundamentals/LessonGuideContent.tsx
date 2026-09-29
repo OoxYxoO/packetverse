@@ -137,17 +137,17 @@ function LspDiagram() {
   return (
     <DiagramSvg h={206} label="PE2's LSP: LSP ID, sequence 1, lifetime 1200, checksum, TLV 22 neighbor P2 metric 10, TLV 135 10.0.0.4/32 metric 10">
       <DTable
-        x={60}
+        x={30}
         y={8}
         title={`PE2's Level-2 LSP (PDU type ${PDU.L2_LSP}) · ${lspLength(pe2)} bytes`}
         cols={[
-          { label: "FIELD / TLV", w: 220 },
-          { label: "VALUE", w: 300 },
+          { label: "FIELD / TLV", w: 210 },
+          { label: "VALUE", w: 370 },
         ]}
         rows={[
           ["LSP ID", `${pe2.id} (System ID · pseudonode 00 · fragment 00)`],
           ["Sequence · Remaining Lifetime", `${hex8s(pe2.seq)} · ${LSP_LIFETIME} s`],
-          ["Checksum (Fletcher)", hex4(lspChecksum(pe2))],
+          ["Checksum (Fletcher)", `${hex4(lspChecksum(pe2))} · LSP ID → end (lifetime excluded)`],
           ["TLV 22 Extended IS Reachability", `${ROUTER.P2.sysId}.00 (P2) · metric ${LINK_METRIC}`],
           ["TLV 135 Extended IP Reachability", `10.0.0.4/32 · metric ${PREFIX_METRIC}`],
           ["Also: TLV 1 · 129 · 132 · 137", `area · IPv4 · 10.0.0.4 · hostname PE2`],
@@ -348,7 +348,7 @@ export function IsisLessonGuideContent() {
       </GuideSection>
 
       <GuideSection id="isl-lsdb" eyebrow="Database" title="One Level-2 LSDB" tone="cyan">
-        <DiagramFrame caption="Checksums are computed over each encoded LSP.">
+        <DiagramFrame caption="Each Fletcher checksum covers its LSP from the LSP ID to the end; Remaining Lifetime is excluded.">
           <LsdbDiagram />
         </DiagramFrame>
       </GuideSection>

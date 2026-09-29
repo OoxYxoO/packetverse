@@ -15,7 +15,8 @@ import { FCS_LAYER, fieldIn, ip4Frame, ip4Layer, u16, u32, type Ip4 } from "./en
  * - Adjacencies use the RFC 5303 three-way handshake (TLV 240, state Up 0 / Initializing 1 / Down 2). A router moves
  *   to Up once it hears an IIH that lists its own System ID — so one side can go Down → Up directly.
  * - Level-2 LSPs (type 20) carry TLV 22 (Extended IS Reachability) and TLV 135 (Extended IP Reachability) with wide
- *   metrics; their Fletcher checksum is computed over the real encoded bytes. CSNPs (25) summarize the database,
+ *   metrics; their Fletcher checksum is computed over the real encoded bytes from the LSP ID to the end (Remaining
+ *   Lifetime and everything before it are excluded, so aging never changes the checksum). CSNPs (25) summarize the database,
  *   PSNPs (27) acknowledge LSPs or request missing/newer ones.
  * - SPF runs on each router's own LSDB and uses a link only when BOTH ends report it (two-way check). The resulting
  *   routes are installed in the IPv4 RIB; ordinary IPv4 forwarding then uses them — IS-IS never carries user data.
@@ -350,7 +351,7 @@ export function lspPacket(id: string, from: IsisRouter, to: IsisRouter, l: Lsp):
       { label: "Remaining Lifetime", value: `${l.lifetime} s` },
       { label: "LSP ID", value: `${l.id} (${l.originator}, pseudonode 00, fragment 00)` },
       { label: "Sequence Number", value: hex8s(l.seq) },
-      { label: "Checksum", value: `${hex4(lspChecksum(l))} (Fletcher, computed over this LSP)` },
+      { label: "Checksum", value: `${hex4(lspChecksum(l))} (Fletcher · covers LSP ID through the end; Remaining Lifetime excluded)` },
       { label: "P / ATT / OL / IS Type", value: "0 / 0 / 0 / 3 (Level-2)" },
     ],
   };
@@ -714,7 +715,7 @@ export const isisSteps: ScenarioStep<IsisState>[] = [
   {
     id: "lsp-pe2",
     label: "PE2 originates its LSP",
-    narrative: `PE2 originates Level-2 LSP ${lspIdOf("PE2")} (PDU type 20), sequence 0x00000001, remaining lifetime ${LSP_LIFETIME} s. TLV 22 lists neighbor P2 at metric ${LINK_METRIC}; TLV 135 lists 10.0.0.4/32 at metric ${PREFIX_METRIC}. The checksum is computed over the whole LSP. PE2 floods it to its only neighbor, P2.`,
+    narrative: `PE2 originates Level-2 LSP ${lspIdOf("PE2")} (PDU type 20), sequence 0x00000001, remaining lifetime ${LSP_LIFETIME} s. TLV 22 lists neighbor P2 at metric ${LINK_METRIC}; TLV 135 lists 10.0.0.4/32 at metric ${PREFIX_METRIC}. The Fletcher checksum covers the LSP fields after Remaining Lifetime; Remaining Lifetime itself is excluded so routers can age the LSP without recomputing the checksum. PE2 floods it to its only neighbor, P2.`,
     run: (s) => {
       let n = idle(s);
       for (const r of ["PE1", "P1", "P2"] as IsisRouter[]) n = { ...n, lsdb: { ...n.lsdb, [r]: installLsp(n.lsdb[r], buildLsp(r, 1, upNeighbors(n, r))) } };

@@ -172,7 +172,7 @@ function PduDiagram() {
 
 function LifecycleDiagram() {
   return (
-    <DiagramSvg h={190} label="LSP lifecycle: originate with sequence and lifetime counting down, refresh with a higher sequence, purge at zero lifetime">
+    <DiagramSvg h={214} label="LSP lifecycle: originate with sequence and lifetime counting down, refresh with a higher sequence, purge at zero lifetime; higher sequence is newer, at the same sequence a purge beats a non-zero lifetime">
       <DPill x={90} y={40} text="originate seq n" color={D.success} w={140} />
       <DPill x={260} y={40} text={`lifetime ${LSP_LIFETIME} ↓`} color={D.cyan} w={130} />
       <DPill x={420} y={40} text="refresh seq n+1" color={D.warning} w={140} />
@@ -180,19 +180,25 @@ function LifecycleDiagram() {
       <DArrow x1={162} y1={40} x2={193} y2={40} color={D.muted} width={1.5} />
       <DArrow x1={327} y1={40} x2={348} y2={40} color={D.muted} width={1.5} />
       <DArrow x1={492} y1={40} x2={503} y2={40} color={D.muted} width={1.5} />
-      <text x={320} y={90} textAnchor="middle" fill={D.text} fontSize={10.5} fontWeight={700}>
-        Newer = higher sequence; equal sequence → compare remaining lifetime (0 wins), then checksum
+      <text x={320} y={84} textAnchor="middle" fill={D.text} fontSize={10.5} fontWeight={700}>
+        Higher sequence = newer · same sequence: purge (lifetime 0) beats non-zero · otherwise same version
       </text>
-      <text x={320} y={112} textAnchor="middle" fill={D.muted} fontSize={10}>
+      <text x={320} y={102} textAnchor="middle" fill={D.text} fontSize={10}>
+        Same sequence, both lifetimes non-zero → the same version, even if the lifetime values differ.
+      </text>
+      <text x={320} y={120} textAnchor="middle" fill={D.warning} fontSize={10}>
+        Same sequence, different checksum → inconsistent/corrupt copy (error handling), not an age tie-break.
+      </text>
+      <text x={320} y={142} textAnchor="middle" fill={D.muted} fontSize={10}>
         Refresh before expiry (default refresh ≈ 900 s for a 1200 s lifetime); any change also bumps the sequence.
       </text>
-      <text x={320} y={132} textAnchor="middle" fill={D.muted} fontSize={10}>
-        Remaining lifetime counts down in every copy; at zero the LSP is purged and flooded with lifetime 0.
+      <text x={320} y={160} textAnchor="middle" fill={D.muted} fontSize={10}>
+        Remaining Lifetime counts down in every copy; it is outside the checksum, so aging needs no recomputation.
       </text>
-      <text x={320} y={152} textAnchor="middle" fill={D.muted} fontSize={10}>
+      <text x={320} y={178} textAnchor="middle" fill={D.muted} fontSize={10}>
         Stale own LSP after reboot? Re-originate above the stored sequence. Sequence wrap → stop for MaxAge + ZeroAge.
       </text>
-      <text x={320} y={172} textAnchor="middle" fill={D.muted} fontSize={10}>
+      <text x={320} y={196} textAnchor="middle" fill={D.muted} fontSize={10}>
         Fragments: one router may own LSP IDs …-00 to …-FF when TLVs outgrow a PDU.
       </text>
     </DiagramSvg>
