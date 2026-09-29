@@ -42,10 +42,10 @@ export const learningPaths: LearningPath[] = [
     title: "Service Provider Engineer",
     description: "IS-IS, MPLS and the technologies that carry the Internet's core.",
     nodes: [
-      { id: "isis", label: "IS-IS", status: "locked" },
+      { id: "isis", label: "IS-IS", lessonId: "isis-fundamentals", status: "available" },
       { id: "bgp-sp", label: "BGP", lessonId: "bgp-fundamentals", status: "locked" },
-      { id: "mpls", label: "MPLS", lessonId: "mpls-fundamentals", status: "locked" },
-      { id: "ldp", label: "LDP", status: "locked" },
+      { id: "mpls", label: "MPLS Forwarding", lessonId: "mpls-fundamentals", status: "available" },
+      { id: "ldp", label: "LDP Control Plane", lessonId: "mpls-fundamentals", status: "available" },
       { id: "rr", label: "Route Reflector", lessonId: "bgp-route-reflector", status: "available" },
       { id: "rsvp", label: "RSVP", lessonId: "mpls-rsvp-te", status: "available" },
       { id: "frr", label: "Fast Reroute", lessonId: "mpls-rsvp-frr", status: "available" },
