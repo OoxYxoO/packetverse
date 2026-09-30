@@ -82,7 +82,7 @@ export const ip4Frame = (p: PacketVisual, layerRe = /^IPv4 Header$/, changed = f
 // TCP (RFC 9293 header; checksum over the pseudo-header {src, dst, 0, 6, TCP length} per RFC 1071). Protocol only —
 // no product, policy, session or NAT semantics live here.
 // ---------------------------------------------------------------------------------------------------------------
-export type TcpFlag = "SYN" | "ACK" | "PSH";
+export type TcpFlag = "SYN" | "ACK" | "PSH" | "FIN";
 export interface TcpSeg {
   sport: number;
   dport: number;
@@ -95,13 +95,13 @@ export interface TcpSeg {
   payloadLength?: number;
 }
 export const TCP_WINDOW = 64240;
-const TCP_FLAG_BITS: Record<TcpFlag, number> = { PSH: 0x08, SYN: 0x02, ACK: 0x10 };
+const TCP_FLAG_BITS: Record<TcpFlag, number> = { FIN: 0x01, PSH: 0x08, SYN: 0x02, ACK: 0x10 };
 /** Header length only (20 bytes, +4 for the MSS option). */
 export const tcpHeaderLength = (seg: TcpSeg) => 20 + (seg.mss ? 4 : 0);
 /** Header + payload — the "TCP length" of the pseudo-header and the IPv4 payload length. */
 export const tcpLength = (seg: TcpSeg) => tcpHeaderLength(seg) + (seg.payloadLength ?? 0);
 export const tcpFlagByte = (seg: TcpSeg) => seg.flags.reduce((a, f) => a | TCP_FLAG_BITS[f], 0);
-export const flagsName = (seg: TcpSeg) => (seg.flags.includes("SYN") && seg.flags.includes("ACK") ? "SYN-ACK" : seg.flags.includes("SYN") ? "SYN" : seg.flags.includes("PSH") ? "PSH-ACK" : "ACK");
+export const flagsName = (seg: TcpSeg) => (seg.flags.includes("SYN") && seg.flags.includes("ACK") ? "SYN-ACK" : seg.flags.includes("SYN") ? "SYN" : seg.flags.includes("FIN") ? (seg.flags.includes("ACK") ? "FIN-ACK" : "FIN") : seg.flags.includes("PSH") ? "PSH-ACK" : "ACK");
 /** Deterministic payload bytes (i mod 256) so checksums over data segments are reproducible. */
 export const tcpPayload = (len: number) => Array.from({ length: len }, (_, i) => i & 0xff);
 function tcpBytes(seg: TcpSeg, checksum: number): number[] {
