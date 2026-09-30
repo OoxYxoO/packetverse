@@ -93,19 +93,23 @@ export interface TcpSeg {
   mss?: number;
   /** Payload bytes carried after the header (0 for a pure handshake segment). */
   payloadLength?: number;
+  /** Optional real payload bytes (e.g. plain-text HTTP). When set, they define the payload length and are what the
+   *  checksum covers; when absent, the deterministic i-mod-256 pattern of `payloadLength` bytes is used. */
+  payload?: number[];
 }
 export const TCP_WINDOW = 64240;
 const TCP_FLAG_BITS: Record<TcpFlag, number> = { FIN: 0x01, PSH: 0x08, SYN: 0x02, ACK: 0x10 };
 /** Header length only (20 bytes, +4 for the MSS option). */
 export const tcpHeaderLength = (seg: TcpSeg) => 20 + (seg.mss ? 4 : 0);
 /** Header + payload — the "TCP length" of the pseudo-header and the IPv4 payload length. */
-export const tcpLength = (seg: TcpSeg) => tcpHeaderLength(seg) + (seg.payloadLength ?? 0);
+export const payloadLen = (seg: TcpSeg) => seg.payload?.length ?? seg.payloadLength ?? 0;
+export const tcpLength = (seg: TcpSeg) => tcpHeaderLength(seg) + payloadLen(seg);
 export const tcpFlagByte = (seg: TcpSeg) => seg.flags.reduce((a, f) => a | TCP_FLAG_BITS[f], 0);
 export const flagsName = (seg: TcpSeg) => (seg.flags.includes("SYN") && seg.flags.includes("ACK") ? "SYN-ACK" : seg.flags.includes("SYN") ? "SYN" : seg.flags.includes("FIN") ? (seg.flags.includes("ACK") ? "FIN-ACK" : "FIN") : seg.flags.includes("PSH") ? "PSH-ACK" : "ACK");
 /** Deterministic payload bytes (i mod 256) so checksums over data segments are reproducible. */
 export const tcpPayload = (len: number) => Array.from({ length: len }, (_, i) => i & 0xff);
 function tcpBytes(seg: TcpSeg, checksum: number): number[] {
-  return [...u16(seg.sport), ...u16(seg.dport), ...u32(seg.seq), ...u32(seg.ack), (tcpHeaderLength(seg) / 4) << 4, tcpFlagByte(seg), ...u16(TCP_WINDOW), ...u16(checksum), 0, 0, ...(seg.mss ? [2, 4, ...u16(seg.mss)] : []), ...tcpPayload(seg.payloadLength ?? 0)];
+  return [...u16(seg.sport), ...u16(seg.dport), ...u32(seg.seq), ...u32(seg.ack), (tcpHeaderLength(seg) / 4) << 4, tcpFlagByte(seg), ...u16(TCP_WINDOW), ...u16(checksum), 0, 0, ...(seg.mss ? [2, 4, ...u16(seg.mss)] : []), ...(seg.payload ?? tcpPayload(seg.payloadLength ?? 0))];
 }
 export function tcpChecksum(seg: TcpSeg, src: string, dst: string): number {
   return internetChecksum([...ipToBytes(src), ...ipToBytes(dst), 0, 6, ...u16(tcpLength(seg)), ...tcpBytes(seg, 0)]);
@@ -137,7 +141,7 @@ export function tcpLayer(w: TcpWire): PacketLayer {
       { label: "Checksum", value: hex4(tcpChecksum(w.seg, w.src, w.dst)) },
       { label: "Urgent Pointer", value: "0" },
       ...(w.seg.mss ? [{ label: "Options", value: `MSS ${w.seg.mss}` }] : []),
-      ...(w.seg.payloadLength ? [{ label: "Payload", value: `${w.seg.payloadLength} bytes` }] : []),
+      ...(payloadLen(w.seg) ? [{ label: "Payload", value: `${payloadLen(w.seg)} bytes` }] : []),
     ],
   };
 }
