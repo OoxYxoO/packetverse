@@ -70,9 +70,10 @@ const hex4 = (n: number) => `0x${n.toString(16).toUpperCase().padStart(4, "0")}`
 // ---------------------------------------------------------------------------------------------------------------
 // Packets — only real Ethernet / IPv4 / ARP fields
 // ---------------------------------------------------------------------------------------------------------------
-const UDP_TOTAL_LENGTH = 60; // 20 B IPv4 header + 8 B UDP header + 32 B data
-const IP_ID = 0x1a2b;
-const DF = 0x4000;
+/** Header values every lesson packet carries (shared with the IPv4 Lab, so both compute identical checksums). */
+export const UDP_TOTAL_LENGTH = 60; // 20 B IPv4 header + 8 B UDP header + 32 B data
+export const IP_ID = 0x1a2b;
+export const DF = 0x4000;
 
 export function ipv4Layer(src: string, dst: string, ttl: number): PacketLayer {
   const checksum = ipv4Checksum({ totalLength: UDP_TOTAL_LENGTH, id: IP_ID, flagsFrag: DF, ttl, protocol: 17, src, dst });
@@ -641,19 +642,20 @@ export const ipv4BasicsSteps: ScenarioStep<Ipv4State>[] = [
   {
     id: "break-intro",
     label: "Incident: a ticket arrives",
-    narrative: "After someone edited HOST-A's network settings, HOST-A can no longer reach HOST-B. HOST-B, R1 and both switches are unchanged.",
+    narrative: "HOST-A can no longer reach HOST-B. A network setting was recently changed — nobody is sure which one. Start from what HOST-A does.",
   },
   {
     id: "fault-injected",
-    label: "HOST-A's new settings",
-    narrative: `HOST-A's address is still ${V4_IP["HOST-A"]} and its gateway is still ${V4_IP.R1L}, but its prefix now reads /${V4_FAULT_PREFIX} (${maskOf(V4_FAULT_PREFIX)}).`,
-    run: (s) => ({ state: { ...idle(s), hostAPrefix: V4_FAULT_PREFIX, faultActive: true, note: { device: "HOST-A", text: `HOST-A: ${V4_IP["HOST-A"]}/${V4_FAULT_PREFIX}` } }, events: [ev("STEP_ENTERED", "fault-injected", "HOST-A prefix changed")] }),
-    whatChanged: () => [`HOST-A: ${V4_IP["HOST-A"]}/${V4_FAULT_PREFIX}`],
+    label: "A settings change",
+    // The change itself is the same wrong /24 as always; the text no longer names it — the learner finds it from evidence.
+    narrative: "A configuration change was made somewhere on HOST-A's side of the network. Which setting changed is not known yet — watch what HOST-A does next.",
+    run: (s) => ({ state: { ...idle(s), hostAPrefix: V4_FAULT_PREFIX, faultActive: true, note: { device: "HOST-A", text: "HOST-A: a setting was changed" } }, events: [ev("STEP_ENTERED", "fault-injected", "A network setting was changed")] }),
+    whatChanged: () => ["A network setting changed — which one is for you to find"],
   },
   {
     id: "fault-decision",
     label: "HOST-A decides again",
-    narrative: `HOST-A ANDs with ${maskOf(V4_FAULT_PREFIX)}: ${V4_IP["HOST-A"]} → ${networkOf(V4_IP["HOST-A"], V4_FAULT_PREFIX)}, ${V4_IP["HOST-B"]} → ${networkOf(V4_IP["HOST-B"], V4_FAULT_PREFIX)}. Same result — so HOST-A now believes ${V4_IP["HOST-B"]} is on its own LAN.`,
+    narrative: `HOST-A runs its usual same-subnet test for ${V4_IP["HOST-B"]} — and this time concludes that ${V4_IP["HOST-B"]} is on its own LAN. Inspect HOST-A's decision to see the AND it computed.`,
     run: (s) => ({ state: hostDecide(s, "fault-decision", "HOST-A", V4_IP["HOST-B"], s.hostAPrefix), events: [ev("ROUTE_LOOKUP", "fault-decision", "HOST-A: destination on-link")] }),
     whatChanged: (_p, n) => [`HOST-A decision: ${n.decision?.onLink ? "on-link" : "remote"}`, `L2 next hop: ${n.decision?.l2NextHop}`],
   },
@@ -746,7 +748,7 @@ export const ipv4BasicsSteps: ScenarioStep<Ipv4State>[] = [
     question: {
       prompt: "What is the root cause?",
       options: [
-        { id: "mask", label: "HOST-A's wrong /24 mask makes it treat HOST-B as on-link" },
+        { id: "mask", label: "HOST-A's mask makes it treat HOST-B as on-link" },
         { id: "r1", label: "R1 has no route to 192.168.10.64/26" },
         { id: "dns", label: "DNS cannot resolve HOST-B's name" },
         { id: "switch", label: "SW-A dropped HOST-A's frames" },

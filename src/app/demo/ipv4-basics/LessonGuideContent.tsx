@@ -1,6 +1,8 @@
 import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, DRegion, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
 import { DFieldRow } from "@/components/lesson/FundamentalsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import { GATEWAY, INITIAL_TTL, V4_FAULT_PREFIX, V4_IP, V4_MAC, V4_PREFIX, broadcastOf, ipv4Checksum, maskOf, networkOf, subnetsOf, toBinary } from "@/lib/sim-engine/scenarios/ipv4Basics";
 
 export const V4_LESSON_SECTIONS: LessonGuideSectionLink[] = [
@@ -16,6 +18,7 @@ export const V4_LESSON_SECTIONS: LessonGuideSectionLink[] = [
   { id: "v4-model", label: "Mental model" },
   { id: "v4-glossary", label: "Glossary" },
   { id: "v4-recap", label: "Recap" },
+  { id: "v4-practice", label: "Practise it" },
 ];
 
 const A = V4_IP["HOST-A"];
@@ -317,6 +320,20 @@ export function Ipv4LessonGuideContent() {
       <GuideSection id="v4-recap" eyebrow="Recap" title="What you can now explain" tone="success">
         <ChecklistCard tone="cyan" title="IPv4 Addressing & Subnetting" mark="→" items={[`/${V4_PREFIX} = ${MASK}: blocks of 64, 62 ordinary hosts`, "The network address, broadcast address and host range for any address", "The same-subnet test is an AND with your own mask", "Remote → Ethernet to the gateway, IPv4 to the host", "A router decrements TTL, updates the checksum and builds a new frame", "A wrong mask breaks the on-link decision"]} />
       </GuideSection>
+
+      <GuideSection id="v4-practice" eyebrow="Practice" title="Do it yourself" tone="cyan">
+        <p>The Deep Dive teaches every decision in detail with this network&apos;s values. The IPv4 Lab lets you make each decision yourself — local and remote traffic (with a lab-only HOST-C), live ARP, R1&apos;s forwarding with a before/after packet comparison, R1&apos;s Cisco and Junos CLI — and troubleshoot the wrong-mask incident from evidence.</p>
+        <LessonLabBridge />
+      </GuideSection>
     </div>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the IPv4 Lab" onPractice={openLab}>
+      Same network, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
   );
 }

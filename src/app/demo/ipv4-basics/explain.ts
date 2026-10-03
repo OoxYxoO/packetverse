@@ -93,7 +93,8 @@ export function explainV4(s: Ipv4State, id: string, stepId: string): NodeExplana
     dataPlaneRole: hop ? `Lookup: ${hop.lookupType} → ${hop.lookupResult}. Result: ${hop.output}.` : "Off-link packets are framed to the gateway's MAC; the IPv4 destination stays the real host.",
     packetBefore: hop?.input,
     packetAfter: hop?.output,
-    note: wrong ? `Configured /${prefix} (${maskOf(prefix)}) makes ${networkOf(V4_IP[device], prefix)}/${prefix} look like one LAN, but R1 and HOST-B are on a different /${V4_PREFIX}.` : undefined,
+    // Evidence, not the conclusion: the learner compares this configuration with R1's and HOST-B's subnets.
+    note: wrong ? `Configured ${V4_IP[device]}/${prefix} (mask ${maskOf(prefix)}). Compare it with the subnets R1's interfaces and HOST-B use.` : undefined,
     tables,
   };
 }
