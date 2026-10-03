@@ -40,7 +40,19 @@ import {
  * Lab time (`net.clock`) moves only through the "time" action — sends are instantaneous.
  */
 
-export type EthLabAction = { type: "send"; src: EthHost; dst: EthHost | "broadcast" } | { type: "time"; seconds: number } | { type: "move-b"; to: "desk" | "sw1" } | { type: "clear-b" };
+export type EthLabAction = { type: "send"; src: EthHost; dst: EthHost | "broadcast" } | { type: "time"; seconds: number } | { type: "move-b"; to: "desk" | "sw1" } | { type: "clear-b" } | { type: "repair"; choice: string };
+
+/**
+ * Repair choices offered during the lab's incident. Only the first one changes the network; the others are
+ * technically wrong for THIS fault and have no side effect that would accidentally fix it (unlike, say, sending an
+ * ARP request — HOST-B's reply would relearn it — or swapping the ge-0/0/4 cable, which bounces the link and flushes).
+ */
+export const ETH_LAB_REPAIRS = [
+  { id: ETH_REPAIR_CORRECT, label: "Clear SW1's dynamic MAC entry for HOST-B" },
+  { id: "static-ge4", label: "Add a static MAC entry: HOST-B → ge-0/0/4" },
+  { id: "arp-entry", label: "Correct HOST-A's ARP entry for HOST-B" },
+  { id: "reboot-a", label: "Restart HOST-A" },
+] as const;
 
 export type EthSegmentOutcome = "accepted" | "discarded" | "forwarded" | "dead-end" | "filtered";
 /** One copy of the frame on one link: leaves `from` out of `egress` at wave `wave`, arrives at `to` on `ingress` at wave + 1. */
@@ -99,7 +111,8 @@ export type EthLabEvent =
   | { type: "send"; txId: number }
   | { type: "time"; seconds: number; from: number; to: number; expired: EthFdbChange[] }
   | { type: "move-b"; to: "desk" | "sw1"; flushed: EthFdbChange[]; staleKept?: EthFdbChange }
-  | { type: "clear-b"; removed?: EthFdbChange };
+  | { type: "clear-b"; removed?: EthFdbChange }
+  | { type: "repair"; choice: string; correct: boolean; removed?: EthFdbChange };
 
 export interface EthLabLogEntry {
   id: number;
@@ -254,7 +267,8 @@ function applyMove(s: EthLabState, to: "desk" | "sw1"): EthLabState {
       { text: "HOST-B unplugged from DESK-SW port 2 — DESK-SW port 2 DOWN", kind: "warning" },
       { text: flushed.length ? `DESK-SW flushed the entries learned on port 2: ${flushed.map((f) => name(f.mac)).join(", ")}` : "DESK-SW had no entries on port 2 to flush" },
       { text: "HOST-B plugged into SW1 ge-0/0/2 — link UP. A link coming up teaches SW1 no MAC addresses" },
-      kept && kept.port !== "ge-0/0/2" ? { text: `SW1 ${kept.port} never went down, so SW1 still maps HOST-B → ${kept.port} (stale)`, kind: "warning" } : { text: "SW1 has no entry for HOST-B" },
+      // Neutral fact only — the lab's incident asks the learner to discover what this means.
+      { text: "SW1 ge-0/0/4 stayed up: nothing learned behind it was flushed" },
     ]),
   };
 }
@@ -271,18 +285,38 @@ function applyClear(s: EthLabState): EthLabState {
   };
 }
 
+/** A repair attempt from the incident. The lesson's applyEthRepair decides: only the correct choice changes SW1. */
+function applyRepair(s: EthLabState, choice: string): EthLabState {
+  const prior = lookup(s.net.fdb.SW1, ETH_MAC["HOST-B"]);
+  const net = applyEthRepair(s.net, choice);
+  const correct = !!net.repaired && net.repairAttempt?.correct === true;
+  const label = ETH_LAB_REPAIRS.find((r) => r.id === choice)?.label ?? choice;
+  return {
+    ...s,
+    net: correct ? net : s.net,
+    seq: s.seq + 1,
+    last: { type: "repair", choice, correct, removed: correct && prior ? { sw: "SW1", mac: prior.mac, port: prior.port } : undefined },
+    log: pushLog(s.log, net, [correct ? { text: `Repair: ${label}${prior ? ` — entry HOST-B → ${prior.port} removed` : ""}. Not verified yet: generate traffic.`, kind: "warning" } : { text: `Tried: ${label} — SW1's table is unchanged`, kind: "info" }]),
+  };
+}
+
 function start(s: EthLabState, a: EthLabAction): EthLabState {
   if (a.type === "send") return startSend(s, a);
   if (a.type === "time") return applyTime(s, a.seconds);
   if (a.type === "move-b") return applyMove(s, a.to);
+  if (a.type === "repair") return applyRepair(s, a.choice);
   return applyClear(s);
 }
+
+/** What the SW1 CLI can see changes this (MAC → port entries, link state). Refreshes and the clock do not. */
+export const ethLabCliRevision = (s: EthLabState) => `${s.net.fdb.SW1.map((e) => `${e.mac}@${e.port}`).join(",")}|${s.net.downPorts.join(",")}|${s.net.hostB}`;
 
 export const ETH_LAB_MODEL: LabModel<EthLabState, EthLabAction> = {
   initial: createEthLabState,
   hops: (s, a) => (a.type === "send" ? startSend(s, a).tx!.waves : 0),
   start,
   arrive: arriveOnce,
+  revision: ethLabCliRevision,
 };
 
 /** Copies to draw at `wave` (0…tx.waves): those on a link, and those that ended at a device (resting there). Pure — Replay uses it with a replay wave and never touches lab state. */

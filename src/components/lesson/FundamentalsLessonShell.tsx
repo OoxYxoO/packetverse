@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -127,6 +127,17 @@ function framesFromPacket(p: PacketVisual | undefined): PacketStackFrame[] | und
   return p.layers.map((l, i) => ({ id: `${l.name}-${i}`, text: l.name, tone: /IPv4|IP /i.test(l.name) ? "ip" : /802\.1Q|Tag/i.test(l.name) ? "vpn" : "generic" }));
 }
 
+/** Set by the shell around the Lesson Guide when the lesson has a Practice Lab: closes the Guide and opens the lab. */
+const PracticeLabOpenerContext = createContext<(() => void) | undefined>(undefined);
+
+/**
+ * For Lesson Guide content: returns a function that opens this lesson's Practice Lab (e.g. for a `PracticeBridge`),
+ * or undefined when the lesson has no lab — in which case bridges simply don't render.
+ */
+export function usePracticeLabOpener(): (() => void) | undefined {
+  return useContext(PracticeLabOpenerContext);
+}
+
 export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config }: { config: FundamentalsLessonConfig<S> }) {
   const c = config;
   const { engine, snapshot } = useScenarioEngine<S>(c.createState(), c.steps);
@@ -144,6 +155,12 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
   const [packetSelected, setPacketSelected] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const { openLab } = practiceLab;
+  /** Guide → Practice Lab bridge (only provided to the Guide when the lesson has a lab). */
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((st) => st.completeLesson);
@@ -404,7 +421,9 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
         ) : (
           <LessonGuideButton onClick={() => setGuideOpen(true)} />
         )}
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title={c.guide.title} subtitle={c.guide.subtitle} tabs={c.guide.tabs} />
+        <PracticeLabOpenerContext.Provider value={c.practiceLab ? openLabFromGuide : undefined}>
+          <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title={c.guide.title} subtitle={c.guide.subtitle} tabs={c.guide.tabs} />
+        </PracticeLabOpenerContext.Provider>
         {c.practiceLab && practiceLab.mounted && c.practiceLab.render({ open: practiceLab.open, onClose: practiceLab.closeLab })}
       </div>
 

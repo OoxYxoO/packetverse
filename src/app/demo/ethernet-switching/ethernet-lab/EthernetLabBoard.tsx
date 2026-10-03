@@ -1,15 +1,21 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { BoardSection, DeepenUnderstanding, EngineerCheck, KeyLesson, NextAction, PredictionBlock, StateDeltaChips, TeachingBoard, TeachingEventRows, Verdict, type EngineerCheckFact, type PredictionOption, type StateDelta, type TeachingEventRowDef } from "@/components/practice-lab/TeachingBoard";
-import { ETH_MAC, FDB_AGING_SEC, SW1_PORTS, lookup, macName, BROADCAST_MAC, type EthDevice, type EthSwitch } from "@/lib/sim-engine/scenarios/ethernetSwitching";
-import { ETH_LAB_MODEL, ethDelivered, hostAttachment, type EthLabAction, type EthLabState, type EthTransmission } from "@/lib/sim-engine/scenarios/ethernetLab";
+import { BoardSection, CommandHelp, DeepenUnderstanding, EngineerCheck, KeyLesson, NextAction, PredictionBlock, StateDeltaChips, TeachingBoard, TeachingEventRows, Verdict, type CommandHelpItem, type EngineerCheckFact, type PredictionOption, type StateDelta, type TeachingEventRowDef } from "@/components/practice-lab/TeachingBoard";
+import { ETH_MAC, ETH_REPAIR_CORRECT, FDB_AGING_SEC, SW1_PORTS, lookup, macName, BROADCAST_MAC, type EthDevice, type EthSwitch } from "@/lib/sim-engine/scenarios/ethernetSwitching";
+import { ETH_LAB_MODEL, ETH_LAB_REPAIRS, ethDelivered, hostAttachment, type EthLabAction, type EthLabState, type EthTransmission } from "@/lib/sim-engine/scenarios/ethernetLab";
+import { ciscoMac } from "@/lib/cli/format";
+import type { CliVendor } from "@/lib/cli/types";
 
 /**
  * Ethernet Lab Teaching Board — the Ethernet composition of the generic board primitives. It owns every Ethernet
- * explanation, the guided T0→T7 script, prediction answers and engineer checks; the primitives own layout only.
- * Prediction answers are derived from a pure dry run of the lab model, and every engineer check needs BOTH an
- * inspection made after the latest event (device card, row "Why?", packet copy) AND the matching lab state.
+ * explanation, the guided T0→T8 script, predictions, engineer checks and the incident; the primitives own layout.
+ *
+ * Every board answers: what happened · what changed · why (rows + key lesson) · why it matters · how to verify it
+ * (device cards, table rows, packet copies, and SW1's CLI) · what to do next.
+ * Prediction answers are frozen from a pure dry run when the action runs. An engineer check needs BOTH an inspection
+ * made after the latest event (a successfully executed CLI command, a device card, a row "Why?", a packet copy) AND
+ * the matching lab state. Tab / `?` in the terminal never count — only executed commands are reported.
  */
 
 const A = ETH_MAC["HOST-A"];
@@ -18,7 +24,7 @@ const C = ETH_MAC["HOST-C"];
 const short = (mac: string) => (mac === BROADCAST_MAC ? "FF:FF:FF:FF:FF:FF" : `…:${mac.slice(-2)}`);
 const who = (mac: string) => (mac === BROADCAST_MAC ? "broadcast" : macName(mac));
 
-export const ETH_LAB_STAGES = ["Baseline", "Unknown unicast", "Return", "Known unicast", "Broadcast", "Aging", "Stale entry", "Repair & verify"];
+export const ETH_LAB_STAGES = ["Baseline", "Unknown unicast", "Return", "Known unicast", "Broadcast", "Aging", "Host move", "Incident", "Repair & verify"];
 
 /** Pure dry run of one action (no React state involved). */
 export function ethLabDryRun(s: EthLabState, a: EthLabAction): EthLabState {
@@ -40,9 +46,12 @@ interface PredictDef {
 export interface EthScriptStep {
   id: string;
   stage: number;
+  /** Network action; a `repair` step takes its action from the learner's chosen fix instead. */
   action: EthLabAction;
   label: string;
   predict?: PredictDef[];
+  /** The incident's repair: only advances when the chosen fix is the right one. */
+  repair?: boolean;
 }
 
 const sw1Decision = (s: EthLabState) => s.tx?.decisions.find((d) => d.sw === "SW1");
@@ -140,7 +149,25 @@ export const ETH_LAB_SCRIPT: EthScriptStep[] = [
       },
     ],
   },
-  { id: "t5-time-200", stage: 5, action: { type: "time", seconds: 200 }, label: "Let 200 s pass" },
+  {
+    id: "t5-time-200",
+    stage: 5,
+    action: { type: "time", seconds: 200 },
+    label: "Let 200 s pass",
+    predict: [
+      {
+        id: "t5-200",
+        prompt: `200 s pass with no traffic at all. What happens to SW1's entries? (Aging time ${FDB_AGING_SEC} s)`,
+        options: [
+          { id: "stay", label: "They all stay, now 200 s old" },
+          { id: "gone", label: "They are all removed" },
+          { id: "some", label: "Only the broadcast sender's entry is removed" },
+        ],
+        correct: (_b, a) => (a.last?.type === "time" ? [a.last.expired.some((x) => x.sw === "SW1") ? (a.net.fdb.SW1.length ? "some" : "gone") : "stay"] : []),
+        explain: () => `Nothing is older than ${FDB_AGING_SEC} s yet, so nothing expires — every entry just gets older.`,
+      },
+    ],
+  },
   {
     id: "t5-send",
     stage: 5,
@@ -203,7 +230,25 @@ export const ETH_LAB_SCRIPT: EthScriptStep[] = [
       },
     ],
   },
-  { id: "t6-move", stage: 6, action: { type: "move-b", to: "desk" }, label: "Move HOST-B to the hot desk" },
+  {
+    id: "t6-move",
+    stage: 6,
+    action: { type: "move-b", to: "desk" },
+    label: "Move HOST-B to the hot desk",
+    predict: [
+      {
+        id: "t6-unplug",
+        prompt: "HOST-B is unplugged from ge-0/0/2 and plugged into DESK-SW. What happens to SW1's HOST-B entry?",
+        options: [
+          { id: "flushed", label: "Removed — its port went down" },
+          { id: "kept", label: "Kept until it ages out" },
+          { id: "moved", label: "Moved to ge-0/0/4 automatically" },
+        ],
+        correct: (b, a) => [!lookup(a.net.fdb.SW1, B) && lookup(b.net.fdb.SW1, B) ? "flushed" : lookup(a.net.fdb.SW1, B)?.port === "ge-0/0/4" ? "moved" : "kept"],
+        explain: () => "A port going down flushes the dynamic entries learned on it. Nothing tells SW1 where HOST-B went.",
+      },
+    ],
+  },
   {
     id: "t6-b-sends",
     stage: 6,
@@ -214,64 +259,86 @@ export const ETH_LAB_SCRIPT: EthScriptStep[] = [
         id: "t6-where",
         prompt: "HOST-B now sits behind DESK-SW and hasn't sent anything. What does SW1's table say about HOST-B?",
         options: [
-          { id: "none", label: "No entry — flushed when ge-0/0/2 went down" },
+          { id: "none", label: "No entry" },
           { id: "ge-0/0/2", label: "HOST-B → ge-0/0/2" },
           { id: "ge-0/0/4", label: "HOST-B → ge-0/0/4" },
         ],
         correct: (b) => [lookup(b.net.fdb.SW1, B)?.port ?? "none"],
-        explain: () => "A link going down flushes what was learned on it. Nothing tells SW1 where HOST-B went — only a frame from HOST-B can.",
+        explain: () => "Flushed with ge-0/0/2, and nothing taught SW1 a new location — only a frame FROM HOST-B can.",
       },
     ],
   },
-  { id: "t6-move-back", stage: 6, action: { type: "move-b", to: "sw1" }, label: "Move HOST-B back to SW1 ge-0/0/2" },
   {
-    id: "t6-stale-send",
+    id: "t6-move-back",
     stage: 6,
-    action: { type: "send", src: "HOST-A", dst: "HOST-B" },
-    label: "Send HOST-A → HOST-B",
+    action: { type: "move-b", to: "sw1" },
+    label: "Move HOST-B back to SW1 ge-0/0/2",
     predict: [
       {
-        id: "t6-stale",
-        prompt: "HOST-B is back on ge-0/0/2 but hasn't sent anything there. Where does SW1 send HOST-A → HOST-B?",
+        id: "t6-linkup",
+        prompt: "HOST-B is plugged back into ge-0/0/2 and the link comes up. What does SW1 learn from that?",
         options: [
-          { id: "ge-0/0/4", label: "Out ge-0/0/4, toward DESK-SW" },
-          { id: "ge-0/0/2", label: "Out ge-0/0/2, where HOST-B is" },
-          { id: "flood", label: "Flood — HOST-B is unknown" },
+          { id: "nothing", label: "Nothing — only frames teach MAC locations" },
+          { id: "learn", label: "HOST-B → ge-0/0/2" },
+          { id: "flush4", label: "It removes HOST-B from ge-0/0/4" },
+        ],
+        correct: (_b, a) => [lookup(a.net.fdb.SW1, B)?.port === "ge-0/0/2" ? "learn" : lookup(a.net.fdb.SW1, B) ? "nothing" : "flush4"],
+        explain: () => "A link coming up carries no source MAC, so SW1's table does not change. ge-0/0/4 never went down either.",
+      },
+    ],
+  },
+  {
+    id: "t7-reproduce",
+    stage: 7,
+    action: { type: "send", src: "HOST-A", dst: "HOST-B" },
+    label: "Reproduce the ticket: HOST-A → HOST-B",
+    predict: [
+      {
+        id: "t7-expect",
+        prompt: "Ticket: “HOST-A can't reach HOST-B.” What do you expect will happen to HOST-A → HOST-B?",
+        options: [
+          { id: "delivered", label: "HOST-B receives it" },
+          { id: "flood", label: "SW1 floods it to every port" },
+          { id: "elsewhere", label: "SW1 sends it somewhere HOST-B isn't" },
+          { id: "drop", label: "SW1 drops it" },
         ],
         correct: (_b, a) => {
           const d = sw1Decision(a);
-          return [d?.kind === "known-unicast" ? (d.egress[0] ?? "") : "flood"];
+          if (a.tx && ethDelivered(a.tx)) return ["delivered"];
+          return [d?.kind === "unknown-unicast" ? "flood" : d?.kind === "known-unicast" && d.egress.length ? "elsewhere" : "drop"];
         },
-        explain: () => "SW1 trusts its table: the HOST-B entry still points at ge-0/0/4. A link coming up taught it nothing, and ge-0/0/4 never went down.",
+        explain: () => "SW1 forwarded it as KNOWN unicast — out one port — and HOST-B never received it. Now find out why from the evidence.",
       },
     ],
   },
-  { id: "t7-clear", stage: 7, action: { type: "clear-b" }, label: "Clear SW1's dynamic entry for HOST-B" },
+  { id: "t8-repair", stage: 8, action: { type: "repair", choice: ETH_REPAIR_CORRECT }, label: "Apply the selected fix", repair: true },
   {
-    id: "t7-verify-1",
-    stage: 7,
+    id: "t8-verify-1",
+    stage: 8,
     action: { type: "send", src: "HOST-A", dst: "HOST-B" },
     label: "Verify: HOST-A → HOST-B",
     predict: [
       {
-        id: "t7-flood",
-        prompt: "The stale entry is gone. What does SW1 do with HOST-A → HOST-B now?",
+        id: "t8-flood",
+        prompt: "SW1 has no entry for HOST-B now. What does SW1 do with HOST-A → HOST-B?",
         options: [
-          { id: "flood", label: "Flood — HOST-B is unknown" },
-          { id: "ge-0/0/2", label: "Forward out ge-0/0/2" },
-          { id: "ge-0/0/4", label: "Forward out ge-0/0/4" },
+          { id: "flood", label: "Flood it" },
+          { id: "ge-0/0/2", label: "Forward out ge-0/0/2 only" },
+          { id: "ge-0/0/4", label: "Forward out ge-0/0/4 only" },
         ],
         correct: (_b, a) => {
           const d = sw1Decision(a);
           return [d?.kind === "unknown-unicast" ? "flood" : (d?.egress[0] ?? "")];
         },
-        explain: () => "Clearing the entry makes HOST-B unknown, so the next frame is flooded — and the copy on ge-0/0/2 reaches HOST-B.",
+        explain: () => "An unknown destination is flooded — and the copy on ge-0/0/2 reaches HOST-B.",
       },
     ],
   },
-  { id: "t7-verify-2", stage: 7, action: { type: "send", src: "HOST-B", dst: "HOST-A" }, label: "Verify: HOST-B → HOST-A" },
-  { id: "t7-verify-3", stage: 7, action: { type: "send", src: "HOST-A", dst: "HOST-B" }, label: "Verify: HOST-A → HOST-B" },
+  { id: "t8-verify-2", stage: 8, action: { type: "send", src: "HOST-B", dst: "HOST-A" }, label: "Verify: HOST-B → HOST-A" },
+  { id: "t8-verify-3", stage: 8, action: { type: "send", src: "HOST-A", dst: "HOST-B" }, label: "Verify: HOST-A → HOST-B" },
 ];
+
+export const ETH_LAB_REPAIR_INDEX = ETH_LAB_SCRIPT.findIndex((s) => s.repair);
 
 /** Freeze the correct answers of a step's predictions from the state before the action (pure). */
 export function ethRevealFor(step: EthScriptStep, before: EthLabState): Record<string, string[]> {
@@ -284,6 +351,14 @@ export function ethRevealFor(step: EthScriptStep, before: EthLabState): Record<s
 export function ethRepairVerified(s: EthLabState): boolean {
   const d = sw1Decision(s);
   return !!s.tx && s.last?.type === "send" && s.tx.src === "HOST-A" && s.tx.dst === "HOST-B" && d?.kind === "known-unicast" && sameSet(d.egress, ["ge-0/0/2"]) && lookup(s.net.fdb.SW1, B)?.port === "ge-0/0/2" && s.net.hostB === "SW1 ge-0/0/2" && ethDelivered(s.tx);
+}
+
+/** Does SW1's entry for HOST-B contradict where HOST-B is plugged in? (Derived from state, never stored.) */
+export function ethHostBStale(s: EthLabState): boolean {
+  const e = lookup(s.net.fdb.SW1, B);
+  const at = hostAttachment(s.net, "HOST-B");
+  if (!e) return false;
+  return at.sw === "SW1" ? e.port !== at.port : e.port !== "ge-0/0/4";
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -333,7 +408,7 @@ function deltas(s: EthLabState): StateDelta[] {
     } else if (last?.type === "move-b") {
       const n = last.flushed.filter((x) => x.sw === sw).length;
       out.push({ label, count: n, text: n ? `−${n} FLUSHED` : "UNCHANGED" });
-    } else if (last?.type === "clear-b") {
+    } else if (last?.type === "clear-b" || last?.type === "repair") {
       const n = sw === "SW1" && last.removed ? 1 : 0;
       out.push({ label, count: n, text: n ? "−1 CLEARED" : "UNCHANGED" });
     }
@@ -366,28 +441,62 @@ function eventRows(s: EthLabState): TeachingEventRowDef[] {
     return [
       { who: "Unplug", tone: "attention", body: "HOST-B unplugged from DESK-SW port 2 → DESK-SW port 2 DOWN." },
       { who: "DESK-SW", body: last.flushed.length ? `flushed what it had learned on port 2: ${last.flushed.map((f) => who(f.mac)).join(", ")}.` : "had nothing learned on port 2 to flush." },
-      { who: "Plug in", body: "HOST-B plugged back into SW1 ge-0/0/2 → link UP. A link coming up teaches SW1 no MAC addresses." },
-      last.staleKept ? { who: "SW1", tone: "attention", body: `ge-0/0/4 never went down, so nothing was flushed there: SW1 still maps HOST-B → ${last.staleKept.port}.` } : { who: "SW1", body: "has no entry for HOST-B." },
+      { who: "Plug in", body: "HOST-B plugged back into SW1 ge-0/0/2 → link UP. A link coming up carries no source MAC." },
+      { who: "SW1", body: "ge-0/0/4 stayed up — nothing learned behind it was flushed. HOST-B has not sent a frame since." },
     ];
   }
+  if (last.type === "repair")
+    return [{ who: "Repair", tone: last.correct ? "attention" : "device", body: last.correct ? `SW1's dynamic entry HOST-B → ${last.removed?.port ?? "?"} cleared. HOST-B is unknown to SW1 until it sends again.` : `“${ETH_LAB_REPAIRS.find((r) => r.id === last.choice)?.label}” — SW1's table is unchanged.` }];
   return [{ who: "SW1", tone: "attention", body: last.removed ? `dynamic entry HOST-B → ${last.removed.port} cleared. HOST-B is unknown to SW1 until it sends again.` : "had no entry for HOST-B to clear." }];
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Per-step copy, checks and the board
+// Context, inspections and CLI verification
 // ---------------------------------------------------------------------------------------------------------------
 export interface EthBoardCtx {
   lab: EthLabState;
-  /** Was `key` inspected after the latest event? */
+  /** Was `key` inspected after the latest event? (`dev:X`, `card:X`, `pkt:<seg>`, `cli:<commandId>`) */
   seen: (key: string) => boolean;
+  /** …at or after lab event `fromSeq` (the incident's evidence survives failed repair attempts). */
+  seenSince: (fromSeq: number, key: string) => boolean;
   answer: (key: string) => string[];
   onAnswer: (key: string, v: string[]) => void;
   onInspectDevice: (id: EthDevice) => void;
   onInspectCopy: (segId: string) => void;
+  /** Place a command in SW1's terminal (does not run it). */
+  onPutCommand: (vendor: CliVendor, command: string) => void;
 }
 
-const sawSw1 = (x: EthBoardCtx) => x.seen("dev:SW1") || x.seen("card:SW1");
+/** Any successful MAC-table query on SW1 (whole table or filtered) inspects SW1's table; the check's state fact must still hold. */
+const CLI_TABLE = ["mac-table", "mac-table-dynamic", "mac-table-address", "mac-table-interface"];
+const cliRan = (x: EthBoardCtx, ids: string[]) => ids.some((id) => x.seen(`cli:${id}`));
+/** SW1's table inspected: device card, a row's Why?, or a MAC-table command on SW1's CLI. */
+const sawSw1 = (x: EthBoardCtx) => x.seen("dev:SW1") || x.seen("card:SW1") || cliRan(x, CLI_TABLE);
 const sawDesk = (x: EthBoardCtx) => x.seen("dev:DESK-SW") || x.seen("card:DESK-SW");
+const openSw1 = (x: EthBoardCtx) => ({ label: "open SW1", onClick: () => x.onInspectDevice("SW1") });
+
+const Q = {
+  table: { question: "What MACs does SW1 know?", cisco: "show mac address-table", junos: "show ethernet-switching table" },
+  macA: { question: "Which interface was HOST-A learned on?", cisco: `show mac address-table address ${ciscoMac(A)}`, junos: "show ethernet-switching table interface ge-0/0/1" },
+  macB: { question: "Which interface is HOST-B learned on?", cisco: `show mac address-table address ${ciscoMac(B)}`, junos: "show ethernet-switching table" },
+  behind2: { question: "What MACs are behind HOST-B's port?", cisco: "show mac address-table interface Gi1/0/2", junos: "show ethernet-switching table interface ge-0/0/2" },
+  behind4: { question: "What MACs are behind the DESK-SW uplink?", cisco: "show mac address-table interface Gi1/0/4", junos: "show ethernet-switching table interface ge-0/0/4" },
+  aging: { question: "How long do dynamic entries live?", cisco: "show mac address-table aging-time", junos: "show ethernet-switching table" },
+  status: { question: "What is the state of each interface?", cisco: "show interfaces status", junos: "show interfaces terse" },
+};
+type VerifyQ = (typeof Q)[keyof typeof Q];
+
+function verifyItems(x: EthBoardCtx, qs: VerifyQ[]): CommandHelpItem[] {
+  return qs.map((q) => ({
+    question: q.question,
+    commands: [
+      { label: "Cisco", command: q.cisco },
+      { label: "Junos", command: q.junos },
+    ],
+    onPut: () => x.onPutCommand("cisco", q.cisco),
+    putLabel: `Put “${q.cisco}” in SW1's Cisco terminal`,
+  }));
+}
 
 interface IdentifyDef {
   id: string;
@@ -400,15 +509,15 @@ interface StepCopy {
   title: string;
   summary: ReactNode;
   key: ReactNode;
+  verify?: VerifyQ[];
   checks?: (x: EthBoardCtx) => { facts: EngineerCheckFact[]; identify?: IdentifyDef[] };
   deepen?: { q: string; a: ReactNode }[];
 }
 
-const openSw1 = (x: EthBoardCtx) => ({ label: "open SW1", onClick: () => x.onInspectDevice("SW1") });
 /** An identify question is proven only when answered correctly after the event. */
-const answered = (x: EthBoardCtx, q: IdentifyDef) => {
-  const v = x.answer(`${x.lab.seq}|${q.id}`);
-  return v.length > 0 && sameSet(v, q.correct);
+const answered = (x: EthBoardCtx, q: IdentifyDef, key = `${x.lab.seq}|${q.id}`) => {
+  const v = x.answer(key);
+  return v.length > 0 && q.correct.length > 0 && sameSet(v, q.correct);
 };
 
 const COPY: Record<string, StepCopy> = {
@@ -420,6 +529,7 @@ const COPY: Record<string, StepCopy> = {
         <b>Learning is based on the source. Forwarding is based on the destination.</b> One frame proved where HOST-A lives (ge-0/0/1); it says nothing about where HOST-B is.
       </>
     ),
+    verify: [Q.macA, Q.table],
     checks: (x) => {
       const aPort = lookup(x.lab.net.fdb.SW1, A)?.port ?? "";
       const qPort: IdentifyDef = { id: "a-port", prompt: "Identify: which port did SW1 learn HOST-A on?", options: portOptions, correct: [aPort] };
@@ -440,7 +550,7 @@ const COPY: Record<string, StepCopy> = {
       return {
         identify: [qPort, qWhy],
         facts: [
-          { id: "a-port", text: "Inspect SW1's table and identify HOST-A's port", provenText: `SW1 learned HOST-A on ${aPort} — from the source MAC.`, proven: sawSw1(x) && !!aPort && answered(x, qPort), action: openSw1(x) },
+          { id: "a-port", text: "Inspect SW1's table (CLI or device card) and identify HOST-A's port", provenText: `SW1 learned HOST-A on ${aPort} — from the source MAC.`, proven: sawSw1(x) && !!aPort && answered(x, qPort), action: openSw1(x) },
           { id: "b-absent", text: "Explain why HOST-B is absent", provenText: "HOST-B is absent: it has not sourced a frame, and only sources are learned.", proven: sawSw1(x) && bAbsent && answered(x, qWhy) },
           { id: "c-copy", text: "Inspect HOST-C's copy: whose MAC is the destination?", provenText: `HOST-C's copy is addressed to ${short(cDst ?? "")} (HOST-B), so HOST-C discarded it.`, proven: !!cSeg && x.seen(`pkt:${cSeg.id}`) && cSeg.outcome === "discarded" && cDst === B, action: cSeg ? { label: "inspect copy", onClick: () => x.onInspectCopy(cSeg.id) } : undefined },
         ],
@@ -448,13 +558,14 @@ const COPY: Record<string, StepCopy> = {
     },
     deepen: [
       { q: "Why doesn't SW1 change the destination to broadcast when it floods?", a: "Flooding is what the switch does with the frame — not a change to the frame. Every copy still carries HOST-B's MAC, which is exactly why HOST-C can discard its copy." },
-      { q: "Did DESK-SW learn anything?", a: "Yes. DESK-SW is unmanaged but still a learning bridge: its copy arrived on port 1, so it learned HOST-A behind port 1. Its lookup for HOST-B missed too, and with nothing on port 2 the copy went no further." },
+      { q: "Did DESK-SW learn anything?", a: "Yes. DESK-SW is unmanaged but still a learning bridge: its copy arrived on port 1, so it learned HOST-A behind port 1. Its lookup for HOST-B missed too, and with nothing on port 2 the copy went no further. Being unmanaged, it has no CLI — the lab shows its table as a simulation view." },
     ],
   },
   "t2-send": {
     title: "The return frame",
     summary: "HOST-B's reply taught SW1 the reverse direction, and it went out one port only.",
     key: "A reply teaches the reverse direction. SW1 learned HOST-B from the reply's source MAC — and HOST-A was already known, so no flood.",
+    verify: [Q.behind2],
     checks: (x) => {
       const bPort = lookup(x.lab.net.fdb.SW1, B)?.port;
       const real = hostAttachment(x.lab.net, "HOST-B");
@@ -463,8 +574,8 @@ const COPY: Record<string, StepCopy> = {
       return {
         identify: [q],
         facts: [
-          { id: "b-port", text: "Check HOST-B's entry against where HOST-B is plugged in", provenText: `HOST-B → ${bPort}, matching its real port.`, proven: sawSw1(x) && real.sw === "SW1" && bPort === real.port, action: openSw1(x) },
-          { id: "one-port", text: "Count the ports that carried the reply", provenText: `${egress.length} port (${egress.join(", ")}) — known unicast.`, proven: sawSw1(x) && answered(x, q) },
+          { id: "b-port", text: "Check HOST-B's entry (CLI or SW1's card) against where HOST-B is plugged in", provenText: `HOST-B → ${bPort}, matching its real port.`, proven: (sawSw1(x) || x.seen("cli:mac-table-interface") || x.seen("cli:mac-table-address")) && real.sw === "SW1" && bPort === real.port, action: openSw1(x) },
+          { id: "one-port", text: "Count the ports that carried the reply", provenText: `${egress.length} port (${egress.join(", ")}) — known unicast.`, proven: x.seen("dev:SW1") && answered(x, q), action: openSw1(x) },
         ],
       };
     },
@@ -472,11 +583,11 @@ const COPY: Record<string, StepCopy> = {
   "t3-send": {
     title: "Known unicast",
     summary: "The same lookup as the first frame — this time it hit, so only ge-0/0/2 carried the frame.",
-    key: "Unknown-unicast flooding and known-unicast forwarding are two outcomes of the same destination lookup: miss → flood, hit → one port.",
+    key: "Unknown-unicast flooding and known-unicast forwarding are two outcomes of the same destination lookup: miss → flood, hit → one port. (The CLI shows the table, not each frame's path — SW1's card shows the last decision.)",
     checks: (x) => {
       const got = [...new Set((x.lab.tx?.segments ?? []).filter((g) => g.from === "SW1").map((g) => g.to))];
       const q: IdentifyDef = { id: "t3-recv", prompt: "Identify: which devices received a copy from SW1?", options: ["HOST-B", "HOST-C", "DESK-SW"].map((d) => ({ id: d, label: d })), multiple: true, correct: got };
-      return { identify: [q], facts: [{ id: "recv", text: "Identify who received a copy this time", provenText: `Only ${got.join(", ")} — HOST-C and DESK-SW saw nothing.`, proven: sawSw1(x) && answered(x, q), action: openSw1(x) }] };
+      return { identify: [q], facts: [{ id: "recv", text: "Open SW1 (its last decision) and identify who received a copy", provenText: `Only ${got.join(", ")} — HOST-C and DESK-SW saw nothing.`, proven: x.seen("dev:SW1") && answered(x, q), action: openSw1(x) }] };
     },
   },
   "t4-send": {
@@ -493,6 +604,7 @@ const COPY: Record<string, StepCopy> = {
         <span className="mt-1 block text-pv-text-muted">A broadcast reaches all other members of the broadcast domain through eligible egress ports; a switch does not reflect it back through its ingress port.</span>
       </>
     ),
+    verify: [Q.table],
     checks: (x) => {
       const got = [...new Set((x.lab.tx?.segments ?? []).filter((g) => g.from === "SW1").map((g) => g.to))];
       const q: IdentifyDef = { id: "t4-recv", prompt: "Identify: which devices received a copy from SW1?", options: ["HOST-A", "HOST-B", "HOST-C", "DESK-SW"].map((d) => ({ id: d, label: d })), multiple: true, correct: got };
@@ -500,7 +612,7 @@ const COPY: Record<string, StepCopy> = {
         identify: [q],
         facts: [
           { id: "c-port", text: "Check what SW1 learned from the broadcast", provenText: `HOST-C → ${lookup(x.lab.net.fdb.SW1, C)?.port} — broadcasts are still learned from their source.`, proven: sawSw1(x) && lookup(x.lab.net.fdb.SW1, C)?.port === "ge-0/0/3", action: openSw1(x) },
-          { id: "recv", text: "Identify who received a copy (and who did not)", provenText: `${got.join(", ")} — not HOST-C, whose port was the ingress.`, proven: sawSw1(x) && answered(x, q) },
+          { id: "recv", text: "Identify who received a copy (and who did not)", provenText: `${got.join(", ")} — not HOST-C, whose port was the ingress.`, proven: x.seen("dev:SW1") && answered(x, q), action: openSw1(x) },
           { id: "desk", text: "Inspect DESK-SW: it processed its copy as a bridge", provenText: "DESK-SW learned HOST-C on port 1; with nothing on port 2 it had no other port to flood to.", proven: sawDesk(x) && !!lookup(x.lab.net.fdb["DESK-SW"], C), action: { label: "open DESK-SW", onClick: () => x.onInspectDevice("DESK-SW") } },
         ],
       };
@@ -510,6 +622,8 @@ const COPY: Record<string, StepCopy> = {
     title: "Time passes",
     summary: "200 s with no traffic. Every entry is 200 s old — still under the 300 s aging time.",
     key: "An entry's age is the time since its MAC last appeared as a SOURCE. Watch which frames reset it.",
+    verify: [Q.aging],
+    checks: (x) => ({ facts: [{ id: "aging", text: "Find SW1's aging time (CLI) or the ages in the State panel", provenText: `${FDB_AGING_SEC} s — nothing is that old yet.`, proven: x.seen("cli:mac-aging") || sawSw1(x), action: openSw1(x) }] }),
   },
   "t5-send": {
     title: "A refresh — for the source only",
@@ -518,13 +632,14 @@ const COPY: Record<string, StepCopy> = {
     checks: (x) => {
       const fresh = x.lab.net.fdb.SW1.filter((e) => e.lastSeen === x.lab.net.clock).map((e) => e.mac);
       const q: IdentifyDef = { id: "t5-reset", prompt: "Identify: whose age is 0 s now?", options: [A, B, C].map((m) => ({ id: m, label: who(m) })), multiple: true, correct: fresh };
-      return { identify: [q], facts: [{ id: "age", text: "Inspect the ages in SW1's table", provenText: `Age 0: ${fresh.map(who).join(", ")}. HOST-B kept aging.`, proven: sawSw1(x) && answered(x, q), action: openSw1(x) }] };
+      return { identify: [q], facts: [{ id: "age", text: "Inspect the ages (SW1's card or the State panel)", provenText: `Age 0: ${fresh.map(who).join(", ")}. HOST-B kept aging.`, proven: (x.seen("dev:SW1") || x.seen("card:SW1")) && answered(x, q), action: openSw1(x) }] };
     },
   },
   "t5-time-150": {
     title: "Entries age out",
     summary: "At t=350 s, every entry not refreshed in the last 300 s expired.",
     key: `Aging is per entry, from its own last source frame: older than ${FDB_AGING_SEC} s → removed. A frame to a removed host is unknown unicast again.`,
+    verify: [Q.table],
     checks: (x) => {
       const kept = x.lab.net.fdb.SW1.map((e) => e.mac);
       const q: IdentifyDef = { id: "t5-kept", prompt: "Identify: which SW1 entries are still there?", options: [A, B, C].map((m) => ({ id: m, label: who(m) })), multiple: true, correct: kept };
@@ -535,81 +650,166 @@ const COPY: Record<string, StepCopy> = {
     title: "Before the move: HOST-B is learned again",
     summary: "HOST-B's frame put it back in SW1's table — on ge-0/0/2, where it is plugged in.",
     key: "An aged-out host is relearned from its next source frame. Now watch what happens to this entry when HOST-B unplugs.",
-    checks: (x) => ({ facts: [{ id: "b-back", text: "Find HOST-B's entry in SW1's table", provenText: `HOST-B → ${lookup(x.lab.net.fdb.SW1, B)?.port}.`, proven: sawSw1(x) && lookup(x.lab.net.fdb.SW1, B)?.port === "ge-0/0/2", action: openSw1(x) }] }),
+    verify: [Q.behind2],
+    checks: (x) => ({ facts: [{ id: "b-back", text: "Find HOST-B's entry in SW1's table", provenText: `HOST-B → ${lookup(x.lab.net.fdb.SW1, B)?.port}.`, proven: (sawSw1(x) || x.seen("cli:mac-table-interface") || x.seen("cli:mac-table-address")) && lookup(x.lab.net.fdb.SW1, B)?.port === "ge-0/0/2", action: openSw1(x) }] }),
   },
   "t6-move": {
     title: "HOST-B moves to the hot desk",
     summary: "ge-0/0/2 went down and SW1 forgot HOST-B. Nothing told SW1 where HOST-B went.",
     key: "A link going down flushes the entries learned on it. A switch learns a NEW location only from a frame the host sends.",
-    checks: (x) => ({ facts: [{ id: "flushed", text: "Confirm SW1 no longer has HOST-B", provenText: "SW1 has no entry for HOST-B — flushed with ge-0/0/2.", proven: sawSw1(x) && !lookup(x.lab.net.fdb.SW1, B), action: openSw1(x) }] }),
+    verify: [Q.status, Q.table],
+    checks: (x) => ({
+      facts: [
+        { id: "down", text: "Check the interface state: is HOST-B's old port down?", provenText: "ge-0/0/2 (Gi1/0/2) is down (notconnect).", proven: (cliRan(x, ["interfaces-status", "interface-detail"]) || x.seen("dev:SW1")) && x.lab.net.downPorts.includes("SW1 ge-0/0/2"), action: openSw1(x) },
+        { id: "flushed", text: "Confirm SW1 no longer has HOST-B", provenText: "SW1 has no entry for HOST-B — flushed with ge-0/0/2.", proven: sawSw1(x) && !lookup(x.lab.net.fdb.SW1, B), action: openSw1(x) },
+      ],
+    }),
   },
   "t6-b-sends": {
     title: "HOST-B speaks from the hot desk",
     summary: "DESK-SW learned HOST-B on port 2, and SW1 learned HOST-B behind ge-0/0/4 — correct, for now.",
     key: "Each switch learns from the frame arriving on ITS port: for SW1, HOST-B now lives behind ge-0/0/4 (the DESK-SW uplink).",
-    checks: (x) => ({ facts: [{ id: "b-ge4", text: "Find where SW1 now places HOST-B", provenText: `HOST-B → ${lookup(x.lab.net.fdb.SW1, B)?.port}.`, proven: sawSw1(x) && lookup(x.lab.net.fdb.SW1, B)?.port === "ge-0/0/4", action: openSw1(x) }] }),
+    verify: [Q.behind4],
+    checks: (x) => ({ facts: [{ id: "b-ge4", text: "Find where SW1 now places HOST-B", provenText: `HOST-B → ${lookup(x.lab.net.fdb.SW1, B)?.port}.`, proven: (sawSw1(x) || x.seen("cli:mac-table-interface") || x.seen("cli:mac-table-address")) && lookup(x.lab.net.fdb.SW1, B)?.port === "ge-0/0/4", action: openSw1(x) }] }),
   },
   "t6-move-back": {
-    title: "HOST-B returns — the entry goes stale",
-    summary: "HOST-B is on ge-0/0/2 again, but SW1 still believes HOST-B is behind ge-0/0/4.",
-    key: (
-      <>
-        Why it is stale: HOST-B was learned on ge-0/0/4 → ge-0/0/4 never went down, so nothing flushed it → ge-0/0/2 coming up taught SW1 nothing → HOST-B hasn&apos;t sent a frame from ge-0/0/2 yet.
-      </>
-    ),
-    checks: (x) => {
-      const entry = lookup(x.lab.net.fdb.SW1, B)?.port;
-      const real = hostAttachment(x.lab.net, "HOST-B");
-      return {
-        facts: [
-          {
-            id: "stale",
-            text: "Compare SW1's entry for HOST-B with where HOST-B is plugged in",
-            provenText: `SW1 says ${entry}; HOST-B is on ${real.sw} ${real.port}. Stale.`,
-            proven: sawSw1(x) && x.seen("dev:HOST-B") && !!entry && !(real.sw === "SW1" && real.port === entry),
-            action: { label: x.seen("dev:HOST-B") ? "open SW1" : "open HOST-B", onClick: () => x.onInspectDevice(x.seen("dev:HOST-B") ? "SW1" : "HOST-B") },
-          },
-        ],
-      };
-    },
+    title: "HOST-B returns to ge-0/0/2",
+    summary: "ge-0/0/2 came up and DESK-SW's port 2 went down. HOST-B hasn't sent anything since.",
+    key: "A link coming up tells SW1 nothing about which MACs are behind it — only frames do.",
+    verify: [Q.status],
+    checks: (x) => ({ facts: [{ id: "up", text: "Check the interface state again", provenText: "Gi1/0/2 (ge-0/0/2) is up again; Gi1/0/4 never went down.", proven: (cliRan(x, ["interfaces-status", "interface-detail"]) || x.seen("dev:SW1")) && !x.lab.net.downPorts.length, action: openSw1(x) }] }),
   },
-  "t6-stale-send": {
-    title: "The frame goes nowhere",
-    summary: "SW1 forwarded by its table — out ge-0/0/4. DESK-SW had no other port for HOST-B, and HOST-B never saw the frame.",
-    key: "Every device did its job correctly; the table was wrong. Known unicast to a stale port loses frames silently.",
-    checks: (x) => {
-      const dead = x.lab.tx?.segments.find((g) => g.outcome === "dead-end");
-      const q: IdentifyDef = { id: "t6-died", prompt: "Identify: where did the frame stop?", options: ["SW1", "DESK-SW", "HOST-B"].map((d) => ({ id: d, label: d })), correct: dead ? [dead.to] : [] };
-      return { identify: [q], facts: [{ id: "died", text: "Inspect DESK-SW and identify where the frame stopped", provenText: "At DESK-SW: HOST-B unknown there, and no other port up.", proven: sawDesk(x) && !!dead && answered(x, q), action: { label: "open DESK-SW", onClick: () => x.onInspectDevice("DESK-SW") } }] };
-    },
+  "t8-repair": {
+    title: "Fix applied — not verified yet",
+    summary: "SW1 has no entry for HOST-B now. That removes the wrong answer; it doesn't provide the right one.",
+    key: "SW1 must relearn HOST-B from a frame HOST-B sends on ge-0/0/2. Prove it with traffic, then with the CLI.",
+    verify: [Q.macB],
+    checks: (x) => ({ facts: [{ id: "cleared", text: "Confirm on SW1 that the HOST-B entry is gone", provenText: "No HOST-B entry: the next frame to HOST-B will be flooded.", proven: sawSw1(x) && !lookup(x.lab.net.fdb.SW1, B), action: openSw1(x) }] }),
   },
-  "t7-clear": {
-    title: "Stale entry cleared",
-    summary: "SW1 no longer has an entry for HOST-B. Not repaired yet — that takes traffic.",
-    key: "Clearing removes the wrong answer; it doesn't provide the right one. SW1 must relearn HOST-B from a frame HOST-B sends.",
-    checks: (x) => ({ facts: [{ id: "cleared", text: "Confirm the HOST-B entry is gone", provenText: "No HOST-B entry: the next frame to HOST-B will be flooded.", proven: sawSw1(x) && !lookup(x.lab.net.fdb.SW1, B), action: openSw1(x) }] }),
-  },
-  "t7-verify-1": {
+  "t8-verify-1": {
     title: "Verify 1: flood reaches HOST-B",
     summary: "HOST-B is unknown, so SW1 flooded — and the copy on ge-0/0/2 reached HOST-B.",
     key: "Unknown unicast is how a switch reaches a host it doesn't know yet. Now HOST-B must reply.",
   },
-  "t7-verify-2": {
+  "t8-verify-2": {
     title: "Verify 2: HOST-B relearned",
     summary: "HOST-B's reply arrived on ge-0/0/2, so SW1 learned HOST-B where it really is.",
     key: "The repair completes when the host sources a frame from its real port.",
-    checks: (x) => ({ facts: [{ id: "relearned", text: "Check HOST-B's entry", provenText: `HOST-B → ${lookup(x.lab.net.fdb.SW1, B)?.port}.`, proven: sawSw1(x) && lookup(x.lab.net.fdb.SW1, B)?.port === "ge-0/0/2", action: openSw1(x) }] }),
+    verify: [Q.macB, Q.behind2],
+    checks: (x) => ({ facts: [{ id: "relearned", text: "Check HOST-B's entry", provenText: `HOST-B → ${lookup(x.lab.net.fdb.SW1, B)?.port}.`, proven: (sawSw1(x) || x.seen("cli:mac-table-interface") || x.seen("cli:mac-table-address")) && lookup(x.lab.net.fdb.SW1, B)?.port === "ge-0/0/2", action: openSw1(x) }] }),
   },
-  "t7-verify-3": {
+  "t8-verify-3": {
     title: "Verified: known unicast to HOST-B",
     summary: "HOST-A → HOST-B left ge-0/0/2 only and HOST-B accepted it. Service restored, proven by traffic.",
-    key: "Repair is verified by traffic, not by clearing a table: flood → reply → relearn → known unicast.",
-    checks: (x) => ({ facts: [{ id: "verified", text: "Verify HOST-B is back on ge-0/0/2 and reached by known unicast", provenText: "HOST-B → ge-0/0/2, and the last frame used that port only.", proven: sawSw1(x) && ethRepairVerified(x.lab), action: openSw1(x) }] }),
+    key: "Repair is verified by traffic AND state: flood → reply → relearn on the right port → known unicast.",
+    verify: [Q.macB],
+    checks: (x) => ({ facts: [{ id: "verified", text: "Run a MAC-table command on SW1's CLI and confirm HOST-B on Gi1/0/2 (ge-0/0/2)", provenText: "SW1's CLI shows HOST-B on ge-0/0/2, and the last frame used that port only.", proven: cliRan(x, CLI_TABLE) && ethRepairVerified(x.lab) }] }),
   },
 };
 
+// ---------------------------------------------------------------------------------------------------------------
+// The incident (T7): symptom → observation → evidence → hypothesis → test → root cause
+// ---------------------------------------------------------------------------------------------------------------
+const HYPOTHESES: PredictionOption[] = [
+  { id: "stale", label: "SW1's entry for HOST-B points to the wrong port" },
+  { id: "mac", label: "HOST-B's MAC address changed" },
+  { id: "arp", label: "HOST-A has the wrong MAC for HOST-B" },
+  { id: "link", label: "HOST-B's port is down" },
+  { id: "flood", label: "SW1's flooding is broken" },
+];
+const TESTS: PredictionOption[] = [
+  { id: "contradiction", label: "SW1 has HOST-B behind ge-0/0/4, but HOST-B is plugged into ge-0/0/2 (up)" },
+  { id: "dst", label: "The frame's destination MAC is HOST-B's MAC" },
+  { id: "desk", label: "DESK-SW has no entry for HOST-B" },
+];
+
+export function ethIncidentEvidence(x: EthBoardCtx) {
+  const from = x.lab.tx?.id ?? x.lab.seq;
+  const ran = (ids: string[]) => ids.some((id) => x.seenSince(from, `cli:${id}`));
+  const dead = x.lab.tx?.segments.find((g) => g.outcome === "dead-end");
+  return [
+    { id: "e-table", text: "Where does SW1 think HOST-B is? — run a MAC-table command on SW1", provenText: `SW1's table: HOST-B → ${lookup(x.lab.net.fdb.SW1, B)?.port ?? "no entry"}.`, proven: ran(["mac-table", "mac-table-dynamic", "mac-table-address"]) },
+    { id: "e-status", text: "Is the port HOST-B is plugged into up? — check interface state on SW1", provenText: "Every SW1 port is up (Gi1/0/2 = ge-0/0/2 included).", proven: ran(["interfaces-status", "interface-detail"]) },
+    { id: "e-host", text: "Where is HOST-B physically plugged in? — open HOST-B", provenText: `HOST-B is plugged into ${hostAttachment(x.lab.net, "HOST-B").sw} ${hostAttachment(x.lab.net, "HOST-B").port}.`, proven: x.seenSince(from, "dev:HOST-B"), action: { label: "open HOST-B", onClick: () => x.onInspectDevice("HOST-B") } },
+    { id: "e-stop", text: "Where did the frame stop? — open DESK-SW or inspect the copy", provenText: "At DESK-SW: no entry for HOST-B there, and no other port up.", proven: x.seenSince(from, "dev:DESK-SW") || (!!dead && x.seenSince(from, `pkt:${dead.id}`)), action: { label: "open DESK-SW", onClick: () => x.onInspectDevice("DESK-SW") } },
+  ] satisfies EngineerCheckFact[];
+}
+
+/** Investigation complete: all evidence gathered, hypothesis and test answered correctly (from state). */
+export function ethIncidentSolved(x: EthBoardCtx): boolean {
+  const stale = ethHostBStale(x.lab);
+  return ethIncidentEvidence(x).every((f) => f.proven) && stale && sameSet(x.answer("incident|hypothesis"), ["stale"]) && sameSet(x.answer("incident|test"), ["contradiction"]);
+}
+
+const REPAIR_FEEDBACK: Record<string, string> = {
+  "static-ge4": "A static entry pins HOST-B to ge-0/0/4 — the wrong port — permanently. SW1 would never relearn the right one.",
+  "arp-entry": "HOST-A's frame already carries HOST-B's real MAC (check the packet). ARP maps IP → MAC; it can't change WHERE SW1 thinks that MAC lives.",
+  "reboot-a": "HOST-A addresses its frames correctly. The wrong information is in SW1's table, not in HOST-A.",
+};
+
+function Incident({ x }: { x: EthBoardCtx }) {
+  const evidence = ethIncidentEvidence(x);
+  const gathered = evidence.filter((f) => f.proven).length;
+  const hyp = x.answer("incident|hypothesis");
+  const test = x.answer("incident|test");
+  const hypOk = sameSet(hyp, ["stale"]) && ethHostBStale(x.lab);
+  const testOk = sameSet(test, ["contradiction"]);
+  const solved = ethIncidentSolved(x);
+  return (
+    <>
+      <BoardSection label="Symptom" tone="cyan">
+        <TeachingEventRows rows={x.lab.tx ? sendRows(x.lab.tx, x.lab.net) : []} />
+      </BoardSection>
+      <BoardSection label="Observation">
+        <p className="text-[12.5px] leading-snug text-pv-text-muted">The frame left SW1 as <b className="text-pv-text">known unicast</b> — one port — and HOST-B never received it. No device reported an error. Don&apos;t guess: gather evidence from the live network.</p>
+      </BoardSection>
+      <EngineerCheck intro="Evidence — each item needs a real inspection (an executed CLI command, a device card, a packet copy):" facts={evidence} footnote="Gather at least three pieces of evidence to unlock the hypothesis." />
+      <BoardSection label="How do I find out?" tone="violet">
+        <CommandHelp items={verifyItems(x, [Q.table, Q.status, Q.behind2, Q.behind4])} />
+      </BoardSection>
+      {gathered >= 3 && (
+        <PredictionBlock
+          label="Hypothesis"
+          prompt="What is the most likely cause?"
+          options={HYPOTHESES}
+          value={hyp}
+          onChange={(v) => x.onAnswer("incident|hypothesis", v)}
+          verdict={hyp.length ? <Verdict correct={hypOk}>{hypOk ? "Consistent with the evidence. Now test it: which observation proves it?" : "That doesn't fit the evidence you gathered — look at it again."}</Verdict> : undefined}
+        />
+      )}
+      {hypOk && (
+        <PredictionBlock
+          label="Test"
+          prompt="Which observation proves the hypothesis?"
+          options={TESTS}
+          value={test}
+          onChange={(v) => x.onAnswer("incident|test", v)}
+          verdict={test.length ? <Verdict correct={testOk}>{testOk ? "That contradiction is the proof: the table and the cabling disagree." : "True, but it doesn't prove the cause — it's consistent with a healthy network too."}</Verdict> : undefined}
+        />
+      )}
+      {solved && (
+        <KeyLesson>
+          <b>Root cause — a stale dynamic entry.</b> SW1 learned HOST-B behind ge-0/0/4 while HOST-B sat at the hot desk → ge-0/0/4 never went down, so nothing flushed it → ge-0/0/2 coming up taught SW1 nothing → HOST-B hasn&apos;t sent a frame from ge-0/0/2 yet, and the entry hasn&apos;t aged out. SW1 forwards correctly — by a table that is out of date.
+        </KeyLesson>
+      )}
+    </>
+  );
+}
+
+function RepairChoice({ x }: { x: EthBoardCtx }) {
+  const choice = x.answer("repair-choice");
+  const last = x.lab.last;
+  return (
+    <>
+      <PredictionBlock label="Repair" prompt="Choose the change that fixes the cause you proved." options={ETH_LAB_REPAIRS.map((r) => ({ id: r.id, label: r.label }))} value={choice} onChange={(v) => x.onAnswer("repair-choice", v)} />
+      {last?.type === "repair" && !last.correct && <Verdict correct={false}>{REPAIR_FEEDBACK[last.choice] ?? "That doesn't address the cause."} Nothing changed — pick again.</Verdict>}
+    </>
+  );
+}
+
 /** Are all engineer checks of a step's observation proven (for the learning-loop indicator)? */
 export function ethStepChecksDone(stepId: string, x: EthBoardCtx): boolean {
+  if (stepId === "t7-reproduce") return ethIncidentSolved(x);
   const c = COPY[stepId]?.checks?.(x);
   return !c || c.facts.every((f) => f.proven);
 }
@@ -617,7 +817,7 @@ export function ethStepChecksDone(stepId: string, x: EthBoardCtx): boolean {
 function IdentifyBlock({ x, q }: { x: EthBoardCtx; q: IdentifyDef }) {
   const key = `${x.lab.seq}|${q.id}`;
   const v = x.answer(key);
-  const ok = sameSet(v, q.correct);
+  const ok = q.correct.length > 0 && sameSet(v, q.correct);
   return <PredictionBlock label="Identify (from the live state)" prompt={q.prompt} options={q.options} value={v} multiple={q.multiple} onChange={(nv) => x.onAnswer(key, nv)} verdict={v.length > 0 && (!q.multiple || ok) ? <Verdict correct={ok}>{ok ? "That matches the live state." : "Check the live state again."}</Verdict> : undefined} />;
 }
 
@@ -635,6 +835,7 @@ export function EthernetLabBoard(props: EthernetLabBoardProps) {
   const prev = cursor > 0 ? ETH_LAB_SCRIPT[cursor - 1] : undefined;
   const next = !freePlay ? ETH_LAB_SCRIPT[cursor] : undefined;
   const copy = !freePlay && prev ? COPY[prev.id] : undefined;
+  const incident = !freePlay && prev?.id === "t7-reproduce";
 
   if (inFlight)
     return (
@@ -647,12 +848,13 @@ export function EthernetLabBoard(props: EthernetLabBoardProps) {
 
   const checks = copy?.checks?.(props);
   const lastVerdicts = !freePlay && prev?.predict ? prev.predict.map((p) => ({ p, ans: props.answer(p.id), ok: sameSet(props.answer(p.id), props.revealed[p.id] ?? []) })) : [];
+  const t0Facts: EngineerCheckFact[] = [{ id: "t0", text: "Inspect SW1 (CLI or device card) and confirm its table holds 0 entries", provenText: "SW1's table: 0 entries.", proven: sawSw1(props) && lab.net.fdb.SW1.length === 0, action: openSw1(props) }];
 
   return (
     <TeachingBoard
       phase={freePlay ? "Free play" : `T${prev?.stage ?? 0} · ${ETH_LAB_STAGES[prev?.stage ?? 0]}`}
-      title={freePlay ? (lab.last ? "What just happened" : "Free play") : (copy?.title ?? "Before anything moves")}
-      summary={freePlay ? "Send any frame, let time pass or move HOST-B. Same network, same rules." : (copy?.summary ?? "SW1 and DESK-SW have just booted. HOST-B is on SW1 ge-0/0/2 and every link is up.")}
+      title={freePlay ? (lab.last ? "What just happened" : "Free play") : incident ? "Incident: HOST-A can't reach HOST-B" : (copy?.title ?? "Before anything moves")}
+      summary={freePlay ? "Send any frame, let time pass, move HOST-B or clear an entry. Same network, same rules — verify on SW1's CLI." : incident ? "Reproduced. Now troubleshoot from evidence: observe → gather evidence → hypothesis → test → root cause." : (copy?.summary ?? "SW1 and DESK-SW have just booted. HOST-B is on SW1 ge-0/0/2 and every link is up.")}
     >
       {!prev && !freePlay && (
         <>
@@ -668,14 +870,25 @@ export function EthernetLabBoard(props: EthernetLabBoardProps) {
             onChange={(v) => props.onAnswer("t0-know", v)}
             verdict={props.answer("t0-know").length ? <Verdict correct={props.answer("t0-know")[0] === "nothing" && lab.net.fdb.SW1.length === 0}>A bridge does not magically know where hosts are. It learns each location from a frame that host sends.</Verdict> : undefined}
           />
-          <EngineerCheck
-            intro="Prove it from the live network:"
-            facts={[{ id: "t0", text: "Inspect SW1 and confirm its table holds 0 entries", provenText: "SW1's table: 0 entries.", proven: sawSw1(props) && lab.net.fdb.SW1.length === 0, action: openSw1(props) }]}
-          />
+          <EngineerCheck intro="Prove it from the live network:" facts={t0Facts} />
+          <BoardSection label="Verify on SW1's CLI" tone="violet">
+            <CommandHelp items={verifyItems(props, [Q.table])} />
+          </BoardSection>
         </>
       )}
 
-      {lab.last && (prev || freePlay) && (
+      {incident && (
+        <>
+          {lastVerdicts.map(({ p, ans, ok }) => (
+            <Verdict key={p.id} correct={ok}>
+              <span className="font-semibold text-pv-text">{p.prompt}</span> You said: {ans.map((a) => p.options.find((o) => o.id === a)?.label ?? a).join(", ") || "—"}. {p.explain(lab)}
+            </Verdict>
+          ))}
+          <Incident x={props} />
+        </>
+      )}
+
+      {!incident && lab.last && (prev || freePlay) && (
         <>
           <BoardSection label="What happened" tone="cyan">
             <TeachingEventRows rows={eventRows(lab)} />
@@ -694,19 +907,34 @@ export function EthernetLabBoard(props: EthernetLabBoardProps) {
               {checks.identify?.map((q) => (
                 <IdentifyBlock key={q.id} x={props} q={q} />
               ))}
-              <EngineerCheck intro="Prove it from the live state — device cards, table rows and packet copies:" facts={checks.facts} />
+              <EngineerCheck intro="Prove it from the live state — SW1's CLI, device cards, table rows and packet copies:" facts={checks.facts} />
             </>
+          )}
+          {(copy?.verify || freePlay) && (
+            <BoardSection label="Verify on SW1's CLI" tone="violet">
+              <CommandHelp items={verifyItems(props, copy?.verify ?? [Q.table, Q.status])} />
+            </BoardSection>
           )}
         </>
       )}
 
+      {next?.repair && <RepairChoice x={props} />}
       {next?.predict?.map((p) => (
         <PredictionBlock key={p.id} prompt={p.prompt} options={p.options} multiple={p.multiple} value={props.answer(p.id)} onChange={(v) => props.onAnswer(p.id, v)} />
       ))}
       {next && <NextAction>{props.gate ?? `${next.label}.`}</NextAction>}
-      {!next && !freePlay && <NextAction>Guided steps complete.</NextAction>}
+      {!next && !freePlay && <NextAction>Guided steps complete — continue in free play.</NextAction>}
       {freePlay && <NextAction>Pick a source and destination below the topology, then send.</NextAction>}
-      {copy?.deepen && <DeepenUnderstanding qa={copy.deepen} />}
+      {incident ? (
+        <DeepenUnderstanding
+          qa={[
+            { q: "Would anything else have cleared the entry?", a: "Yes. Any frame SOURCED by HOST-B on ge-0/0/2 relearns it there (that is why an ARP exchange often “fixes” such problems as a side effect). The entry also ages out after 300 s without frames from HOST-B. Bouncing ge-0/0/4 flushes it too — and everything else learned behind DESK-SW." },
+            { q: "What's the real command for the targeted fix?", a: "Cisco: clear mac address-table dynamic address 0011.2233.440b. The lab's CLI is read-only, so the repair is applied as a lab action." },
+          ]}
+        />
+      ) : (
+        copy?.deepen && <DeepenUnderstanding qa={copy.deepen} />
+      )}
     </TeachingBoard>
   );
 }

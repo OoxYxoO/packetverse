@@ -1,6 +1,8 @@
 import { Callout, ChecklistCard, CompareCards, DIAGRAM as D, DiagramFrame, DiagramSvg, DPill, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
 import { DSpokeLegend, DSwitchStar, DTable, type SpokeMode } from "@/components/lesson/FundamentalsGuideSvg";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import { BROADCAST_MAC, ETH_MAC, FDB_AGING_SEC } from "@/lib/sim-engine/scenarios/ethernetSwitching";
 
 export const ETH_LESSON_SECTIONS: LessonGuideSectionLink[] = [
@@ -15,6 +17,7 @@ export const ETH_LESSON_SECTIONS: LessonGuideSectionLink[] = [
   { id: "eth-model", label: "Mental model" },
   { id: "eth-glossary", label: "Glossary" },
   { id: "eth-recap", label: "Recap" },
+  { id: "eth-practice", label: "Practise it" },
 ];
 
 const A = ETH_MAC["HOST-A"];
@@ -42,7 +45,7 @@ function Star({ modes, bOnDesk, subs }: { modes: Partial<Record<"A" | "B" | "C" 
   );
 }
 
-function TopologyDiagram() {
+export function TopologyDiagram() {
   return (
     <DiagramSvg h={250} label="SW1 with HOST-A on ge-0/0/1, HOST-B on ge-0/0/2, HOST-C on ge-0/0/3 and the unmanaged DESK-SW on ge-0/0/4; all one broadcast domain">
       <Star modes={{}} subs={{ SW: "FDB empty" }} />
@@ -71,7 +74,7 @@ function TopologyDiagram() {
   );
 }
 
-function FirstFrameDiagram() {
+export function FirstFrameDiagram() {
   return (
     <DiagramSvg w={700} h={270} label={`HOST-A to HOST-B: SW1 learns ${A} on ge-0/0/1, misses ${B}, floods out ge-0/0/2, ge-0/0/3 and ge-0/0/4 with the destination MAC unchanged`}>
       <Star modes={{ A: "in", B: "out", C: "out", D: "out" }} subs={{ SW: "learn + flood" }} />
@@ -96,7 +99,7 @@ function FirstFrameDiagram() {
   );
 }
 
-function ReplyDiagram() {
+export function ReplyDiagram() {
   return (
     <DiagramSvg w={700} h={270} label={`HOST-B replies: SW1 learns ${B} on ge-0/0/2 and forwards to HOST-A out ge-0/0/1 only`}>
       <Star modes={{ B: "in", A: "out" }} subs={{ SW: "known unicast" }} />
@@ -125,7 +128,7 @@ function ReplyDiagram() {
   );
 }
 
-function BroadcastVsUnknownDiagram() {
+export function BroadcastVsUnknownDiagram() {
   return (
     <DiagramSvg h={250} w={640} label="Unknown unicast: destination is a unicast MAC missing from the FDB, flooded until learned. Broadcast: destination FF:FF:FF:FF:FF:FF, always flooded">
       {[
@@ -162,7 +165,7 @@ function BroadcastVsUnknownDiagram() {
   );
 }
 
-function MoveDiagram() {
+export function MoveDiagram() {
   return (
     <DiagramSvg w={700} h={290} label="HOST-B moves from ge-0/0/2 to DESK-SW: ge-0/0/2 goes down and its entries are flushed; SW1 relearns HOST-B on ge-0/0/4 only when HOST-B sends a frame">
       <Star modes={{ D: "in", A: "out" }} bOnDesk subs={{ SW: "relearn" }} />
@@ -195,7 +198,7 @@ function MoveDiagram() {
   );
 }
 
-function StaleDiagram() {
+export function StaleDiagram() {
   return (
     <DiagramSvg w={700} h={290} label={`Incident: HOST-B is back on ge-0/0/2 but SW1's dynamic entry still says ${B} is on ge-0/0/4 (that link never went down), so known-unicast frames go to DESK-SW and are lost`}>
       <DSwitchStar
@@ -235,6 +238,15 @@ function StaleDiagram() {
       </text>
       <DSpokeLegend x={20} y={280} />
     </DiagramSvg>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the Ethernet Lab" onPractice={openLab}>
+      Same network, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
   );
 }
 
@@ -350,6 +362,11 @@ export function EthernetLessonGuideContent() {
           mark="→"
           items={["Learn from the source MAC; forward by the destination MAC", "Unknown unicast floods (the destination stays unicast), and hosts filter it", "Known unicast uses one port", "Broadcast always floods", "Entries age out and move only when the host sends", "A stale dynamic entry is fixed by clearing it and letting the host be relearned"]}
         />
+      </GuideSection>
+
+      <GuideSection id="eth-practice" eyebrow="Practice" title="Do it yourself" tone="cyan">
+        <p>The Deep Dive tab teaches every step in detail, with SW1&apos;s Cisco and Junos output. The Ethernet Lab lets you create every state change yourself — and troubleshoot the stale entry on SW1&apos;s CLI.</p>
+        <LessonLabBridge />
       </GuideSection>
     </div>
   );

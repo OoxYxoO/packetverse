@@ -16,7 +16,7 @@ import { EthernetLabWorkspace } from "./ethernet-lab/EthernetLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
   { id: "lesson", label: "This Lesson", hint: "SW1 · HOST-A/B/C · learning, flooding, aging, a MAC move and a stale entry", sections: ETH_LESSON_SECTIONS, content: <EthernetLessonGuideContent /> },
-  { id: "deep", label: "Ethernet & Switching Deep Dive", hint: "Ethernet frames and transparent bridging in general", sections: ETH_DEEP_DIVE_SECTIONS, content: <EthernetDeepDiveContent /> },
+  { id: "deep", label: "Ethernet & Switching Deep Dive", hint: "The full lesson on this LAN · frames, the FDB, aging, moves, CLI and troubleshooting", sections: ETH_DEEP_DIVE_SECTIONS, content: <EthernetDeepDiveContent /> },
 ];
 
 function FdbPanel({ s }: { s: EthState }) {
