@@ -1,5 +1,5 @@
 import type { DeviceInterfaceData, DeviceProcessingTrace, LinkDetail, PacketStackFrame, ProcessingStage } from "@/components/network3d/types";
-import { ADDR, GRAPH_LINKS, firstConnectionSteps, type FirstConnectionDeviceId, type FirstConnectionState } from "@/lib/sim-engine/scenarios/firstConnection";
+import { ADDR, IPV4_INITIAL_TTL, TCP_ISN, tcpEndpointStates, GRAPH_LINKS, firstConnectionSteps, type FirstConnectionDeviceId, type FirstConnectionState } from "@/lib/sim-engine/scenarios/firstConnection";
 
 /**
  * Scene Adapter for First Connection. Every field below is re-described
@@ -171,8 +171,9 @@ export function traceFor(device: FirstConnectionDeviceId, state: FirstConnection
         stages: LAPTOP_TCP_STAGES,
         activeStageId: active,
         completedStageIds: i === iComplete ? allIds(LAPTOP_TCP_STAGES) : completed,
-        packetBefore: state.tcp.clientSeq !== undefined ? `TCP: ${i < iTcpSynAck ? "CLOSED" : "SYN_SENT"}` : "TCP: CLOSED",
-        packetAfter: state.tcp.state !== "CLOSED" ? `TCP: ${state.tcp.state}` : undefined,
+        packetBefore: state.tcp.clientSeq !== undefined ? `TCP: ${i < iTcpSynAck ? "CLOSED" : "SYN-SENT"}` : "TCP: CLOSED",
+        // The Laptop's OWN state (not the handshake's overall progress): SYN-SENT until it processes the SYN-ACK.
+        packetAfter: state.tcp.state !== "CLOSED" ? `TCP: ${tcpEndpointStates(state.tcp).client}` : undefined,
         packetBeforeFrames: state.tcp.clientSeq !== undefined ? tcpFrames(ADDR.gateway.mac, i >= iTcpSynAck ? "SYN" : "—") : undefined,
         lookupType: i === iTcpSyn ? "Connection Open (active)" : undefined,
         lookupResult: state.tcp.clientSeq !== undefined ? `seq=${state.tcp.clientSeq}` : undefined,
@@ -304,11 +305,12 @@ export function traceFor(device: FirstConnectionDeviceId, state: FirstConnection
         mutations: [
           { type: "DA_CHANGE", detail: `Destination MAC: ${ADDR.gateway.mac} → ${ADDR.server.mac}` },
           { type: "SA_CHANGE", detail: `Source MAC: ${ADDR.laptop.mac} → ${ADDR.routerWan.mac}` },
+          { type: "TTL_CHANGE", detail: `TTL: ${IPV4_INITIAL_TTL} → ${IPV4_INITIAL_TTL - 1}` },
         ],
-        lookupResult: "New Ethernet header built for the Server segment — IP header untouched",
+        lookupResult: `New Ethernet header built for the Server segment — IP addresses unchanged, TTL ${IPV4_INITIAL_TTL} → ${IPV4_INITIAL_TTL - 1}`,
         nextHopId: "server",
         nextHopLabel: "Server",
-        reason: "Every router hop rewrites the Layer 2 header from scratch — the Layer 3 (IP) header rides through unmodified end-to-end (no NAT on this path).",
+        reason: "Every router hop rewrites the Layer 2 header from scratch. In the IP header the addresses ride through unchanged end-to-end (no NAT on this path); the router only decrements the TTL (and so recomputes the header checksum).",
       };
     }
     return { deviceId: "router", stages: ROUTER_FORWARDING_STAGES, completedStageIds: routeMatched ? allIds(ROUTER_FORWARDING_STAGES) : [], forwardingAction: routeMatched ? "Transparent forwarding — route already resolved" : undefined };
@@ -350,7 +352,7 @@ export function traceFor(device: FirstConnectionDeviceId, state: FirstConnection
       stages: SERVER_STAGES,
       activeStageId: "tcp-synack",
       completedStageIds: ["receive-ip", "tcp-listen"],
-      packetAfter: state.tcp.serverSeq !== undefined ? `TCP: SYN_RECEIVED, seq=${state.tcp.serverSeq}, ack=${(state.tcp.clientSeq ?? 100) + 1}` : undefined,
+      packetAfter: state.tcp.serverSeq !== undefined ? `TCP: SYN-RECEIVED, seq=${state.tcp.serverSeq}, ack=${(state.tcp.clientSeq ?? TCP_ISN.client) + 1}` : undefined,
       lookupResult: state.tcp.serverSeq !== undefined ? `SYN-ACK sent — seq=${state.tcp.serverSeq}, ack=${(state.tcp.clientSeq ?? 100) + 1}` : "Building SYN-ACK",
       packetAfterFrames: state.tcp.serverSeq !== undefined ? tcpFrames(ADDR.routerWan.mac, "SYN, ACK") : undefined,
       nextHopId: "laptop",
@@ -369,14 +371,16 @@ export function traceFor(device: FirstConnectionDeviceId, state: FirstConnection
       packetAfter: established ? "TCP: ESTABLISHED" : undefined,
       lookupResult: established ? "Final ACK received — connection ESTABLISHED" : undefined,
       packetAfterFrames: established ? tcpFrames(ADDR.routerWan.mac, "ACK") : undefined,
-      reason: "Once the server sees the client's ACK, both sides independently consider the connection ESTABLISHED.",
+      reason: "Each endpoint tracks its own state: the Laptop entered ESTABLISHED when it processed the SYN-ACK and sent its ACK; the Server stays SYN-RECEIVED until that ACK arrives, then enters ESTABLISHED.",
     };
   }
   return { deviceId: "server", stages: SERVER_STAGES, completedStageIds: state.tcp.state === "ESTABLISHED" ? allIds(SERVER_STAGES) : [] };
 }
 
 export function packetFramesFor(state: FirstConnectionState): PacketStackFrame[] | undefined {
-  if (state.tcp.state !== "CLOSED") return tcpFrames(state.tcp.state === "ESTABLISHED" ? ADDR.routerWan.mac : ADDR.gateway.mac, state.tcp.state);
+  if (state.tcp.state === "SYN_SENT") return tcpFrames(ADDR.gateway.mac, "SYN");
+  if (state.tcp.state === "SYN_RECEIVED") return tcpFrames(ADDR.routerWan.mac, "SYN, ACK");
+  if (state.tcp.state === "ESTABLISHED") return tcpFrames(ADDR.gateway.mac, "ACK");
   if (state.deliveredToServer) return ipFrames(ADDR.server.mac);
   if (Object.keys(state.arpTable.laptop ?? {}).length > 0) return ipFrames(ADDR.gateway.mac);
   return arpFrames();

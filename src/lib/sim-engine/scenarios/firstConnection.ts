@@ -159,7 +159,37 @@ export function linksOnPath(from: string, to: string): string[] {
   return GRAPH_LINKS.slice(lo, hi).map((l) => l.id);
 }
 
-const eth = (src: string, dst: string) => ({
+/**
+ * TCP truth shared by the guided lesson and the TCP Lab: the Laptop's ephemeral port, the Server's HTTPS port,
+ * and each side's initial sequence number (real stacks pick random 32-bit ISNs; the lesson uses readable ones).
+ */
+export const TCP_PORT = { client: 51001, server: 443 } as const;
+export const TCP_ISN = { client: 100, server: 300 } as const;
+/** Initial IPv4 TTL used by the Laptop and the Server; each router hop decrements it by one. */
+export const IPV4_INITIAL_TTL = 64;
+
+/**
+ * Each endpoint's TCP state for the guided lesson's single `tcp.state` field (which records how far the handshake
+ * has progressed). An endpoint changes state when it processes a segment and sends its response:
+ *   SYN_SENT     → client SYN-SENT (SYN sent),                       server still LISTEN (it answers with the next segment)
+ *   SYN_RECEIVED → client SYN-SENT (SYN-ACK not processed yet),      server SYN-RECEIVED (SYN-ACK sent)
+ *   ESTABLISHED  → client ESTABLISHED (processed SYN-ACK, sent ACK), server ESTABLISHED (ACK received)
+ */
+export type TcpEndpointState = "CLOSED" | "LISTEN" | "SYN-SENT" | "SYN-RECEIVED" | "ESTABLISHED";
+export function tcpEndpointStates(tcp: FirstConnectionState["tcp"]): { client: TcpEndpointState; server: TcpEndpointState } {
+  switch (tcp.state) {
+    case "CLOSED":
+      return { client: "CLOSED", server: "LISTEN" };
+    case "SYN_SENT":
+      return { client: "SYN-SENT", server: "LISTEN" };
+    case "SYN_RECEIVED":
+      return { client: "SYN-SENT", server: "SYN-RECEIVED" };
+    case "ESTABLISHED":
+      return { client: "ESTABLISHED", server: "ESTABLISHED" };
+  }
+}
+
+export const eth = (src: string, dst: string) => ({
   name: "Ethernet II",
   color: "var(--pv-proto-ethernet)",
   fields: [
@@ -168,13 +198,14 @@ const eth = (src: string, dst: string) => ({
   ],
 });
 
-const ipLayer = (src: string, dst: string) => ({
+/** IPv4 header as seen on one link; `ttl` is the value on THAT link (64 leaving a host, one less per router hop). */
+export const ipLayer = (src: string, dst: string, ttl: number = IPV4_INITIAL_TTL) => ({
   name: "IPv4",
   color: "var(--pv-proto-ip)",
   fields: [
     { label: "Source IP", value: src },
     { label: "Destination IP", value: dst },
-    { label: "TTL", value: "64" },
+    { label: "TTL", value: String(ttl) },
   ],
 });
 
@@ -369,14 +400,14 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
     id: "router-forwards",
     label: "Route & Rewrite",
     narrative:
-      "The Router de-encapsulates the frame, confirms the route, and builds a brand-new Ethernet header for the Server segment, using the Server's MAC from its own ARP cache on that segment (had it not been cached, R1 would ARP for 10.20.20.20 there first). Watch closely: the IP header is untouched, but both MAC addresses change.",
+      "The Router de-encapsulates the frame, confirms the route, and builds a brand-new Ethernet header for the Server segment, using the Server's MAC from its own ARP cache on that segment (had it not been cached, R1 would ARP for 10.20.20.20 there first). Watch closely: both MAC addresses change, the IP addresses stay the same, and the Router decrements the TTL from 64 to 63.",
     packet: (): PacketVisual => ({
       id: "frame-2",
       protocol: "IP",
       from: "router",
       to: "server",
       summary: "Same IP packet, new Ethernet header",
-      layers: [eth(ADDR.routerWan.mac, ADDR.server.mac), ipLayer(ADDR.laptop.ip, ADDR.server.ip)],
+      layers: [eth(ADDR.routerWan.mac, ADDR.server.mac), ipLayer(ADDR.laptop.ip, ADDR.server.ip, IPV4_INITIAL_TTL - 1)],
     }),
     run: (state) => ({
       state: { ...state, deliveredToServer: true },
@@ -385,7 +416,7 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
     whatChanged: () => [
       "Frame delivered to Server.",
       "Ethernet header rewritten at every hop (src/dst MAC changed twice).",
-      "IP header identical end-to-end — no NAT on this path.",
+      `IP source and destination identical end-to-end — no NAT on this path. The Router decremented the TTL ${IPV4_INITIAL_TTL} → ${IPV4_INITIAL_TTL - 1}.`,
     ],
   },
   {
@@ -403,7 +434,7 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
       protocol: "TCP",
       from: "laptop",
       to: "server",
-      summary: "SYN, seq=100",
+      summary: `SYN, seq=${TCP_ISN.client}`,
       layers: [
         eth(ADDR.laptop.mac, ADDR.gateway.mac),
         ipLayer(ADDR.laptop.ip, ADDR.server.ip),
@@ -411,16 +442,16 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
           name: "TCP",
           color: "var(--pv-proto-tcp)",
           fields: [
-            { label: "Source Port", value: "51001" },
-            { label: "Destination Port", value: "443" },
+            { label: "Source Port", value: String(TCP_PORT.client) },
+            { label: "Destination Port", value: String(TCP_PORT.server) },
             { label: "Flags", value: "SYN" },
-            { label: "Sequence", value: "100" },
+            { label: "Sequence", value: String(TCP_ISN.client) },
           ],
         },
       ],
     }),
     run: (state) => ({
-      state: { ...state, tcp: { state: "SYN_SENT", clientSeq: 100 } },
+      state: { ...state, tcp: { state: "SYN_SENT", clientSeq: TCP_ISN.client } },
       events: [{ type: "TCP_STATE_CHANGED", stepId: "tcp-syn", timestamp: Date.now(), message: "Client: CLOSED → SYN_SENT" }],
     }),
   },
@@ -450,7 +481,7 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
       protocol: "TCP",
       from: "server",
       to: "laptop",
-      summary: "SYN-ACK, seq=300, ack=101",
+      summary: `SYN-ACK, seq=${TCP_ISN.server}, ack=${TCP_ISN.client + 1}`,
       layers: [
         eth(ADDR.server.mac, ADDR.routerWan.mac),
         ipLayer(ADDR.server.ip, ADDR.laptop.ip),
@@ -458,17 +489,17 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
           name: "TCP",
           color: "var(--pv-proto-tcp)",
           fields: [
-            { label: "Source Port", value: "443" },
-            { label: "Destination Port", value: "51001" },
+            { label: "Source Port", value: String(TCP_PORT.server) },
+            { label: "Destination Port", value: String(TCP_PORT.client) },
             { label: "Flags", value: "SYN, ACK" },
-            { label: "Sequence", value: "300" },
-            { label: "Acknowledgment", value: "101" },
+            { label: "Sequence", value: String(TCP_ISN.server) },
+            { label: "Acknowledgment", value: String(TCP_ISN.client + 1) },
           ],
         },
       ],
     }),
     run: (state) => ({
-      state: { ...state, tcp: { ...state.tcp, state: "SYN_RECEIVED", serverSeq: 300 } },
+      state: { ...state, tcp: { ...state.tcp, state: "SYN_RECEIVED", serverSeq: TCP_ISN.server } },
       events: [{ type: "TCP_STATE_CHANGED", stepId: "tcp-synack", timestamp: Date.now(), message: "Server: LISTEN → SYN_RECEIVED" }],
     }),
   },
@@ -486,7 +517,7 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
       ],
       correctOptionId: "ack",
       explanation:
-        "The client acknowledges the server's SYN (seq 300 → ack 301) with a plain ACK. Once the server sees it, both sides consider the connection ESTABLISHED.",
+        "The client acknowledges the server's SYN (seq 300 → ack 301) with a plain ACK. The client enters ESTABLISHED as it processes the SYN-ACK and sends this ACK; the server stays SYN-RECEIVED until the ACK arrives, and only then enters ESTABLISHED.",
     },
   },
   {
@@ -498,7 +529,7 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
       protocol: "TCP",
       from: "laptop",
       to: "server",
-      summary: "ACK, seq=101, ack=301",
+      summary: `ACK, seq=${TCP_ISN.client + 1}, ack=${TCP_ISN.server + 1}`,
       layers: [
         eth(ADDR.laptop.mac, ADDR.gateway.mac),
         ipLayer(ADDR.laptop.ip, ADDR.server.ip),
@@ -506,20 +537,24 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
           name: "TCP",
           color: "var(--pv-proto-tcp)",
           fields: [
-            { label: "Source Port", value: "51001" },
-            { label: "Destination Port", value: "443" },
+            { label: "Source Port", value: String(TCP_PORT.client) },
+            { label: "Destination Port", value: String(TCP_PORT.server) },
             { label: "Flags", value: "ACK" },
-            { label: "Sequence", value: "101" },
-            { label: "Acknowledgment", value: "301" },
+            { label: "Sequence", value: String(TCP_ISN.client + 1) },
+            { label: "Acknowledgment", value: String(TCP_ISN.server + 1) },
           ],
         },
       ],
     }),
     run: (state) => ({
       state: { ...state, tcp: { ...state.tcp, state: "ESTABLISHED" } },
-      events: [{ type: "TCP_STATE_CHANGED", stepId: "tcp-ack", timestamp: Date.now(), message: "Client & Server: → ESTABLISHED" }],
+      events: [{ type: "TCP_STATE_CHANGED", stepId: "tcp-ack", timestamp: Date.now(), message: "Client: SYN_SENT → ESTABLISHED (processed SYN-ACK, sent ACK) · Server: SYN_RECEIVED → ESTABLISHED (ACK received)" }],
     }),
-    whatChanged: () => ["TCP session state: ESTABLISHED on both Laptop and Server.", "HTTPS (TLS) can now begin on top of this connection."],
+    whatChanged: () => [
+      "Laptop: ESTABLISHED — it entered that state when it processed the SYN-ACK and sent this ACK.",
+      "Server: SYN-RECEIVED → ESTABLISHED when the ACK arrived. Both endpoints are now ESTABLISHED.",
+      "HTTPS (TLS) can now begin on top of this connection.",
+    ],
   },
   {
     id: "complete",

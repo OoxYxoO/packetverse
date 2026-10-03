@@ -12,6 +12,10 @@ import {
   firstConnectionSteps,
   linksOnPath,
   macTableDisplay,
+  ADDR,
+  TCP_PORT,
+  tcpEndpointStates,
+  type TcpEndpointState,
   type FirstConnectionDeviceId,
   type FirstConnectionState,
 } from "@/lib/sim-engine/scenarios/firstConnection";
@@ -53,6 +57,7 @@ import { CLITerminal, type CliSessionMap } from "@/components/protocol/CLITermin
 import type { CliVendor } from "@/lib/cli/types";
 import { firstConnectionCliSets } from "./cliAdapter";
 import { ArpLabWorkspace } from "./arp-lab/ArpLabWorkspace";
+import { TcpLabWorkspace } from "./tcp-lab/TcpLabWorkspace";
 import { PracticeLabButton, PracticeLabCard, usePracticeLab, type PracticeLabEntry } from "@/components/practice-lab/PracticeLabLauncher";
 
 const CLI_BOUNDARY_NOTE = "PacketVerse CLI supports the commands relevant to this lesson. It is a state-driven learning simulator, not a full network operating system emulator.";
@@ -81,34 +86,43 @@ function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number
   return [dist * 0.55, dist * 0.5, dist * 0.75];
 }
 
-const TCP_STATES = ["CLOSED", "SYN_SENT", "SYN_RECEIVED", "ESTABLISHED"];
+/** Each endpoint's own TCP state sequence during the handshake (client = active open, server = passive open). */
+const TCP_ENDPOINT_ROWS: { who: "client" | "server"; label: string; endpoint: string; states: TcpEndpointState[] }[] = [
+  { who: "client", label: "Laptop (client)", endpoint: `${ADDR.laptop.ip}:${TCP_PORT.client}`, states: ["CLOSED", "SYN-SENT", "ESTABLISHED"] },
+  { who: "server", label: "Server", endpoint: `${ADDR.server.ip}:${TCP_PORT.server}`, states: ["LISTEN", "SYN-RECEIVED", "ESTABLISHED"] },
+];
 
-/** Guide tabs: "This Lesson" = where am I in the whole connection; "ARP Deep Dive" = the complete ARP lesson (can open the ARP Lab). */
-function guideTabs(onOpenLab: () => void): LessonGuideTab[] {
+/** Guide tabs: "This Lesson" = where am I in the whole connection; each Deep Dive is a complete lesson whose bridges open ONLY its own lab. */
+function guideTabs(onOpenArpLab: () => void, onOpenTcpLab: () => void): LessonGuideTab[] {
   return [
     { id: "lesson", label: "This Lesson", hint: "The whole Laptop → Server journey", sections: FIRST_CONNECTION_GUIDE_SECTIONS, content: <FirstConnectionGuideContent /> },
-    { id: "arp", label: "ARP Deep Dive", hint: "The complete ARP lesson", sections: ARP_DEEP_DIVE_SECTIONS, content: <ArpDeepDiveContent onOpenLab={onOpenLab} /> },
-    { id: "tcp", label: "TCP Deep Dive", hint: "How TCP connections work", sections: TCP_DEEP_DIVE_SECTIONS, content: <TcpDeepDiveContent /> },
+    { id: "arp", label: "ARP Deep Dive", hint: "The complete ARP lesson", sections: ARP_DEEP_DIVE_SECTIONS, content: <ArpDeepDiveContent onOpenLab={onOpenArpLab} /> },
+    { id: "tcp", label: "TCP Deep Dive", hint: "The complete TCP lesson on this connection · ports, seq/ack, states, loss, reset, troubleshooting", sections: TCP_DEEP_DIVE_SECTIONS, content: <TcpDeepDiveContent onOpenLab={onOpenTcpLab} /> },
   ];
 }
 
 type SceneDimension = "3d" | "2d";
 
-function TCPStatePanel({ tcpState }: { tcpState: string }) {
+/** Per-endpoint TCP state: the client and the server are each in their OWN state (they differ mid-handshake). `only` shows one endpoint's view. */
+function TCPStatePanel({ tcp, only }: { tcp: FirstConnectionState["tcp"]; only?: "client" | "server" }) {
+  const now = tcpEndpointStates(tcp);
   return (
     <GlassPanel className="p-4">
-      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-pv-text-muted">TCP State</h4>
-      <div className="flex flex-wrap gap-1.5">
-        {TCP_STATES.map((s) => (
-          <span
-            key={s}
-            className={clsx(
-              "rounded-md border px-2 py-1 pv-mono text-[10px]",
-              s === tcpState ? "border-pv-success/50 bg-pv-success/10 text-pv-success" : "border-pv-border text-pv-text-faint",
-            )}
-          >
-            {s}
-          </span>
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-pv-text-muted">TCP State · per endpoint</h4>
+      <div className="space-y-2">
+        {TCP_ENDPOINT_ROWS.filter((r) => !only || r.who === only).map((r) => (
+          <div key={r.who}>
+            <p className="mb-1 text-[10px] text-pv-text-faint">
+              {r.label} · <span className="pv-mono">{r.endpoint}</span>
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {r.states.map((s) => (
+                <span key={s} className={clsx("rounded-md border px-2 py-1 pv-mono text-[10px]", s === now[r.who] ? "border-pv-success/50 bg-pv-success/10 text-pv-success" : "border-pv-border text-pv-text-faint")}>
+                  {s}
+                </span>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
     </GlassPanel>
@@ -150,6 +164,13 @@ const ARP_LAB_ENTRY: PracticeLabEntry = {
   buttonLabel: "Practice ARP",
 };
 
+/** Lesson-level entry for the optional TCP Lab — a separate sandbox with its own state (never the ARP Lab's). */
+const TCP_LAB_ENTRY: PracticeLabEntry = {
+  title: "TCP Lab",
+  description: "Drive a TCP conversation on the same network: predict seq/ack values, watch both endpoints' states, lose and retransmit data, compare a reset with a timeout, and troubleshoot a failing handshake from captures.",
+  buttonLabel: "Practice TCP",
+};
+
 export default function FirstConnectionDemo() {
   const { engine, snapshot } = useScenarioEngine<FirstConnectionState>(createFirstConnectionState(), firstConnectionSteps);
   const [autoPlay, setAutoPlay] = useState(false);
@@ -173,6 +194,8 @@ export default function FirstConnectionDemo() {
   const [guidedCliSessions, setGuidedCliSessions] = useState<CliSessionMap>({});
   /** ARP Lab: an independent sandbox. Only open/mounted flags live here; opening it pauses guided Auto-Play (no step change). */
   const arpLab = usePracticeLab(() => setAutoPlay(false));
+  /** TCP Lab: a second, fully independent sandbox (own runner/state); opening it never touches the ARP Lab or the guided lesson. */
+  const tcpLab = usePracticeLab(() => setAutoPlay(false));
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -399,15 +422,23 @@ export default function FirstConnectionDemo() {
   };
 
   const arpPhaseStep = !isComplete && index <= firstConnectionSteps.findIndex((s) => s.id === "predict-next");
-  // Opening the lab from inside the guide closes the guide first (the lab is its own full-screen workspace).
-  const { openLab } = arpLab;
+  const tcpPhaseStep = isComplete || index >= firstConnectionSteps.findIndex((s) => s.id === "tcp-intro");
+  // Opening a lab from inside the guide closes the guide first (each lab is its own full-screen workspace).
+  const { openLab: openArpLab } = arpLab;
+  const { openLab: openTcpLab } = tcpLab;
   const tabs = useMemo(
     () =>
-      guideTabs(() => {
-        setGuideOpen(false);
-        openLab();
-      }),
-    [openLab],
+      guideTabs(
+        () => {
+          setGuideOpen(false);
+          openArpLab();
+        },
+        () => {
+          setGuideOpen(false);
+          openTcpLab();
+        },
+      ),
+    [openArpLab, openTcpLab],
   );
 
   const handleRestart = () => {
@@ -435,7 +466,7 @@ export default function FirstConnectionDemo() {
     };
     const ifaceTab: DeviceExplorerTab = { id: "interfaces", label: "Interfaces", content: <InterfaceListTab interfaces={deviceInterfaces} selectedInterfaceId={selectedInterfaceId} onSelectInterface={setSelectedInterfaceId} /> };
     const overviewTab: DeviceExplorerTab = { id: "overview", label: "Overview", content: <OverviewTab explanation={nodeExplanation} /> };
-    if (device === "laptop") return [overviewTab, ifaceTab, { id: "arp", label: "ARP Cache", content: <ARPTableViewer title="Laptop" entries={state.arpTable.laptop ?? {}} /> }, packetTab];
+    if (device === "laptop") return [overviewTab, ifaceTab, { id: "arp", label: "ARP Cache", content: <ARPTableViewer title="Laptop" entries={state.arpTable.laptop ?? {}} /> }, { id: "tcp", label: "TCP Connections", content: <TCPStatePanel tcp={state.tcp} only="client" /> }, packetTab];
     const cliTab = (cliDevice: "switch" | "router"): DeviceExplorerTab => ({
       id: "cli",
       label: "CLI",
@@ -464,7 +495,7 @@ export default function FirstConnectionDemo() {
         cliTab("router"),
         packetTab,
       ];
-    return [overviewTab, ifaceTab, { id: "tcp", label: "TCP Connections", content: <TCPStatePanel tcpState={state.tcp.state} /> }, packetTab];
+    return [overviewTab, ifaceTab, { id: "tcp", label: "TCP Connections", content: <TCPStatePanel tcp={state.tcp} only="server" /> }, packetTab];
   };
 
   return (
@@ -483,6 +514,7 @@ export default function FirstConnectionDemo() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <PracticeLabButton label={ARP_LAB_ENTRY.buttonLabel} onOpen={arpLab.openLab} />
+          <PracticeLabButton label={TCP_LAB_ENTRY.buttonLabel} onOpen={tcpLab.openLab} />
           <LessonGuideButton onClick={() => setGuideOpen(true)} />
         </div>
       </div>
@@ -684,12 +716,16 @@ export default function FirstConnectionDemo() {
             </div>
           )}
 
-          <PracticeLabCard entry={ARP_LAB_ENTRY} contextNote={arpPhaseStep ? "Want to experiment instead of only watching?" : undefined} onOpen={arpLab.openLab} />
+          {tcpPhaseStep ? (
+            <PracticeLabCard entry={TCP_LAB_ENTRY} contextNote="Want to experiment instead of only watching?" onOpen={tcpLab.openLab} />
+          ) : (
+            <PracticeLabCard entry={ARP_LAB_ENTRY} contextNote={arpPhaseStep ? "Want to experiment instead of only watching?" : undefined} onOpen={arpLab.openLab} />
+          )}
         </div>
 
         <div className="space-y-4">
           <PacketInspector packet={activePacket} focusLayerIndices={xrayMode ? focusIndices : undefined} />
-          <TCPStatePanel tcpState={state.tcp.state} />
+          <TCPStatePanel tcp={state.tcp} />
           <ARPTableViewer title="Laptop" entries={state.arpTable.laptop ?? {}} />
           <MACTableViewer title="Switch" entries={macTableDisplay(state.macTable.switch)} />
           <ARPTableViewer title="Router" entries={state.arpTable.router ?? {}} />
@@ -900,8 +936,9 @@ export default function FirstConnectionDemo() {
       )}
 
       {arpLab.mounted && <ArpLabWorkspace open={arpLab.open} onClose={arpLab.closeLab} vendor={cliVendor} onVendorChange={setCliVendor} />}
+      {tcpLab.mounted && <TcpLabWorkspace open={tcpLab.open} onClose={tcpLab.closeLab} />}
 
-      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={tabs} recommendation={arpPhaseStep ? { tabId: "arp", text: "You’re at an ARP step — the ARP Deep Dive explains exactly what is happening." } : undefined} />
+      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={tabs} recommendation={arpPhaseStep ? { tabId: "arp", text: "You’re at an ARP step — the ARP Deep Dive explains exactly what is happening." } : tcpPhaseStep ? { tabId: "tcp", text: "You’re at a TCP step — the TCP Deep Dive explains exactly what is happening." } : undefined} />
     </div>
   );
 }

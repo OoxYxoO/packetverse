@@ -87,7 +87,7 @@ export const STEP_BRIEFING: Record<string, StepBriefing> = {
   "tcp-ack": {
     phase: { label: "TCP", tone: "tcp" },
     objective: "Complete the three-way handshake.",
-    doingNow: "The Laptop sends ACK (seq=101, ack=301). Both sides are now ESTABLISHED.",
+    doingNow: "The Laptop — already ESTABLISHED since it processed the SYN-ACK — sends ACK (seq=101, ack=301). The Server moves from SYN-RECEIVED to ESTABLISHED when it arrives.",
     takeaway: "TLS and the HTTPS request only start after this handshake.",
   },
   complete: {

@@ -61,13 +61,16 @@ export interface PracticeLabShellProps {
   /** Controlled mobile tab (lets a lesson jump to "cli" after "Inspect in CLI"); uncontrolled when omitted. */
   mobileTab?: PracticeLabTab;
   onMobileTabChange?: (tab: PracticeLabTab) => void;
+  /** Optional mobile tab names for labs whose panels aren't "State"/"CLI" (e.g. a packet capture in the third slot). Defaults unchanged. */
+  tabLabels?: Partial<Record<PracticeLabTab, string>>;
 }
 
 const DEFAULT_LOOP = ["Predict", "Act", "Observe", "Verify"];
 const TAB_LABEL: Record<PracticeLabTab, string> = { topology: "Topology", state: "State", cli: "CLI" };
 
 export function PracticeLabShell(props: PracticeLabShellProps) {
-  const { open, onClose, title, sandboxNote = "Same network as the lesson · sandbox, no progress", onReset, animate, onToggleAnimate, stages, currentStage, stageSuffix, loop, primaryAction, topology, topologyClassName = "h-[min(124vw,500px)] sm:h-[clamp(170px,32vh,290px)]", topologyFooter, controls, eventStrip, board, liveState, eventLog, cli, cliHeader } = props;
+  const { open, onClose, title, sandboxNote = "Same network as the lesson · sandbox, no progress", onReset, animate, onToggleAnimate, stages, currentStage, stageSuffix, loop, primaryAction, topology, topologyClassName = "h-[min(124vw,500px)] sm:h-[clamp(170px,32vh,290px)]", topologyFooter, controls, eventStrip, board, liveState, eventLog, cli, cliHeader, tabLabels } = props;
+  const tabLabel = (t: PracticeLabTab) => tabLabels?.[t] ?? TAB_LABEL[t];
   const titleRef = useRef<HTMLHeadingElement>(null);
   const [ownTab, setOwnTab] = useState<PracticeLabTab>("topology");
   const tab = props.mobileTab ?? ownTab;
@@ -167,7 +170,7 @@ export function PracticeLabShell(props: PracticeLabShellProps) {
           <div role="tablist" aria-label={`${title} panels`} className="flex gap-0.5 rounded-full border border-pv-border p-0.5">
             {tabs.map((t) => (
               <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={clsx("rounded-full px-3 py-1 text-[12px] font-semibold", tab === t ? "bg-pv-cyan/15 text-pv-cyan-soft" : "text-pv-text-faint")}>
-                {TAB_LABEL[t]}
+                {tabLabel(t)}
               </button>
             ))}
           </div>
@@ -191,7 +194,7 @@ export function PracticeLabShell(props: PracticeLabShellProps) {
         </section>
 
         {hasRight && (
-          <section aria-label="Live state and CLI" className={clsx("h-full min-h-0 flex-col overflow-y-auto border-pv-border lg:flex lg:border-l", tab === "topology" ? "hidden" : "flex")}>
+          <section aria-label={tabLabels ? `${tabLabel("state")} and ${tabLabel("cli")}` : "Live state and CLI"} className={clsx("h-full min-h-0 flex-col overflow-y-auto border-pv-border lg:flex lg:border-l", tab === "topology" ? "hidden" : "flex")}>
             {(liveState || eventLog) && (
               <div className={clsx("space-y-2 px-3 pt-3 sm:px-5", tab === "state" ? "block" : "hidden", "lg:block")}>
                 {liveState && (

@@ -158,7 +158,7 @@ function FrameDiagram() {
       </div>
       <div className="flex justify-between px-1 text-[10px] font-semibold uppercase tracking-wide">
         <span style={{ color: C.arp }}>Layer 2: rewritten at every router hop</span>
-        <span style={{ color: C.ip }}>Layer 3: unchanged end to end</span>
+        <span style={{ color: C.ip }}>Layer 3 addresses: unchanged end to end</span>
       </div>
     </div>
   );
