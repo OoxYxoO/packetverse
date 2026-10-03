@@ -6,8 +6,7 @@ export const FIRST_CONNECTION_GUIDE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "g-mission", label: "Your mission" },
   { id: "g-mac-ip", label: "MAC vs IP" },
   { id: "g-local-remote", label: "Local or remote?" },
-  { id: "g-arp-request", label: "ARP request" },
-  { id: "g-arp-reply", label: "ARP reply & cache" },
+  { id: "g-arp", label: "Step 1 · ARP" },
   { id: "g-switch", label: "What the switch does" },
   { id: "g-frame", label: "Frame to the gateway" },
   { id: "g-router", label: "What the router does" },
@@ -44,6 +43,28 @@ function TopologyDiagram() {
         .1 (server side)
       </text>
     </Svg>
+  );
+}
+
+/** Where ARP sits in the whole connection — the question this tab answers. */
+function JourneyMap() {
+  const stages: [string, string, string][] = [
+    ["ARP", "learn the gateway’s MAC", C.arp],
+    ["Switching", "deliver the frame across the LAN", C.eth],
+    ["Routing", "move the packet to 10.20.20.0/24", C.ip],
+    ["TCP", "open the connection for HTTPS", C.tcp],
+  ];
+  return (
+    <ol className="grid gap-2 sm:grid-cols-4" aria-label="The four stages of this connection">
+      {stages.map(([name, what, color], i) => (
+        <li key={name} className="rounded-xl border p-2.5" style={{ borderColor: `${color}66`, background: `${color}10` }}>
+          <p className="text-[10px] font-bold uppercase tracking-wide" style={{ color }}>
+            {i + 1} · {name}
+          </p>
+          <p className="text-xs text-pv-text-muted">{what}</p>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -205,6 +226,7 @@ export function FirstConnectionGuideContent() {
         <DiagramFrame caption="Two subnets joined by one router. The router has an interface (and an IP and MAC) on each side.">
           <TopologyDiagram />
         </DiagramFrame>
+        <JourneyMap />
         <Callout tone="cyan" title="The big question" icon="?">
           Before the first bit leaves the Laptop, it has to fill in an Ethernet header. Who goes in the <b>destination MAC</b> field? That&apos;s what this lesson answers.
         </Callout>
@@ -245,35 +267,21 @@ export function FirstConnectionGuideContent() {
         </Callout>
       </GuideSection>
 
-      <GuideSection id="g-arp-request" eyebrow="Step 1" title="ARP request: a broadcast question" tone="arp">
+      <GuideSection id="g-arp" eyebrow="Step 1 of the journey" title="ARP: learn the gateway’s MAC" tone="arp">
         <p>
-          With no entry for <Mono>192.168.10.1</Mono> in its ARP cache, the Laptop builds an ARP request and sends it to the Ethernet <b className="text-pv-text">broadcast</b> address <Mono tone="arp">FF:FF:FF:FF:FF:FF</Mono>. The Switch floods a broadcast out every other port in the same VLAN, so every host on the LAN receives it.
+          With no entry for <Mono>192.168.10.1</Mono> in its ARP cache, the Laptop broadcasts an ARP Request to <Mono tone="arp">FF:FF:FF:FF:FF:FF</Mono>. As the frame enters the Switch on Fa0/1, the Switch learns the Laptop’s source MAC, then floods the broadcast. The Router owns <Mono>192.168.10.1</Mono>: it caches the Laptop’s mapping from the request’s sender fields and answers.
         </p>
-        <DiagramFrame caption="Everyone on the LAN hears the question (extra hosts shown for illustration). Only the owner of 192.168.10.1 will answer.">
+        <DiagramFrame caption="Everyone on the LAN hears the question (extra hosts shown for illustration). Only the owner of 192.168.10.1 answers.">
           <ArpRequestDiagram />
         </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="g-arp-reply" eyebrow="Step 2" title="ARP reply: a unicast answer, then caching" tone="arp">
         <p>
-          The other hosts see a target IP that isn&apos;t theirs and ignore it. The Router recognizes <Mono>192.168.10.1</Mono> as its own LAN interface and replies <b className="text-pv-text">unicast</b>, straight back to the Laptop&apos;s MAC, with that interface&apos;s MAC <Mono tone="arp">02:BB:00:00:00:01</Mono>.
+          The Router replies <b className="text-pv-text">unicast</b> with its LAN MAC <Mono tone="arp">02:BB:00:00:00:01</Mono>. On the way, the Switch learns the Router on Fa0/2; the Laptop caches <Mono>192.168.10.1 → 02:BB:00:00:00:01</Mono> and reuses it for later packets.
         </p>
         <DiagramFrame caption="The reply goes only to the Laptop. The Switch already knows which port the Laptop is on.">
           <ArpReplyDiagram />
         </DiagramFrame>
-        <div className="overflow-hidden rounded-xl border border-white/10">
-          <div className="border-b border-white/10 bg-white/[0.03] px-4 py-2 text-[10px] font-bold uppercase tracking-wide text-pv-text-faint">Laptop ARP cache — after the reply</div>
-          <div className="grid grid-cols-3 px-4 py-2 pv-mono text-xs">
-            <span className="text-pv-text-faint">IP</span>
-            <span className="text-pv-text-faint">MAC</span>
-            <span className="text-pv-text-faint">Type</span>
-            <span className="text-pv-text">192.168.10.1</span>
-            <span style={{ color: C.arp }}>02:BB:00:00:00:01</span>
-            <span className="text-pv-text-muted">dynamic</span>
-          </div>
-        </div>
-        <Callout tone="success" title="Why caching matters" icon="✓">
-          The entry is cached for a while, so the next packets to <em>any</em> remote destination reuse it with no new ARP. It&apos;s the same gateway MAC every time.
+        <Callout tone="arp" title="Want the full ARP lesson?" icon="→">
+          This tab shows where ARP fits in the connection. The <b>ARP Deep Dive</b> tab teaches ARP itself: packet anatomy, what every device learns, ARP vs MAC tables, CLI, troubleshooting and more.
         </Callout>
       </GuideSection>
 
@@ -286,7 +294,7 @@ export function FirstConnectionGuideContent() {
           ]}
         />
         <Callout tone="cyan" title="Remember" icon="i">
-          The switch never reads the IP header. It forwards purely on MAC addresses and its MAC (CAM) table.
+          The switch never reads the IP header. It forwards purely on MAC addresses and its MAC (CAM) table, which maps <b>MAC → port</b>. That&apos;s a different table from the ARP table hosts and routers keep (<b>IPv4 → MAC</b>). A pure Layer-2 switch doesn&apos;t need an ARP entry to forward frames.
         </Callout>
       </GuideSection>
 
@@ -310,6 +318,9 @@ export function FirstConnectionGuideContent() {
         <DiagramFrame caption="Same IP packet on both sides. Only the Layer 2 envelope is replaced.">
           <RouterDiagram />
         </DiagramFrame>
+        <p className="text-xs text-pv-text-faint">
+          In this lesson R1 already has the Server’s MAC in its ARP cache. If it didn’t, R1 would first run its own ARP exchange on <Mono>10.20.20.0/24</Mono> — ARP is always local to one link.
+        </p>
       </GuideSection>
 
       <GuideSection id="g-tcp" eyebrow="After the path is ready" title="Then TCP and HTTPS begin" tone="tcp">
@@ -328,8 +339,9 @@ export function FirstConnectionGuideContent() {
             { title: "Decide it's remote", body: "So the next hop is the default gateway 192.168.10.1.", tone: "cyan" },
             { title: "Look in the ARP cache", body: "No gateway MAC yet.", tone: "arp" },
             { title: "Broadcast an ARP request", body: "\"Who has 192.168.10.1?\" is sent to FF:FF:FF:FF:FF:FF.", tone: "arp" },
-            { title: "Switch floods it", body: "…and learns the Laptop's MAC on Fa0/1.", tone: "ethernet" },
-            { title: "Router replies unicast", body: "192.168.10.1 is at 02:BB:00:00:00:01. The Switch learns the Router is on Fa0/2.", tone: "arp" },
+            { title: "Switch learns, then floods", body: "As the frame enters Fa0/1, the Switch learns its SOURCE MAC (the Laptop) on that port, then floods the broadcast.", tone: "ethernet" },
+            { title: "Router caches the sender", body: "The request targets its own IP, so it caches 192.168.10.10 → 02:AA:00:00:00:01 from the sender fields.", tone: "arp" },
+            { title: "Router replies unicast", body: "192.168.10.1 is at 02:BB:00:00:00:01. As the reply enters Fa0/2, the Switch learns the Router's source MAC there.", tone: "arp" },
             { title: "Laptop caches the answer", body: "The ARP table gains 192.168.10.1 → 02:BB:00:00:00:01.", tone: "success" },
             { title: "Frame sent to the router's MAC", body: "The destination IP stays 10.20.20.20.", tone: "ip" },
             { title: "Router routes toward 10.20.20.0/24", body: "It gives the packet a new Ethernet header on the server segment.", tone: "ip" },

@@ -32,13 +32,13 @@ export const STEP_BRIEFING: Record<string, StepBriefing> = {
   "arp-request": {
     phase: { label: "ARP", tone: "arp" },
     objective: "Resolve the gateway's IP (192.168.10.1) into its MAC address.",
-    doingNow: "The Laptop broadcasts \"Who has 192.168.10.1?\" to FF:FF:FF:FF:FF:FF, and the Switch floods it out every other port in the VLAN.",
-    takeaway: "The Laptop ARPs for the gateway, not the Server, because the Server is off-subnet.",
+    doingNow: "The Laptop broadcasts \"Who has 192.168.10.1?\" to FF:FF:FF:FF:FF:FF. The Switch learns the Laptop's SOURCE MAC on Fa0/1, then floods the frame. The Router caches the sender's IP/MAC while processing it.",
+    takeaway: "The Laptop ARPs for the gateway, not the Server, because the Server is off-subnet. The request has already taught the Switch and the Router about the Laptop.",
   },
   "arp-reply": {
     phase: { label: "ARP", tone: "arp" },
     objective: "Get the gateway's MAC back to the Laptop.",
-    doingNow: "Only the Router owns 192.168.10.1, so it answers with a unicast ARP reply. The Laptop caches the entry and the Switch learns where both MACs live.",
+    doingNow: "Only the Router owns 192.168.10.1, so it answers with a unicast ARP reply. The Switch learns the Router's SOURCE MAC on Fa0/2, and the Laptop caches the gateway's mapping from the reply.",
     takeaway: "Requests are broadcast and replies are unicast. The answer is cached so the next frame needs no ARP.",
   },
   "predict-next": {

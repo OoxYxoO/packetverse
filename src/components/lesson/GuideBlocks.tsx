@@ -27,7 +27,7 @@ const tint = (c: string, pct: number) => `color-mix(in srgb, ${c} ${pct}%, trans
 export function GuideSection({ id, eyebrow, title, tone = "cyan", children }: { id: string; eyebrow: string; title: string; tone?: GuideTone; children: ReactNode }) {
   const c = GUIDE_TONE[tone];
   return (
-    <section id={id} className="scroll-mt-6">
+    <section id={id} className="scroll-mt-16 md:scroll-mt-6">
       <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.2em]" style={{ color: c }}>
         {eyebrow}
       </p>
@@ -299,5 +299,85 @@ export function FieldTable({ title, columns, rows, accent = "cyan" }: { title: s
         </table>
       </div>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------------
+ * Lesson-agnostic teaching primitives (introduced with the ARP Deep Dive,
+ * meant for every lesson): packet anatomy with a "why" per field, and a
+ * wrapping state-transition strip.
+ * ---------------------------------------------------------------------- */
+
+export interface AnatomyField {
+  name: string;
+  value: string;
+  /** Why the field holds this value — the teaching point, not a definition. */
+  why: ReactNode;
+  /** Emphasise the fields the lesson is about. */
+  key?: boolean;
+}
+
+/** A header/packet broken into layers; every field carries its value AND why it matters. Stacks on narrow screens. */
+export function PacketAnatomy({ title, layers }: { title: string; layers: { name: string; tone: GuideTone; note?: string; fields: AnatomyField[] }[] }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-white/10">
+      <div className="border-b border-white/10 bg-white/[0.03] px-4 py-2 text-[10px] font-bold uppercase tracking-wide text-pv-text-faint">{title}</div>
+      <div className="divide-y divide-white/5">
+        {layers.map((layer) => {
+          const c = GUIDE_TONE[layer.tone];
+          return (
+            <div key={layer.name} className="p-3" style={{ background: tint(c, 4) }}>
+              <p className="mb-2 flex flex-wrap items-baseline gap-x-2 text-xs font-bold" style={{ color: c }}>
+                {layer.name}
+                {layer.note && <span className="text-[10px] font-normal text-pv-text-faint">{layer.note}</span>}
+              </p>
+              <dl className="grid gap-1.5">
+                {layer.fields.map((f) => (
+                  <div key={f.name} className="grid gap-x-3 gap-y-0.5 rounded-lg border px-2.5 py-1.5 sm:grid-cols-[9.5rem_10.5rem_minmax(0,1fr)]" style={{ borderColor: f.key ? tint(c, 45) : "rgba(255,255,255,0.06)", background: f.key ? tint(c, 8) : "transparent" }}>
+                    <dt className="text-[11px] font-semibold text-pv-text">{f.name}</dt>
+                    <dd className="pv-mono text-[11px] break-all" style={{ color: f.key ? c : undefined }}>
+                      {f.value}
+                    </dd>
+                    <dd className="text-[11.5px] leading-snug text-pv-text-muted">{f.why}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Ordered states: an even row with → arrows from the sm breakpoint, a vertical stack with ↓ arrows on phones. Lifecycles, progressions, etc. */
+export function StateTransition({ states }: { states: { label: string; detail?: ReactNode; tone?: GuideTone }[] }) {
+  return (
+    <ol className="grid gap-4 sm:gap-5 sm:[grid-template-columns:var(--st-cols)]" style={{ ["--st-cols" as string]: `repeat(${states.length}, minmax(0, 1fr))` }}>
+      {states.map((s, i) => {
+        const c = GUIDE_TONE[s.tone ?? "cyan"];
+        const last = i === states.length - 1;
+        return (
+          <li key={s.label} className="relative">
+            <div className="h-full rounded-xl border px-3 py-2" style={{ borderColor: tint(c, 40), background: tint(c, 7) }}>
+              <p className="text-[11px] font-bold uppercase tracking-wide" style={{ color: c }}>
+                {s.label}
+              </p>
+              {s.detail && <div className="mt-0.5 text-[11.5px] leading-snug text-pv-text-muted">{s.detail}</div>}
+            </div>
+            {!last && (
+              <>
+                <span className="absolute -right-[15px] top-1/2 hidden -translate-y-1/2 text-pv-text-faint sm:block" aria-hidden>
+                  →
+                </span>
+                <span className="absolute -bottom-[17px] left-5 text-pv-text-faint sm:hidden" aria-hidden>
+                  ↓
+                </span>
+              </>
+            )}
+          </li>
+        );
+      })}
+    </ol>
   );
 }

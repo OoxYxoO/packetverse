@@ -11,6 +11,7 @@ import {
   createFirstConnectionState,
   firstConnectionSteps,
   linksOnPath,
+  macTableDisplay,
   type FirstConnectionDeviceId,
   type FirstConnectionState,
 } from "@/lib/sim-engine/scenarios/firstConnection";
@@ -48,6 +49,12 @@ import { ARP_DEEP_DIVE_SECTIONS, ArpDeepDiveContent } from "./ArpDeepDiveContent
 import { TCP_DEEP_DIVE_SECTIONS, TcpDeepDiveContent } from "./TcpDeepDiveContent";
 import { FirstConnection2DView } from "./FirstConnection2DView";
 import { STEP_BRIEFING, packetCalloutFor, type StepBriefing } from "./presentation";
+import { CLITerminal, type CliSessionMap } from "@/components/protocol/CLITerminal";
+import type { CliVendor } from "@/lib/cli/types";
+import { firstConnectionCliSets } from "./cliAdapter";
+import { ArpLabWorkspace } from "./arp-lab/ArpLabWorkspace";
+
+const CLI_BOUNDARY_NOTE = "PacketVerse CLI supports the commands relevant to this lesson. It is a state-driven learning simulator, not a full network operating system emulator.";
 
 /** The one step whose primary teaching actor isn't the packet's own sender — everywhere else, sender-priority (matches this lesson's step-id-keyed traceFor, mirroring the OSPF/BGP Enterprise convention — see ARCHITECTURE.md §18). */
 const STEP_PRIMARY_DEVICE: Partial<Record<string, FirstConnectionDeviceId>> = { "frame-to-gateway": "switch" };
@@ -75,11 +82,14 @@ function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number
 
 const TCP_STATES = ["CLOSED", "SYN_SENT", "SYN_RECEIVED", "ESTABLISHED"];
 
-const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "ARP in the Laptop → Server journey", sections: FIRST_CONNECTION_GUIDE_SECTIONS, content: <FirstConnectionGuideContent /> },
-  { id: "arp", label: "ARP Deep Dive", hint: "How ARP works in general", sections: ARP_DEEP_DIVE_SECTIONS, content: <ArpDeepDiveContent /> },
-  { id: "tcp", label: "TCP Deep Dive", hint: "How TCP connections work", sections: TCP_DEEP_DIVE_SECTIONS, content: <TcpDeepDiveContent /> },
-];
+/** Guide tabs: "This Lesson" = where am I in the whole connection; "ARP Deep Dive" = the complete ARP lesson (can open the ARP Lab). */
+function guideTabs(onOpenLab: () => void): LessonGuideTab[] {
+  return [
+    { id: "lesson", label: "This Lesson", hint: "The whole Laptop → Server journey", sections: FIRST_CONNECTION_GUIDE_SECTIONS, content: <FirstConnectionGuideContent /> },
+    { id: "arp", label: "ARP Deep Dive", hint: "The complete ARP lesson", sections: ARP_DEEP_DIVE_SECTIONS, content: <ArpDeepDiveContent onOpenLab={onOpenLab} /> },
+    { id: "tcp", label: "TCP Deep Dive", hint: "How TCP connections work", sections: TCP_DEEP_DIVE_SECTIONS, content: <TcpDeepDiveContent /> },
+  ];
+}
 
 type SceneDimension = "3d" | "2d";
 
@@ -132,6 +142,26 @@ function OverviewTab({ explanation }: { explanation: NodeExplanation }) {
   );
 }
 
+/** Compact entry point to the optional ARP Lab — replaces the old always-expanded CLI section. */
+function ArpLabCard({ inArpPhase, onOpen }: { inArpPhase: boolean; onOpen: () => void }) {
+  return (
+    <GlassPanel className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-pv-text">
+          ARP Lab <span className="ml-1 rounded-full border border-pv-border px-2 py-0.5 align-middle text-[10px] font-normal text-pv-text-faint">optional</span>
+        </p>
+        <p className="mt-0.5 text-xs text-pv-text-muted">
+          {inArpPhase ? "Want to experiment instead of only watching? " : ""}
+          Experiment on the same network: send ARP packets, inspect live tables, and verify the result with Cisco or Junos CLI.
+        </p>
+      </div>
+      <Button size="sm" onClick={onOpen} className="shrink-0">
+        Open ARP Lab →
+      </Button>
+    </GlassPanel>
+  );
+}
+
 export default function FirstConnectionDemo() {
   const { engine, snapshot } = useScenarioEngine<FirstConnectionState>(createFirstConnectionState(), firstConnectionSteps);
   const [autoPlay, setAutoPlay] = useState(false);
@@ -150,6 +180,12 @@ export default function FirstConnectionDemo() {
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const [sceneDim, setSceneDim] = useState<SceneDimension>("3d");
   const [guideOpen, setGuideOpen] = useState(false);
+  const [cliVendor, setCliVendor] = useState<CliVendor>("cisco");
+  /** Guided-lesson CLI sessions (vendor × device) — separate from the ARP Lab's; survive explorer tab/device switches, cleared on Restart. */
+  const [guidedCliSessions, setGuidedCliSessions] = useState<CliSessionMap>({});
+  /** ARP Lab: an independent sandbox. Only these two flags live here — the lab's network state lives inside ArpLabWorkspace. */
+  const [labOpen, setLabOpen] = useState(false);
+  const [labMounted, setLabMounted] = useState(false);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -258,6 +294,12 @@ export default function FirstConnectionDemo() {
   const historicalDeviceId = historicalStep && historicalState ? deviceForStep(historicalStep.id, historicalPacket) : undefined;
   const historicalTrace = historicalDeviceId && historicalState ? traceFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
   const historicalInterfaces = historicalDeviceId && historicalState ? interfacesFor(historicalDeviceId, historicalState, historicalStep!.id) : undefined;
+
+  // CLI reads the SAME snapshot the historical inspector does — never live/future state while a historical cursor is active.
+  const cliState = historicalState ?? state;
+  const liveCliLabel = isComplete ? "Lesson complete" : `Step ${index + 1}: ${currentStep?.label ?? ""}`;
+  const cliContextLabel = historicalStep ? `Historical snapshot · ${historicalStep.label}` : `Live · ${liveCliLabel}`;
+  const historicalBadge = historicalStep ? <span className="rounded-md border border-pv-violet/50 bg-pv-violet/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-pv-violet">Historical snapshot</span> : undefined;
 
   function focusPanelFieldsFor(target: FocusTarget3D): { title: string; fields: { label: string; value: string }[] } {
     if (target.kind === "stage" && deviceTrace) {
@@ -369,6 +411,25 @@ export default function FirstConnectionDemo() {
     if (currentStep?.question) recordAnswer(optionId === currentStep.question.correctOptionId);
   };
 
+  /** Opening the lab pauses guided Auto-Play (no step change); the lab never reads or writes the ScenarioEngine. */
+  function openLab() {
+    setAutoPlay(false);
+    setLabMounted(true);
+    setLabOpen(true);
+  }
+  const arpPhaseStep = !isComplete && index <= firstConnectionSteps.findIndex((s) => s.id === "predict-next");
+  // Opening the lab from inside the guide closes the guide first (the lab is its own full-screen workspace).
+  const tabs = useMemo(
+    () =>
+      guideTabs(() => {
+        setGuideOpen(false);
+        setAutoPlay(false);
+        setLabMounted(true);
+        setLabOpen(true);
+      }),
+    [],
+  );
+
   const handleRestart = () => {
     engine.restart();
     setCameraMode("overview");
@@ -380,6 +441,7 @@ export default function FirstConnectionDemo() {
     setHistoricalIndex(undefined);
     setInspectorSurface("hop");
     setAutoPlay(false);
+    setGuidedCliSessions({});
   };
 
   const nextLabel = currentStep?.question && !lastAnswer ? "Answer to continue" : "Next Step →";
@@ -394,8 +456,34 @@ export default function FirstConnectionDemo() {
     const ifaceTab: DeviceExplorerTab = { id: "interfaces", label: "Interfaces", content: <InterfaceListTab interfaces={deviceInterfaces} selectedInterfaceId={selectedInterfaceId} onSelectInterface={setSelectedInterfaceId} /> };
     const overviewTab: DeviceExplorerTab = { id: "overview", label: "Overview", content: <OverviewTab explanation={nodeExplanation} /> };
     if (device === "laptop") return [overviewTab, ifaceTab, { id: "arp", label: "ARP Cache", content: <ARPTableViewer title="Laptop" entries={state.arpTable.laptop ?? {}} /> }, packetTab];
-    if (device === "switch") return [overviewTab, ifaceTab, { id: "mac", label: "MAC Table", content: <MACTableViewer title="Switch" entries={state.macTable.switch ?? {}} /> }, packetTab];
-    if (device === "router") return [overviewTab, ifaceTab, { id: "routes", label: "Routing Table", content: <RouteTableViewer title="Router" routes={state.routingTable.router} /> }, packetTab];
+    const cliTab = (cliDevice: "switch" | "router"): DeviceExplorerTab => ({
+      id: "cli",
+      label: "CLI",
+      content: (
+        <CLITerminal
+          commandSets={firstConnectionCliSets(cliDevice, cliState)}
+          sessions={guidedCliSessions}
+          onSessionsChange={setGuidedCliSessions}
+          stateVersion={JSON.stringify([cliState.arpTable, cliState.macTable])}
+          vendor={cliVendor}
+          onVendorChange={setCliVendor}
+          deviceRole={cliDevice === "switch" ? "Access Switch" : "Router"}
+          contextLabel={cliContextLabel}
+          badge={historicalBadge}
+          footer={CLI_BOUNDARY_NOTE}
+        />
+      ),
+    });
+    if (device === "switch") return [overviewTab, ifaceTab, { id: "mac", label: "MAC Table", content: <MACTableViewer title="Switch" entries={macTableDisplay(state.macTable.switch)} /> }, cliTab("switch"), packetTab];
+    if (device === "router")
+      return [
+        overviewTab,
+        ifaceTab,
+        { id: "routes", label: "Routing Table", content: <RouteTableViewer title="Router" routes={state.routingTable.router} /> },
+        { id: "arp", label: "ARP Table", content: <ARPTableViewer title="Router" entries={state.arpTable.router ?? {}} /> },
+        cliTab("router"),
+        packetTab,
+      ];
     return [overviewTab, ifaceTab, { id: "tcp", label: "TCP Connections", content: <TCPStatePanel tcpState={state.tcp.state} /> }, packetTab];
   };
 
@@ -413,7 +501,12 @@ export default function FirstConnectionDemo() {
             ARP, switching, routing, and the TCP handshake.
           </p>
         </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={openLab}>
+            ⚗ Practice ARP
+          </Button>
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
       </div>
 
       <div className="mb-6 flex gap-1.5 overflow-x-auto pb-2">
@@ -612,13 +705,16 @@ export default function FirstConnectionDemo() {
               </Button>
             </div>
           )}
+
+          <ArpLabCard inArpPhase={arpPhaseStep} onOpen={openLab} />
         </div>
 
         <div className="space-y-4">
           <PacketInspector packet={activePacket} focusLayerIndices={xrayMode ? focusIndices : undefined} />
           <TCPStatePanel tcpState={state.tcp.state} />
           <ARPTableViewer title="Laptop" entries={state.arpTable.laptop ?? {}} />
-          <MACTableViewer title="Switch" entries={state.macTable.switch ?? {}} />
+          <MACTableViewer title="Switch" entries={macTableDisplay(state.macTable.switch)} />
+          <ARPTableViewer title="Router" entries={state.arpTable.router ?? {}} />
           <RouteTableViewer title="Router" routes={state.routingTable.router ?? []} />
         </div>
       </div>
@@ -825,7 +921,9 @@ export default function FirstConnectionDemo() {
         />
       )}
 
-      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={GUIDE_TABS} />
+      {labMounted && <ArpLabWorkspace open={labOpen} onClose={() => setLabOpen(false)} vendor={cliVendor} onVendorChange={setCliVendor} />}
+
+      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={tabs} recommendation={arpPhaseStep ? { tabId: "arp", text: "You’re at an ARP step — the ARP Deep Dive explains exactly what is happening." } : undefined} />
     </div>
   );
 }

@@ -192,12 +192,13 @@ export function traceFor(device: FirstConnectionDeviceId, state: FirstConnection
         activeStageId: "decision",
         completedStageIds: ["ingress", "mac-lookup"],
         packetBefore: "MAC table: empty",
-        lookupType: "MAC Table Lookup",
+        packetAfter: `MAC table: ${ADDR.laptop.mac} → Fa0/1 (source MAC learned on ingress)`,
+        lookupType: "Source MAC Learning + Destination Lookup",
         lookupKey: "FF:FF:FF:FF:FF:FF (broadcast)",
-        lookupResult: "Broadcast destination — flood out every other port",
+        lookupResult: `Learned ${ADDR.laptop.mac} on Fa0/1; broadcast destination — flood out every other port`,
         packetBeforeFrames: arpFrames(),
         forwardingAction: "FLOOD",
-        reason: "A broadcast destination is never a MAC-table hit — it always floods, regardless of table state.",
+        reason: "The switch learns the frame's SOURCE MAC the moment it enters Fa0/1 — no ARP payload needed. A broadcast destination is never a MAC-table hit, so it still floods.",
       };
     }
     if (i === iArpReply) {
@@ -208,14 +209,14 @@ export function traceFor(device: FirstConnectionDeviceId, state: FirstConnection
         stages: SWITCH_STAGES,
         activeStageId: "egress",
         completedStageIds: ["ingress", "mac-lookup", "decision"],
-        packetBefore: "MAC table: empty",
+        packetBefore: `MAC table: ${ADDR.laptop.mac} → Fa0/1`,
         packetAfter: `MAC table: ${ADDR.laptop.mac} → Fa0/1, ${ADDR.gateway.mac} → Fa0/2`,
         lookupType: "Source MAC Learning + Destination Lookup",
         lookupKey: ADDR.laptop.mac,
-        lookupResult: "Both endpoints' MACs now known — reply forwarded as known unicast out Fa0/1",
+        lookupResult: `Learned ${ADDR.gateway.mac} on Fa0/2; destination ${ADDR.laptop.mac} already known on Fa0/1 — known unicast`,
         packetAfterFrames: arpFrames(),
         forwardingAction: "KNOWN UNICAST",
-        reason: "The switch learns a source MAC from every frame it forwards — by the time the reply arrives, it already knows both ports.",
+        reason: "The reply's SOURCE MAC teaches the switch where the Router lives. Its destination (the Laptop) was learned earlier from the request, so no flooding is needed.",
       };
     }
     if (i === iFrameToGw) {
@@ -249,11 +250,13 @@ export function traceFor(device: FirstConnectionDeviceId, state: FirstConnection
         stages: ROUTER_ARP_STAGES,
         activeStageId: "recognize-own-ip",
         completedStageIds: [],
+        packetBefore: "ARP table: empty",
+        packetAfter: `ARP table: ${ADDR.laptop.ip} → ${ADDR.laptop.mac} (from the request's sender fields)`,
         lookupType: "ARP Target IP Match",
         lookupKey: ADDR.gateway.ip,
-        lookupResult: "Matches this router's own ge-0/0/0 address",
+        lookupResult: `Matches this router's own ge-0/0/0 address — caches sender ${ADDR.laptop.ip} → ${ADDR.laptop.mac}`,
         packetBeforeFrames: arpFrames(),
-        reason: "Every device on the broadcast domain receives the request, but only the device that owns the target IP answers.",
+        reason: "Every device on the broadcast domain receives the request, but only the device that owns the target IP answers — and it caches the sender's mapping, since it is about to reply to it.",
       };
     }
     if (i === iArpReply || i === iPredictNext) {

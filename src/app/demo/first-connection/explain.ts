@@ -1,5 +1,5 @@
 import type { NodeExplanation } from "@/components/network3d/types";
-import { ADDR, firstConnectionSteps, type FirstConnectionDeviceId, type FirstConnectionState } from "@/lib/sim-engine/scenarios/firstConnection";
+import { ADDR, firstConnectionSteps, macTableDisplay, type FirstConnectionDeviceId, type FirstConnectionState } from "@/lib/sim-engine/scenarios/firstConnection";
 
 const stepIndex = (id: string) => firstConnectionSteps.findIndex((s) => s.id === id);
 
@@ -41,22 +41,22 @@ export function explainNode(state: FirstConnectionState, nodeId: FirstConnection
 
   if (nodeId === "switch") {
     let currentAction = "Idle — MAC table empty.";
-    if (i === stepIndex("arp-request")) currentAction = "Destination is broadcast — flooding out every port except the one it arrived on.";
-    else if (i === stepIndex("arp-reply")) currentAction = "Learning both endpoints' MACs from this exchange, forwarding the reply as known unicast.";
+    if (i === stepIndex("arp-request")) currentAction = `Learned source MAC ${ADDR.laptop.mac} on Fa0/1 as the request entered; destination is broadcast, so flooding out every other port.`;
+    else if (i === stepIndex("arp-reply")) currentAction = `Learned source MAC ${ADDR.gateway.mac} on Fa0/2 as the reply entered; the Laptop's MAC was already known, so the reply goes out Fa0/1 only.`;
     else if (macKnown) currentAction = "MAC table populated — forwarding as known unicast, no flooding.";
     return {
       ...base,
       controlPlaneRole: "Purely reactive — learns source MACs from frames it forwards; runs no protocol of its own.",
       dataPlaneRole: "Reads only the Ethernet destination MAC to decide flood vs. forward — never inspects the IP header underneath.",
       currentAction,
-      tables: [{ title: "MAC / CAM Table", rows: Object.entries(state.macTable.switch ?? {}).map(([mac, port]) => ({ label: mac, value: port })) }],
+      tables: [{ title: "MAC / CAM Table", rows: Object.entries(macTableDisplay(state.macTable.switch)).map(([mac, port]) => ({ label: mac, value: port })) }],
       note: "A switch's forwarding decision is Layer 2 only — it has no idea what IP address (or subnet) is inside the frame.",
     };
   }
 
   if (nodeId === "router") {
     let currentAction = "Idle.";
-    if (i === stepIndex("arp-request")) currentAction = "Recognized 192.168.10.1 as its own address — preparing a unicast reply.";
+    if (i === stepIndex("arp-request")) currentAction = `Recognized 192.168.10.1 as its own address and cached the sender: ${ADDR.laptop.ip} → ${ADDR.laptop.mac}. Preparing a unicast reply.`;
     else if (i === stepIndex("arp-reply") || i === stepIndex("predict-next")) currentAction = `Replied directly to the Laptop: ${ADDR.gateway.ip} is at ${ADDR.gateway.mac}.`;
     else if (i === stepIndex("frame-to-gateway")) currentAction = "Looked up 10.20.20.20 in its routing table — matched the directly-connected Server segment.";
     else if (i === stepIndex("router-forwards")) currentAction = "Rewrote the Ethernet header for the Server segment; the IP header is untouched.";
@@ -66,7 +66,10 @@ export function explainNode(state: FirstConnectionState, nodeId: FirstConnection
       controlPlaneRole: "Answers ARP for its own interface IPs; otherwise runs no dynamic routing protocol in this lesson (routes are directly connected / static default).",
       dataPlaneRole: "Reads only the IP destination to choose an egress interface, then builds a brand-new Ethernet header for that segment — the IP header rides through unmodified.",
       currentAction,
-      tables: [{ title: "Routing Table", rows: state.routingTable.router.map((r) => ({ label: r.network, value: `${r.iface}${r.matched ? " ◀ matched" : ""}` })) }],
+      tables: [
+        { title: "ARP Table", rows: Object.entries(state.arpTable.router ?? {}).map(([ip, mac]) => ({ label: ip, value: mac })) },
+        { title: "Routing Table", rows: state.routingTable.router.map((r) => ({ label: r.network, value: `${r.iface}${r.matched ? " ◀ matched" : ""}` })) },
+      ],
     };
   }
 
