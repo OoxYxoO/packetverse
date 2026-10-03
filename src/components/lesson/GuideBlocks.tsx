@@ -381,3 +381,71 @@ export function StateTransition({ states }: { states: { label: string; detail?: 
     </ol>
   );
 }
+
+/* ------------------------------------------------------------------------
+ * Troubleshooting & misconception primitives — every converted guide has
+ * these sections (Learning Contract); the lesson supplies all content.
+ * ---------------------------------------------------------------------- */
+
+/** Evidence-driven troubleshooting: an ordered list of engineering questions, each with where to look. */
+export function TroubleshootingFlow({ steps }: { steps: { question: string; look: ReactNode }[] }) {
+  return (
+    <ol className="space-y-1.5">
+      {steps.map((s, i) => (
+        <li key={s.question} className="grid gap-x-3 gap-y-0.5 rounded-lg border border-white/10 px-3 py-2 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+          <p className="text-xs font-semibold text-pv-text">
+            <span className="pv-mono mr-1.5 text-pv-cyan-soft">{String(i + 1).padStart(2, "0")}</span>
+            {s.question}
+          </p>
+          <div className="text-[11.5px] leading-snug text-pv-text-muted">{s.look}</div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** Failure signatures: where the process stops → what to investigate. */
+export function FailureSignatures({ items }: { items: { tag: string; title: string; tone: GuideTone; points: string[] }[] }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {items.map((c) => {
+        const tone = GUIDE_TONE[c.tone];
+        return (
+          <div key={c.tag} className="rounded-xl border p-3" style={{ borderColor: tint(tone, 35), background: tint(tone, 5) }}>
+            <p className="mb-1 flex items-center gap-2 text-xs font-bold text-pv-text">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full pv-mono text-[10px]" style={{ background: tint(tone, 20), color: tone }}>
+                {c.tag}
+              </span>
+              {c.title}
+            </p>
+            <ul className="space-y-0.5 text-[11.5px] text-pv-text-muted">
+              {c.points.map((p) => (
+                <li key={p}>▸ {p}</li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Myth → correction pairs. */
+export function Misconceptions({ items }: { items: { myth: string; correction: ReactNode }[] }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {items.map(({ myth, correction }) => (
+        <div key={myth} className="rounded-xl border border-white/10 p-3">
+          <p className="text-xs text-pv-text">
+            <span className="mr-1.5 font-bold text-pv-danger">✕ Myth</span>
+            {myth}
+          </p>
+          <p className="mt-1 text-xs text-pv-text-muted">
+            <span className="mr-1.5 font-bold text-pv-success">✓ Correction</span>
+            {correction}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}

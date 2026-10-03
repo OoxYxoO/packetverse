@@ -1,7 +1,19 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { clsx } from "clsx";
+import {
+  BoardSection,
+  CommandHelp,
+  DeepenUnderstanding,
+  EngineerCheck as GenericEngineerCheck,
+  KeyLesson,
+  NextAction,
+  PredictionBlock,
+  StateDeltaChips,
+  TeachingBoard,
+  TeachingEventRows,
+  Verdict,
+} from "@/components/practice-lab/TeachingBoard";
 import type { CliVendor } from "@/lib/cli/types";
 import { ADDR, SUBNETS } from "@/lib/sim-engine/scenarios/firstConnection";
 import { ARP_LAB_REMOTE_DESTINATION, isInFlight, type ArpLabState, type ArpLabTable } from "@/lib/sim-engine/scenarios/arpLab";
@@ -49,71 +61,27 @@ interface BoardProps {
   onShowLaptop: () => void;
 }
 
-// ------------------------------------------------------------ building blocks
+// ------------------------------------------------------------ ARP adapters over the generic Teaching Board primitives
+// The primitives (components/practice-lab/TeachingBoard) are protocol-agnostic; these
+// thin wrappers add only ARP knowledge: which tables exist, how inspection keys prove
+// a fact, how predictions are stored, and which commands answer which question.
 
 const Mono = ({ children }: { children: ReactNode }) => <span className="pv-mono text-[11.5px] text-pv-text">{children}</span>;
 
-function Section({ label, tone = "muted", children }: { label: string; tone?: "muted" | "cyan" | "violet" | "success"; children: ReactNode }) {
-  return (
-    <div>
-      <p className={clsx("mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em]", tone === "cyan" ? "text-pv-cyan-soft" : tone === "violet" ? "text-pv-violet" : tone === "success" ? "text-pv-success" : "text-pv-text-faint")}>{label}</p>
-      {children}
-    </div>
-  );
-}
+const Section = BoardSection;
+const Board = TeachingBoard;
+const Next = NextAction;
 
 type RowTone = "device" | "broadcast" | "boundary" | "result";
-/** `short` is what phones show (the full `body` from the sm breakpoint up) so the board stays one screen-ish on mobile. */
 function EventRows({ rows }: { rows: { who: string; tone?: RowTone; body: ReactNode; short?: ReactNode }[] }) {
-  return (
-    <ol className="space-y-1.5">
-      {rows.map((r, i) => (
-        <li key={r.who} className="flex gap-2.5">
-          <span
-            className={clsx(
-              "mt-0.5 flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full border px-1 pv-mono text-[10px] font-bold",
-              r.tone === "broadcast" || r.tone === "boundary" ? "border-pv-warning/60 text-pv-warning" : r.tone === "result" ? "border-pv-success/60 text-pv-success" : "border-pv-cyan/50 text-pv-cyan-soft",
-            )}
-            aria-hidden
-          >
-            {i + 1}
-          </span>
-          <div className="min-w-0 text-[12.5px] leading-snug text-pv-text-muted">
-            <span className={clsx("mr-1.5 text-[11px] font-bold uppercase tracking-wide", r.tone === "broadcast" || r.tone === "boundary" ? "text-pv-warning" : "text-pv-text")}>{r.who}</span>
-            <span className="sm:hidden">{r.short ?? r.body}</span>
-            <span className="hidden sm:inline">{r.body}</span>
-          </div>
-        </li>
-      ))}
-    </ol>
-  );
+  return <TeachingEventRows rows={rows.map((r) => ({ ...r, tone: r.tone === "broadcast" || r.tone === "boundary" ? "attention" : r.tone === "result" ? "result" : "device" }))} />;
 }
 
 const TABLE_LABEL: Record<ArpLabTable, string> = { "laptop-arp": "Laptop ARP", "switch-mac": "SW1 MAC", "router-arp": "R1 ARP" };
 
-/** Delta chips computed from what the latest frame actually taught — a summary only; exact entries stay in the live panels. */
+/** Delta chips computed from what the latest frame actually taught. */
 function DeltaChips({ lab }: { lab: ArpLabState }) {
-  return (
-    <ul className="flex flex-wrap gap-1.5" aria-label="State changes from this event">
-      {(["laptop-arp", "switch-mac", "router-arp"] as const).map((t) => {
-        const n = lab.learned.filter((l) => l.table === t).length;
-        return (
-          <li key={t} className={clsx("rounded-lg border px-2 py-1 text-[11px]", n ? "border-pv-success/50 bg-pv-success/10 text-pv-success" : "border-pv-border text-pv-text-faint")}>
-            <span className="font-semibold text-pv-text">{TABLE_LABEL[t]}</span> <span className="pv-mono font-bold">{n ? `+${n} ${n === 1 ? "ENTRY" : "ENTRIES"}` : "UNCHANGED"}</span>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function KeyLesson({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-xl border border-pv-violet/40 bg-pv-violet/[0.07] p-3">
-      <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.12em] text-pv-violet">Key lesson</p>
-      <div className="text-[13px] leading-snug text-pv-text">{children}</div>
-    </div>
-  );
+  return <StateDeltaChips deltas={(["laptop-arp", "switch-mac", "router-arp"] as const).map((t) => ({ label: TABLE_LABEL[t], count: lab.learned.filter((l) => l.table === t).length }))} />;
 }
 
 interface CheckFact {
@@ -124,147 +92,43 @@ interface CheckFact {
   laptop?: boolean;
 }
 
+/** ARP engineer check: a fact is proven when its inspection key was recorded (a successful command after the frame landed, or opening the Laptop). */
 function EngineerCheck({ intro, facts, inspected, onShowLaptop }: { intro: string; facts: CheckFact[]; inspected: Set<string>; onShowLaptop: () => void }) {
-  const done = facts.filter((f) => inspected.has(f.key)).length;
   return (
-    <Section label={`Engineer check · ${done}/${facts.length} proven`} tone="success">
-      <p className="mb-1.5 hidden text-[12px] text-pv-text-muted sm:block">{intro}</p>
-      <ul className="space-y-1">
-        {facts.map((f) => {
-          const ok = inspected.has(f.key);
-          return (
-            <li key={f.key} className="flex items-start gap-2 text-[12px]">
-              <span aria-hidden className={clsx("mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border text-[10px]", ok ? "border-pv-success bg-pv-success/20 text-pv-success" : "border-pv-border text-transparent")}>
-                ✓
-              </span>
-              <span className="min-w-0">
-                <span className="sr-only">{ok ? "Proven: " : "Not yet proven: "}</span>
-                <span className={ok ? "text-pv-text" : "text-pv-text-muted"}>{ok ? f.confirmed : f.text}</span>
-                {f.laptop && !ok && (
-                  <button type="button" onClick={onShowLaptop} className="ml-1.5 text-[11px] font-semibold text-pv-cyan-soft underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-pv-cyan">
-                    open the Laptop
-                  </button>
-                )}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
-      {done < facts.length && <p className="mt-1 hidden text-[10.5px] text-pv-text-faint sm:block">Ticks itself when you query the device in the terminal. Optional — it never blocks the lab.</p>}
-    </Section>
+    <GenericEngineerCheck
+      intro={intro}
+      footnote="Ticks itself when you query the device in the terminal. Optional — it never blocks the lab."
+      facts={facts.map((f) => ({ id: f.key, text: f.text, provenText: f.confirmed, proven: inspected.has(f.key), action: f.laptop ? { label: "open the Laptop", onClick: onShowLaptop } : undefined }))}
+    />
   );
 }
 
+/** Lab-local single-choice prediction stored in the ARP lab's challenge state. */
 function Choice({ id, prompt, options, challenges, onAnswer, verdict }: { id: string; prompt: ReactNode; options: { id: string; label: string }[]; challenges: LabChallengeState; onAnswer: BoardProps["onAnswer"]; verdict?: (picked: string) => ReactNode }) {
   const picked = challenges.answers[id]?.[0];
-  return (
-    <Section label="Predict" tone="violet">
-      <fieldset className="min-w-0">
-        <legend className="mb-1.5 text-[13px] font-semibold text-pv-text">{prompt}</legend>
-        <div className="grid grid-cols-2 gap-1.5" role="radiogroup">
-          {options.map((o) => (
-            <button
-              key={o.id}
-              type="button"
-              role="radio"
-              aria-checked={picked === o.id}
-              onClick={() => onAnswer(id, [o.id])}
-              className={clsx(
-                "rounded-lg border px-2.5 py-1.5 text-left text-[12px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-pv-cyan",
-                picked === o.id ? "border-pv-violet/60 bg-pv-violet/10 text-pv-text" : "border-pv-border text-pv-text-muted hover:border-pv-violet/40 hover:text-pv-text",
-              )}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      </fieldset>
-      {picked && verdict && <div className="mt-2">{verdict(picked)}</div>}
-    </Section>
-  );
+  return <PredictionBlock prompt={prompt} options={options} value={picked ? [picked] : []} onChange={(v) => onAnswer(id, v)} verdict={picked && verdict ? verdict(picked) : undefined} />;
 }
 
-function Verdict({ correct, children }: { correct: boolean; children: ReactNode }) {
-  return (
-    <p className={clsx("rounded-lg border p-2 text-[12px] leading-snug text-pv-text-muted", correct ? "border-pv-success/40 bg-pv-success/5" : "border-pv-warning/40 bg-pv-warning/5")}>
-      <span className={clsx("font-semibold", correct ? "text-pv-success" : "text-pv-warning")}>{correct ? "Correct. " : "Not quite. "}</span>
-      {children}
-    </p>
-  );
-}
-
-function Next({ children }: { children: ReactNode }) {
-  return (
-    <p className="rounded-lg border border-dashed border-pv-cyan/50 bg-pv-cyan/[0.04] px-3 py-2 text-[12.5px] font-semibold text-pv-cyan-soft">
-      <span className="mr-1 text-[10px] font-bold uppercase tracking-[0.12em]">Next →</span>
-      {children}
-    </p>
-  );
-}
-
-function CommandHelp({ vendor, onPutInTerminal }: { vendor: CliVendor; onPutInTerminal: BoardProps["onPutInTerminal"] }) {
+/** ARP's "Deepen understanding": context questions plus MAC → PORT / IP → MAC command help. */
+function Deepen({ qa, vendor, onPutInTerminal }: { qa: { q: string; a: ReactNode }[]; vendor: CliVendor; onPutInTerminal: BoardProps["onPutInTerminal"] }) {
   const items: { q: string; device: CliDevice; cmd: TableCmd }[] = [
     { q: "How do I inspect MAC → PORT?", device: "switch", cmd: "mac-table" },
     { q: "How do I inspect IP → MAC?", device: "router", cmd: "arp-table" },
   ];
   return (
-    <div className="space-y-2">
-      {items.map((it) => (
-        <div key={it.cmd}>
-          <p className="font-semibold text-pv-text">{it.q}</p>
-          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-            <span className="text-pv-text-faint">Cisco</span>
-            <code className="rounded bg-black/40 px-1.5 py-0.5 pv-mono text-[11px] text-pv-text">{LAB_TABLE_COMMAND.cisco[it.cmd]}</code>
-            <span className="text-pv-text-faint">Junos</span>
-            <code className="rounded bg-black/40 px-1.5 py-0.5 pv-mono text-[11px] text-pv-text">{LAB_TABLE_COMMAND.juniper[it.cmd]}</code>
-            <button
-              type="button"
-              onClick={() => onPutInTerminal(it.device, LAB_TABLE_COMMAND[vendor][it.cmd])}
-              aria-label={`Put "${LAB_TABLE_COMMAND[vendor][it.cmd]}" in the ${it.device === "switch" ? "SW1" : "R1"} terminal (you still press Enter)`}
-              className="rounded-md border border-pv-border px-1.5 py-0.5 text-[10.5px] font-semibold text-pv-text-faint hover:text-pv-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-pv-cyan"
-            >
-              Put in terminal
-            </button>
-          </div>
-        </div>
-      ))}
-      <p className="text-[10.5px] text-pv-text-faint">The command is only placed in the input. You still press Enter.</p>
-    </div>
-  );
-}
-
-/** The ONE collapsed area: context-sensitive questions plus command help. Nothing essential lives here. */
-function Deepen({ qa, vendor, onPutInTerminal }: { qa: { q: string; a: ReactNode }[]; vendor: CliVendor; onPutInTerminal: BoardProps["onPutInTerminal"] }) {
-  return (
-    <details className="group rounded-lg border border-pv-border p-2.5">
-      <summary className="cursor-pointer text-[12px] font-semibold text-pv-text-muted outline-none hover:text-pv-text focus-visible:text-pv-cyan-soft">Deepen understanding</summary>
-      <div className="mt-2.5 space-y-3 text-[12px] leading-snug text-pv-text-muted">
-        {qa.map((x) => (
-          <div key={x.q}>
-            <p className="font-semibold text-pv-text">{x.q}</p>
-            <div className="mt-0.5">{x.a}</div>
-          </div>
-        ))}
-        <div className="border-t border-pv-border pt-2.5">
-          <CommandHelp vendor={vendor} onPutInTerminal={onPutInTerminal} />
-        </div>
-      </div>
-    </details>
-  );
-}
-
-function Board({ phase, title, summary, children }: { phase: string; title: string; summary: ReactNode; children: ReactNode }) {
-  return (
-    <section aria-labelledby="lab-board-title" className="space-y-3.5 rounded-2xl border border-pv-cyan/30 bg-gradient-to-b from-pv-cyan/[0.06] to-transparent p-3.5 sm:p-4">
-      <header>
-        <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-pv-cyan-soft">{phase}</p>
-        <h3 id="lab-board-title" className="mt-0.5 text-[17px] font-semibold leading-tight text-pv-text sm:text-lg">
-          {title}
-        </h3>
-        <p className="mt-1 text-[13px] leading-snug text-pv-text-muted">{summary}</p>
-      </header>
-      {children}
-    </section>
+    <DeepenUnderstanding qa={qa}>
+      <CommandHelp
+        items={items.map((it) => ({
+          question: it.q,
+          commands: [
+            { label: "Cisco", command: LAB_TABLE_COMMAND.cisco[it.cmd] },
+            { label: "Junos", command: LAB_TABLE_COMMAND.juniper[it.cmd] },
+          ],
+          onPut: () => onPutInTerminal(it.device, LAB_TABLE_COMMAND[vendor][it.cmd]),
+          putLabel: `Put "${LAB_TABLE_COMMAND[vendor][it.cmd]}" in the ${it.device === "switch" ? "SW1" : "R1"} terminal (you still press Enter)`,
+        }))}
+      />
+    </DeepenUnderstanding>
   );
 }
 

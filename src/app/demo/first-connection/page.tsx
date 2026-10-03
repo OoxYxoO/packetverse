@@ -53,6 +53,7 @@ import { CLITerminal, type CliSessionMap } from "@/components/protocol/CLITermin
 import type { CliVendor } from "@/lib/cli/types";
 import { firstConnectionCliSets } from "./cliAdapter";
 import { ArpLabWorkspace } from "./arp-lab/ArpLabWorkspace";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab, type PracticeLabEntry } from "@/components/practice-lab/PracticeLabLauncher";
 
 const CLI_BOUNDARY_NOTE = "PacketVerse CLI supports the commands relevant to this lesson. It is a state-driven learning simulator, not a full network operating system emulator.";
 
@@ -142,25 +143,12 @@ function OverviewTab({ explanation }: { explanation: NodeExplanation }) {
   );
 }
 
-/** Compact entry point to the optional ARP Lab — replaces the old always-expanded CLI section. */
-function ArpLabCard({ inArpPhase, onOpen }: { inArpPhase: boolean; onOpen: () => void }) {
-  return (
-    <GlassPanel className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="min-w-0">
-        <p className="text-sm font-semibold text-pv-text">
-          ARP Lab <span className="ml-1 rounded-full border border-pv-border px-2 py-0.5 align-middle text-[10px] font-normal text-pv-text-faint">optional</span>
-        </p>
-        <p className="mt-0.5 text-xs text-pv-text-muted">
-          {inArpPhase ? "Want to experiment instead of only watching? " : ""}
-          Experiment on the same network: send ARP packets, inspect live tables, and verify the result with Cisco or Junos CLI.
-        </p>
-      </div>
-      <Button size="sm" onClick={onOpen} className="shrink-0">
-        Open ARP Lab →
-      </Button>
-    </GlassPanel>
-  );
-}
+/** Lesson-level entry for the optional ARP Lab (rendered by the generic Practice Lab launcher). */
+const ARP_LAB_ENTRY: PracticeLabEntry = {
+  title: "ARP Lab",
+  description: "Experiment on the same network: send ARP packets, inspect live tables, and verify the result with Cisco or Junos CLI.",
+  buttonLabel: "Practice ARP",
+};
 
 export default function FirstConnectionDemo() {
   const { engine, snapshot } = useScenarioEngine<FirstConnectionState>(createFirstConnectionState(), firstConnectionSteps);
@@ -183,9 +171,8 @@ export default function FirstConnectionDemo() {
   const [cliVendor, setCliVendor] = useState<CliVendor>("cisco");
   /** Guided-lesson CLI sessions (vendor × device) — separate from the ARP Lab's; survive explorer tab/device switches, cleared on Restart. */
   const [guidedCliSessions, setGuidedCliSessions] = useState<CliSessionMap>({});
-  /** ARP Lab: an independent sandbox. Only these two flags live here — the lab's network state lives inside ArpLabWorkspace. */
-  const [labOpen, setLabOpen] = useState(false);
-  const [labMounted, setLabMounted] = useState(false);
+  /** ARP Lab: an independent sandbox. Only open/mounted flags live here; opening it pauses guided Auto-Play (no step change). */
+  const arpLab = usePracticeLab(() => setAutoPlay(false));
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
   const unlockAchievement = useProgressStore((s) => s.unlockAchievement);
@@ -411,23 +398,16 @@ export default function FirstConnectionDemo() {
     if (currentStep?.question) recordAnswer(optionId === currentStep.question.correctOptionId);
   };
 
-  /** Opening the lab pauses guided Auto-Play (no step change); the lab never reads or writes the ScenarioEngine. */
-  function openLab() {
-    setAutoPlay(false);
-    setLabMounted(true);
-    setLabOpen(true);
-  }
   const arpPhaseStep = !isComplete && index <= firstConnectionSteps.findIndex((s) => s.id === "predict-next");
   // Opening the lab from inside the guide closes the guide first (the lab is its own full-screen workspace).
+  const { openLab } = arpLab;
   const tabs = useMemo(
     () =>
       guideTabs(() => {
         setGuideOpen(false);
-        setAutoPlay(false);
-        setLabMounted(true);
-        setLabOpen(true);
+        openLab();
       }),
-    [],
+    [openLab],
   );
 
   const handleRestart = () => {
@@ -502,9 +482,7 @@ export default function FirstConnectionDemo() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={openLab}>
-            ⚗ Practice ARP
-          </Button>
+          <PracticeLabButton label={ARP_LAB_ENTRY.buttonLabel} onOpen={arpLab.openLab} />
           <LessonGuideButton onClick={() => setGuideOpen(true)} />
         </div>
       </div>
@@ -706,7 +684,7 @@ export default function FirstConnectionDemo() {
             </div>
           )}
 
-          <ArpLabCard inArpPhase={arpPhaseStep} onOpen={openLab} />
+          <PracticeLabCard entry={ARP_LAB_ENTRY} contextNote={arpPhaseStep ? "Want to experiment instead of only watching?" : undefined} onOpen={arpLab.openLab} />
         </div>
 
         <div className="space-y-4">
@@ -921,7 +899,7 @@ export default function FirstConnectionDemo() {
         />
       )}
 
-      {labMounted && <ArpLabWorkspace open={labOpen} onClose={() => setLabOpen(false)} vendor={cliVendor} onVendorChange={setCliVendor} />}
+      {arpLab.mounted && <ArpLabWorkspace open={arpLab.open} onClose={arpLab.closeLab} vendor={cliVendor} onVendorChange={setCliVendor} />}
 
       <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Your First Connection" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={tabs} recommendation={arpPhaseStep ? { tabId: "arp", text: "You’re at an ARP step — the ARP Deep Dive explains exactly what is happening." } : undefined} />
     </div>

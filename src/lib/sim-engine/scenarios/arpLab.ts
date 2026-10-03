@@ -1,4 +1,5 @@
 import type { PacketVisual } from "../types";
+import type { LabModel } from "@/lib/practice-lab/types";
 import { ADDR, SWITCH_PORTS, arpReplyPacket, arpRequestPacket, gatewayFramePacket, type SwitchPortId } from "./firstConnection";
 
 /**
@@ -208,6 +209,20 @@ export function deliverTransmission(state: ArpLabState, kind: ArpLabTransmission
   while (s.transit && !s.transit.done && s !== state) s = arriveNextHop(s);
   return s;
 }
+
+/**
+ * ARP Lab model for the generic Practice Lab runner. All ARP truth stays
+ * here: what a transmission does when it starts and at each arrival. The
+ * revision changes exactly when an inspectable table changes, which drives
+ * the CLI's "Network state changed" hint.
+ */
+export const ARP_LAB_MODEL: LabModel<ArpLabState, ArpLabTransmissionKind> = {
+  initial: createArpLabState,
+  hops: (_state, kind) => ARP_LAB_PATHS[kind].length - 1,
+  start: startTransmission,
+  arrive: arriveNextHop,
+  revision: (s) => `${Object.keys(s.laptopArp).length}:${Object.keys(s.routerArp).length}:${Object.keys(s.switchMac).length}`,
+};
 
 /** Why a given table entry exists — the explanation behind "Why?". */
 export function whyLearned(table: ArpLabTable, key: string): string {

@@ -28,6 +28,7 @@ import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/Packe
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, DeviceInterfaceData, DeviceProcessingTrace, InspectorSurface, Link3DData, LinkVisualState, Node3DStatus, NodeExplanation, PacketCallout3D, PacketStackFrame } from "@/components/network3d/types";
 import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "./LessonGuideDialog";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab, type PracticeLabEntry } from "@/components/practice-lab/PracticeLabLauncher";
 import { MissionBriefingCard, MissionBriefingStrip } from "./MissionBriefingCard";
 import { resolveBriefing, type BriefingPhaseDef, type BriefingStepNote } from "./briefing";
 import { bubblePacket } from "./mplsStack";
@@ -96,6 +97,18 @@ export interface FundamentalsLessonConfig<S extends { hops: FundHop[] }> {
   /** Compact facts under the packet inspector (e.g. a MAC table), from the live state. */
   sidePanel?: (s: S) => ReactNode;
   complete: { badge: string; title: string; message: string };
+  /**
+   * Optional Practice Lab (Learning Contract). Absent → the lesson renders
+   * exactly as before. The lab is a sandbox: it gets no engine and no
+   * progress access from the shell — only open/close.
+   */
+  practiceLab?: {
+    entry: PracticeLabEntry;
+    /** Extra sentence on the card while the current step makes the lab especially relevant. */
+    contextNote?: (stepId: string | undefined, state: S) => string | undefined;
+    /** The lab workspace (typically built on PracticeLabShell). Mounted on first open, kept mounted so its session survives closing. */
+    render: (props: { open: boolean; onClose: () => void }) => ReactNode;
+  };
 }
 
 const NARROW_QUERY = "(max-width: 640px)";
@@ -119,6 +132,8 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
   const { engine, snapshot } = useScenarioEngine<S>(c.createState(), c.steps);
   const narrow = useNarrow();
   const [autoPlay, setAutoPlay] = useState(false);
+  /** Optional Practice Lab flags (inert when the lesson supplies no lab). Opening it pauses Auto-Play, nothing else. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
   const [speed, setSpeed] = useState<0.5 | 1 | 2>(1);
   const [viewMode, setViewMode] = useState<"physical" | "3d">("physical");
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(undefined);
@@ -381,8 +396,16 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
           <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">{c.title}</h1>
           <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">{c.intro}</p>
         </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        {c.practiceLab ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <PracticeLabButton label={c.practiceLab.entry.buttonLabel} onOpen={practiceLab.openLab} />
+            <LessonGuideButton onClick={() => setGuideOpen(true)} />
+          </div>
+        ) : (
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        )}
         <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title={c.guide.title} subtitle={c.guide.subtitle} tabs={c.guide.tabs} />
+        {c.practiceLab && practiceLab.mounted && c.practiceLab.render({ open: practiceLab.open, onClose: practiceLab.closeLab })}
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -500,6 +523,8 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
               </Button>
             </div>
           )}
+
+          {c.practiceLab && <PracticeLabCard entry={c.practiceLab.entry} contextNote={c.practiceLab.contextNote?.(currentStep?.id, state)} onOpen={practiceLab.openLab} />}
         </div>
 
         <div className="min-w-0 space-y-4">

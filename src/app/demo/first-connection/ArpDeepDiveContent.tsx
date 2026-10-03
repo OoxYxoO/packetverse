@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Callout, ChecklistCard, CompareCards, DiagramFrame, FlowSteps, GuideSection, Mono, PacketAnatomy, StateTransition } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DiagramFrame, FailureSignatures, FlowSteps, GuideSection, Misconceptions, Mono, PacketAnatomy, StateTransition, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { ExplainIt, KnowledgeCheck, KnowledgeQuiz, PracticeBridge, type KnowledgeQuestion } from "@/components/lesson/GuideInteractive";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { executeCli } from "@/lib/cli/parser";
@@ -644,46 +644,19 @@ function TroubleshootFlow() {
     ["Does my ARP cache update?", `The host now maps ${GW.ip} → ${GW.mac}.`],
     ["Can I now build and send the frame?", "If ARP works but traffic still fails, the problem is above Layer 2 — keep going up the stack."],
   ];
-  return (
-    <ol className="space-y-1.5">
-      {steps.map(([q, look], i) => (
-        <li key={q} className="grid gap-x-3 gap-y-0.5 rounded-lg border border-white/10 px-3 py-2 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-          <p className="text-xs font-semibold text-pv-text">
-            <span className="pv-mono mr-1.5 text-pv-cyan-soft">{String(i + 1).padStart(2, "0")}</span>
-            {q}
-          </p>
-          <p className="text-[11.5px] leading-snug text-pv-text-muted">{look}</p>
-        </li>
-      ))}
-    </ol>
-  );
+  return <TroubleshootingFlow steps={steps.map(([question, look]) => ({ question, look }))} />;
 }
 
 function FailureCards() {
-  const cards: { tag: string; title: string; tone: string; points: string[] }[] = [
-    { tag: "A", title: "No ARP Request leaves", tone: C.danger, points: ["Host addressing, prefix or routing decision", "Interface down or disabled", "An existing (possibly wrong) cache entry is used instead"] },
-    { tag: "B", title: "Request leaves, no reply", tone: C.arp, points: ["Wrong VLAN or a broken Layer-2 path", "Target down or not present", "Requesting the wrong target IP", "Security/filtering dropping it"] },
-    { tag: "C", title: "Reply sent, host never gets it", tone: "#8b8cf8", points: ["Layer-2 return path or switching state", "Filtering or security features on the return path"] },
-    { tag: "D", title: "ARP entry exists, traffic still fails", tone: C.ip, points: ["ARP only proves local Layer-2 neighbor resolution", "Next suspects: routing, firewall, TCP/UDP, the application"] },
-  ];
   return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {cards.map((c) => (
-        <div key={c.tag} className="rounded-xl border p-3" style={{ borderColor: `${c.tone}55`, background: `${c.tone}0b` }}>
-          <p className="mb-1 flex items-center gap-2 text-xs font-bold text-pv-text">
-            <span className="flex h-5 w-5 items-center justify-center rounded-full pv-mono text-[10px]" style={{ background: `${c.tone}33`, color: c.tone }}>
-              {c.tag}
-            </span>
-            {c.title}
-          </p>
-          <ul className="space-y-0.5 text-[11.5px] text-pv-text-muted">
-            {c.points.map((p) => (
-              <li key={p}>▸ {p}</li>
-            ))}
-          </ul>
-        </div>
-      ))}
-    </div>
+    <FailureSignatures
+      items={[
+        { tag: "A", title: "No ARP Request leaves", tone: "danger", points: ["Host addressing, prefix or routing decision", "Interface down or disabled", "An existing (possibly wrong) cache entry is used instead"] },
+        { tag: "B", title: "Request leaves, no reply", tone: "arp", points: ["Wrong VLAN or a broken Layer-2 path", "Target down or not present", "Requesting the wrong target IP", "Security/filtering dropping it"] },
+        { tag: "C", title: "Reply sent, host never gets it", tone: "violet", points: ["Layer-2 return path or switching state", "Filtering or security features on the return path"] },
+        { tag: "D", title: "ARP entry exists, traffic still fails", tone: "ip", points: ["ARP only proves local Layer-2 neighbor resolution", "Next suspects: routing, firewall, TCP/UDP, the application"] },
+      ]}
+    />
   );
 }
 
@@ -696,22 +669,7 @@ function Myths() {
     ["The destination IP changes to the gateway IP.", <>The IPv4 destination stays the <Strong>Server</Strong>. Only the Ethernet destination uses the gateway’s MAC.</>],
     ["IPv6 uses ARP too.", <>IPv6 uses <Strong>Neighbor Discovery</Strong> (ICMPv6) instead.</>],
   ];
-  return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {items.map(([myth, fix]) => (
-        <div key={myth} className="rounded-xl border border-white/10 p-3">
-          <p className="text-xs text-pv-text">
-            <span className="mr-1.5 font-bold text-pv-danger">✕ Myth</span>
-            {myth}
-          </p>
-          <p className="mt-1 text-xs text-pv-text-muted">
-            <span className="mr-1.5 font-bold text-pv-success">✓ Correction</span>
-            {fix}
-          </p>
-        </div>
-      ))}
-    </div>
-  );
+  return <Misconceptions items={items.map(([myth, correction]) => ({ myth, correction }))} />;
 }
 
 // ------------------------------------------------------------------ questions
