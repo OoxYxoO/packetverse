@@ -30,6 +30,7 @@ export interface LabPacketView {
 }
 
 const nodePos = (nodes: GraphNode[], id: string) => nodes.find((n) => n.id === id);
+const OVERLAY_KEYFRAMES = `@keyframes pv-lab-overlay-hop { from { left: var(--fx); top: var(--fy); } to { left: var(--tx); top: var(--ty); } } @media (prefers-reduced-motion: reduce) { .pv-lab-overlay { animation-duration: 1ms !important; } }`;
 
 /** Animated event marker that rides above the path, one hop per `segmentMs`, resting at the last node reached. */
 export function LabPacketOverlay({ nodes, packet, segmentMs = 1200, lift = 46 }: { nodes: GraphNode[]; packet: LabPacketView; segmentMs?: number; lift?: number }) {
@@ -48,7 +49,7 @@ export function LabPacketOverlay({ nodes, packet, segmentMs = 1200, lift = 46 }:
     : { left: `${from.x}%`, top: `${from.y}%`, transform: `translate(-50%, calc(-50% - ${lift}px))` };
   return (
     <>
-      <style>{`@keyframes pv-lab-overlay-hop { from { left: var(--fx); top: var(--fy); } to { left: var(--tx); top: var(--ty); } } @media (prefers-reduced-motion: reduce) { .pv-lab-overlay { animation-duration: 1ms !important; } }`}</style>
+      <style>{OVERLAY_KEYFRAMES}</style>
       <button
         key={`${packet.id}-${packet.hop}-${packet.done ? "rest" : "move"}`}
         type="button"
@@ -74,6 +75,8 @@ export interface LabTopologyProps {
   dimmedNodeIds?: string[];
   onNodeClick?: (id: string) => void;
   packet?: LabPacketView;
+  /** Several events in flight at once (e.g. copies of one frame leaving different ports). Each advances and completes on its own; rendered in addition to `packet`. */
+  packets?: LabPacketView[];
   segmentMs?: number;
   /** Small tag under a node, e.g. "+ MAC learned" — appears when the lesson says something just changed there. */
   nodeTags?: Record<string, string>;
@@ -82,7 +85,7 @@ export interface LabTopologyProps {
   className?: string;
 }
 
-export function LabTopology({ nodes, edges, regions, highlightedRegionIds, activeNodeIds, selectedNodeId, dimmedNodeIds, onNodeClick, packet, segmentMs, nodeTags, cues, className = "h-full" }: LabTopologyProps) {
+export function LabTopology({ nodes, edges, regions, highlightedRegionIds, activeNodeIds, selectedNodeId, dimmedNodeIds, onNodeClick, packet, packets, segmentMs, nodeTags, cues, className = "h-full" }: LabTopologyProps) {
   return (
     <div className="flex h-full w-full flex-col">
       <div className="min-h-0 flex-1">
@@ -108,6 +111,7 @@ export function LabTopology({ nodes, edges, regions, highlightedRegionIds, activ
               );
             })}
           {packet && <LabPacketOverlay nodes={nodes} packet={packet} segmentMs={segmentMs} />}
+          {packets?.map((p) => <LabPacketOverlay key={p.id} nodes={nodes} packet={p} segmentMs={segmentMs} />)}
         </GraphTopologyViewer>
       </div>
       {cues && cues.length > 0 && (

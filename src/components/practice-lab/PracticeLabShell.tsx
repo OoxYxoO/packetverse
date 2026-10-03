@@ -123,7 +123,7 @@ export function PracticeLabShell(props: PracticeLabShellProps) {
         </div>
 
         <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-          <ol className="flex items-center gap-1" aria-label={`${title} timeline`}>
+          <ol className="flex flex-wrap items-center gap-1" aria-label={`${title} timeline`}>
             {stages.map((st, i) => {
               const current = i === currentStage;
               const passed = i < currentStage;

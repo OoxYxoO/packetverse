@@ -21,7 +21,7 @@ adapters always stay in the lesson.
 | `TeachingBoard`, `BoardSection`, `TeachingEventRows`, `StateDeltaChips`, `KeyLesson`, `EngineerCheck`, `PredictionBlock`, `Verdict`, `NextAction`, `DeepenUnderstanding`, `CommandHelp` | `practice-lab` | Teaching Board layout primitives |
 | `LiveStateCard` | `practice-lab` | Any live table: rows with a "learned this step" highlight, pulse and an inline "Why?" |
 | `LabEventLog` | `practice-lab` | Collapsible tagged log |
-| `LabTopology`, `LabPacketOverlay` | `practice-lab` | Generic topology on `GraphTopologyViewer`: regions, active/selected/dimmed nodes, tags, cue pill, animated packet pill |
+| `LabTopology`, `LabPacketOverlay` | `practice-lab` | Generic topology on `GraphTopologyViewer`: regions, active/selected/dimmed nodes, tags, cue pill, animated packet pill (`packet`), or several at once (`packets[]`) |
 | `LabDeviceDetails`, `InspectInCliButton`, `LabPacketFields` | `practice-lab` | Small device card; read-only PDU view (records no progress) |
 | `TroubleshootingFlow`, `FailureSignatures`, `Misconceptions` | `components/lesson/GuideBlocks` | Lesson Guide primitives |
 | `CLITerminal` + `src/lib/cli` | existing | Optional. Pass `stateVersion={runner.revision}` for stale hints, and keep `sessions`/`focus` in lab state so each vendor×device keeps its own session |
@@ -108,4 +108,5 @@ function EthernetLabWorkspace({ open, onClose }: { open: boolean; onClose: () =>
 - **Instant mode** (`runner.setAnimate(false)`) applies `start` plus every `arrive` synchronously.
 - **CLI stale hints:** `runner.revision` is `${resetCount}:${model.revision(state)}`. Any protocol can define what counts as a meaningful change.
 - **Topology:** `LabTopology` uses percentage coordinates. Leave vertical room above nodes, because the packet pill lifts by `lift` (46px). A specialised diagram (like ARP's SVG with subnet boundary and vendor port labels) can be passed to the `topology` slot instead.
+- **Several packets at once:** pass `packets?: LabPacketView[]` (in addition to, or instead of, `packet`) when one event puts several copies on different links — e.g. a flooded frame leaving three ports. Each view has its own `path`, `hop` and `done`, so copies advance and finish independently; give each a stable, unique `id` (change it per replay to restart the animation). LabTopology knows nothing about why there are several — the lesson maps its own state to views (Ethernet: `ethernet-switching/ethernet-lab`).
 - **Mobile tabs** come from the slots you pass: no `cli` gives Topology/State, and no live state or log gives Topology only.
