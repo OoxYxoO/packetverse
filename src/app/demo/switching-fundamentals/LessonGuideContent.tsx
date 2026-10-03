@@ -1,6 +1,8 @@
 import { Callout, ChecklistCard, CompareCards, DIAGRAM as D, DiagramFrame, DiagramSvg, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
 import { DTable } from "@/components/lesson/FundamentalsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import { BROADCAST_MAC, LOOP_WAVES_SHOWN, PRIMARY_PORT, SECONDARY_PORT, SWF_MAC } from "@/lib/sim-engine/scenarios/switchingFundamentals";
 import { HostNote, SwNote, TwoSwitches } from "./guideSvg";
 
@@ -20,6 +22,7 @@ export const SWF_LESSON_SECTIONS: LessonGuideSectionLink[] = [
   { id: "swl-model", label: "Mental model" },
   { id: "swl-glossary", label: "Glossary" },
   { id: "swl-recap", label: "Recap" },
+  { id: "swl-practice", label: "Practise it" },
 ];
 
 const P = PRIMARY_PORT;
@@ -30,7 +33,7 @@ const FDB_COLS = [
   { label: "MEANS", w: 96 },
 ];
 
-function TopologyDiagram() {
+export function TopologyDiagram() {
   return (
     <DiagramSvg h={250} label={`SW1 with HOST-A on ge-0/0/1 and HOST-D on ge-0/0/2; SW2 with HOST-B on ge-0/0/1 and HOST-C on ge-0/0/2; primary link ${P} forwarding and secondary link ${S2} disabled`}>
       <TwoSwitches primary="idle" secondary="down" subs={{ SW1: "FDB empty", SW2: "FDB empty" }} />
@@ -77,7 +80,7 @@ function IndependentFdbDiagram() {
   );
 }
 
-function FirstFrameDiagram() {
+export function FirstFrameDiagram() {
   return (
     <DiagramSvg h={250} label="HOST-A's first frame to HOST-B: SW1 learns HOST-A, misses HOST-B and floods to HOST-D and SW2; SW2 learns HOST-A on the inter-switch port, misses HOST-B and floods to HOST-B and HOST-C; HOST-D and HOST-C discard">
       <TwoSwitches hosts={{ A: "in", D: "out", B: "out", C: "out" }} primary="right" secondary="down" subs={{ SW1: "MISS", SW2: "MISS" }}>
@@ -94,7 +97,7 @@ function FirstFrameDiagram() {
   );
 }
 
-function ReplyDiagram() {
+export function ReplyDiagram() {
   return (
     <DiagramSvg h={250} label={`HOST-B's reply: SW2 learns HOST-B on ge-0/0/1 and forwards to ${P} only; SW1 learns HOST-B on ${P} and forwards to ge-0/0/1 only`}>
       <TwoSwitches hosts={{ B: "in", A: "out" }} primary="left" secondary="down" subs={{ SW1: "HIT A", SW2: "HIT A" }}>
@@ -108,7 +111,7 @@ function ReplyDiagram() {
   );
 }
 
-function TwoLookupsDiagram() {
+export function TwoLookupsDiagram() {
   return (
     <DiagramSvg h={250} label={`Second HOST-A to HOST-B frame: lookup 1 at SW1 hits HOST-B on ${P}; lookup 2 at SW2 hits HOST-B on ge-0/0/1; no flooding`}>
       <TwoSwitches hosts={{ A: "in", B: "out" }} primary="right" secondary="down" subs={{ SW1: "lookup 1", SW2: "lookup 2" }}>
@@ -122,7 +125,7 @@ function TwoLookupsDiagram() {
   );
 }
 
-function BroadcastDiagram() {
+export function BroadcastDiagram() {
   return (
     <DiagramSvg h={250} label={`HOST-D's broadcast: SW1 floods to HOST-A and SW2; SW2 learns HOST-D on ${P} and floods to HOST-B and HOST-C; each host gets one copy`}>
       <TwoSwitches hosts={{ D: "in", A: "out", B: "out", C: "out" }} primary="right" secondary="down" subs={{ SW1: "flood", SW2: "flood" }}>
@@ -137,7 +140,7 @@ function BroadcastDiagram() {
   );
 }
 
-function LoopDiagram() {
+export function LoopDiagram() {
   const waves = [
     { t: `Wave 1 · SW1 floods: HOST-D, ${P} and ${S2} → two copies to SW2`, c: D.warning },
     { t: `Wave 2 · SW2 floods each copy: HOST-B ×2, HOST-C ×2, back on the other link`, c: D.warning },
@@ -163,7 +166,7 @@ function LoopDiagram() {
   );
 }
 
-function RepairDiagram() {
+export function RepairDiagram() {
   return (
     <DiagramSvg h={250} label={`Repair: ${S2} disabled on both switches; HOST-A's broadcast crosses ${P} once and every host receives exactly one copy`}>
       <TwoSwitches hosts={{ A: "in", D: "out", B: "out", C: "out" }} primary="right" secondary="down" subs={{ SW1: "A → ge-0/0/1", SW2: `A → ${P.slice(-2)}` }}>
@@ -175,6 +178,15 @@ function RepairDiagram() {
         {`${S2} disabled: nothing can come back to the switch that flooded it.`}
       </text>
     </DiagramSvg>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the Switching Lab" onPractice={openLab}>
+      Same network, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
   );
 }
 
@@ -312,6 +324,11 @@ export function SwitchingLessonGuideContent() {
           mark="•"
           items={["Each bridge has its own FDB — learning is hop by hop", "A frame can be known at one switch and unknown at the next", "Local traffic stays on its switch", "A broadcast reaches every host across every switch", "Two active paths without loop prevention form a loop that never expires", "Disabling the extra path restores one copy per host and stable entries"]}
         />
+      </GuideSection>
+
+      <GuideSection id="swl-practice" eyebrow="Practice" title="Do it yourself" tone="cyan">
+        <p>The Deep Dive tab teaches every step in detail, with SW1&apos;s and SW2&apos;s Cisco and Junos output. The Switching Lab lets you create every state change yourself — including the loop — and troubleshoot it on both switches&apos; CLIs.</p>
+        <LessonLabBridge />
       </GuideSection>
     </div>
   );

@@ -325,9 +325,15 @@ function switchStep(s: SwfState, stepId: string, sw: SwfSwitch, ingress: string,
   return { ...next, packet: main?.packet, packetEdge: main?.edgeId, flood: rest, decision };
 }
 
+/** Host NIC filter: accept frames addressed to my MAC or to broadcast; discard everything else. */
+export const hostAccepts = (host: SwfHost, frame: PacketVisual): boolean => {
+  const dst = frameDst(frame);
+  return dst === SWF_MAC[host] || dst === BROADCAST_MAC;
+};
+
 function hostReceive(s: SwfState, stepId: string, host: SwfHost, frame: PacketVisual): SwfState {
   const dst = frameDst(frame);
-  const mine = dst === SWF_MAC[host] || dst === BROADCAST_MAC;
+  const mine = hostAccepts(host, frame);
   const hop: FundHop = {
     stepId,
     device: host,

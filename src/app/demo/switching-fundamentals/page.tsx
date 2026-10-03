@@ -3,18 +3,20 @@
 import { FundamentalsLessonShell, type FundamentalsLessonConfig } from "@/components/lesson/FundamentalsLessonShell";
 import { fundamentalsCallout } from "@/components/lesson/fundamentalsCallout";
 import type { LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
-import { EDGE_PRIMARY, EDGE_SECONDARY, PRIMARY_PORT, SECONDARY_PORT, SWF_MAC, SWF_REPAIR_CORRECT, SWF_REPAIR_OPTIONS, createSwfState, lookup, switchingFundamentalsSteps, type SwfDevice, type SwfState } from "@/lib/sim-engine/scenarios/switchingFundamentals";
+import { PRIMARY_PORT, SECONDARY_PORT, SWF_MAC, SWF_REPAIR_CORRECT, SWF_REPAIR_OPTIONS, createSwfState, lookup, switchingFundamentalsSteps, type SwfDevice, type SwfState } from "@/lib/sim-engine/scenarios/switchingFundamentals";
 import { SWF_BRIEFING_NOTES, SWF_BRIEFING_PHASES } from "./briefing";
 import { swfInterfacesFor, swfTraceFor } from "./deviceTrace";
 import { explainSwf, swfTables } from "./explain";
 import { swfNames } from "./addressNames";
+import { SWF_REGIONS, swfEdges, swfNodes } from "./topology";
 import { SwitchFdbPanel } from "./SwitchFdbPanel";
 import { SWF_LESSON_SECTIONS, SwitchingLessonGuideContent } from "./LessonGuideContent";
 import { SWF_DEEP_DIVE_SECTIONS, SwitchingDeepDiveContent } from "./DeepDiveContent";
+import { SwitchingLabWorkspace } from "./switching-lab/SwitchingLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
   { id: "lesson", label: "This Lesson", hint: "SW1 + SW2 · HOST-A/B/C/D · learning, partial knowledge, broadcast and a Layer-2 loop", sections: SWF_LESSON_SECTIONS, content: <SwitchingLessonGuideContent /> },
-  { id: "deep", label: "Multi-Switch Forwarding Deep Dive", hint: "Transparent bridging across several switches in general", sections: SWF_DEEP_DIVE_SECTIONS, content: <SwitchingDeepDiveContent /> },
+  { id: "deep", label: "Multi-Switch Forwarding Deep Dive", hint: "The full lesson on this LAN · independent learning, partial knowledge, the loop, CLI and troubleshooting", sections: SWF_DEEP_DIVE_SECTIONS, content: <SwitchingDeepDiveContent /> },
 ];
 
 const config: FundamentalsLessonConfig<SwfState> = {
@@ -40,23 +42,9 @@ const config: FundamentalsLessonConfig<SwfState> = {
   ],
   guide: { title: "Switching Fundamentals: Multi-Switch Forwarding", subtitle: `SW1 ↔ SW2 · ${PRIMARY_PORT} primary · ${SECONDARY_PORT} secondary · hosts …:55:0A–0D`, tabs: GUIDE_TABS },
   briefing: { phases: SWF_BRIEFING_PHASES, notes: SWF_BRIEFING_NOTES },
-  nodes: (s) => [
-    { id: "HOST-A", label: "HOST-A", subLabel: "…:55:0A", x: 10, y: 26, kind: "laptop" },
-    { id: "HOST-D", label: "HOST-D", subLabel: "…:55:0D", x: 20, y: 82, kind: "laptop" },
-    { id: "SW1", label: "SW1", subLabel: `FDB ${s.fdb.SW1.length}`, x: 31, y: 50, kind: "switch" },
-    { id: "SW2", label: "SW2", subLabel: `FDB ${s.fdb.SW2.length}`, x: 69, y: 50, kind: "switch" },
-    { id: "HOST-B", label: "HOST-B", subLabel: "…:55:0B", x: 88, y: 28, kind: "laptop" },
-    { id: "HOST-C", label: "HOST-C", subLabel: "…:55:0C", x: 80, y: 82, kind: "laptop" },
-  ],
-  edges: (s) => [
-    { id: "a-sw1", a: "HOST-A", b: "SW1", label: "ge-0/0/1" },
-    { id: "d-sw1", a: "HOST-D", b: "SW1", label: "ge-0/0/2" },
-    { id: EDGE_PRIMARY, a: "SW1", b: "SW2", label: `${PRIMARY_PORT} primary`, offset: { dx: 0, dy: -6 }, offset3D: [0, 0, -0.55] },
-    { id: EDGE_SECONDARY, a: "SW1", b: "SW2", label: `${SECONDARY_PORT} ${s.secondaryUp ? "on" : "off"}`, offset: { dx: 0, dy: 6 }, offset3D: [0, 0, 0.55], down: !s.secondaryUp, visual3D: s.secondaryUp ? undefined : "disabled" },
-    { id: "sw2-b", a: "SW2", b: "HOST-B", label: "ge-0/0/1" },
-    { id: "sw2-c", a: "SW2", b: "HOST-C", label: "ge-0/0/2" },
-  ],
-  regions: [{ id: "l2", label: "One Layer-2 broadcast domain", x: 3, y: 6, width: 94, height: 90, tone: "muted" }],
+  nodes: swfNodes,
+  edges: swfEdges,
+  regions: SWF_REGIONS,
   enterable: ["SW1", "SW2"],
   primaryDevice: { "b-accepts": "HOST-B", "c-discards": "HOST-C", "incident-intro": "SW1", "repair-challenge": "SW1" },
   traceFor: (d, s, stepId) => swfTraceFor(d as SwfDevice, s, stepId),
@@ -102,6 +90,11 @@ const config: FundamentalsLessonConfig<SwfState> = {
     },
   },
   sidePanel: (s) => <SwitchFdbPanel s={s} />,
+  practiceLab: {
+    entry: { title: "Switching Lab", buttonLabel: "Practice switching", description: "Send frames across SW1 and SW2 yourself, compare both switches on their Cisco and Junos CLIs, then create and troubleshoot a Layer-2 loop." },
+    contextNote: (stepId) => (stepId && ["a-sends", "sw1-learn-lookup", "sw2-learn", "fdb-compare", "sw1-local", "sw2-partial", "sw1-partial", "bcast-sw2", "wave-stop", "trouble-question", "verify-unicast-sw1"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <SwitchingLabWorkspace open={open} onClose={onClose} />,
+  },
   complete: { badge: "Lesson Complete", title: "You can follow a frame through several switches", message: "Independent FDBs, hop-by-hop learning, partial knowledge, domain-wide broadcast — and why two active paths without loop prevention become an endless loop." },
 };
 

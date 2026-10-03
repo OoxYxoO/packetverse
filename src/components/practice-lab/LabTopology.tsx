@@ -27,6 +27,8 @@ export interface LabPacketView {
   /** Accessible description, e.g. the PDU summary. */
   description?: string;
   onSelect?: () => void;
+  /** Shift the marker's track (percent, like GraphEdge.offset) — e.g. to ride one of two parallel links. */
+  offset?: { dx: number; dy: number };
 }
 
 const nodePos = (nodes: GraphNode[], id: string) => nodes.find((n) => n.id === id);
@@ -34,9 +36,13 @@ const OVERLAY_KEYFRAMES = `@keyframes pv-lab-overlay-hop { from { left: var(--fx
 
 /** Animated event marker that rides above the path, one hop per `segmentMs`, resting at the last node reached. */
 export function LabPacketOverlay({ nodes, packet, segmentMs = 1200, lift = 46 }: { nodes: GraphNode[]; packet: LabPacketView; segmentMs?: number; lift?: number }) {
-  const from = nodePos(nodes, packet.path[packet.hop]);
-  const to = !packet.done ? nodePos(nodes, packet.path[packet.hop + 1]) : undefined;
-  if (!from) return null;
+  const dx = packet.offset?.dx ?? 0;
+  const dy = packet.offset?.dy ?? 0;
+  const fromNode = nodePos(nodes, packet.path[packet.hop]);
+  const toNode = !packet.done ? nodePos(nodes, packet.path[packet.hop + 1]) : undefined;
+  if (!fromNode) return null;
+  const from = { x: fromNode.x + dx, y: fromNode.y + dy };
+  const to = toNode ? { x: toNode.x + dx, y: toNode.y + dy } : undefined;
   const style: CSSProperties = to
     ? ({
         ["--fx" as string]: `${from.x}%`,
