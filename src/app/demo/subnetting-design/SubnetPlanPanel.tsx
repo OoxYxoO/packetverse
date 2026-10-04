@@ -15,14 +15,17 @@ const VERDICT: Record<CandidateCheck["verdict"], { label: string; cls: string }>
 };
 const CANDIDATES: { network: string; prefix: number }[] = [
   { network: "10.44.0.200", prefix: 27 },
-  { network: "10.44.0.160", prefix: 27 },
   { network: "10.44.0.192", prefix: 27 },
   { network: "10.44.0.192", prefix: 28 },
   { network: "10.44.0.224", prefix: 27 },
 ];
 
-/** Interactive planner: inspect every requirement's arithmetic and test LAN-C candidates against the CURRENT plan. */
-export function SubnetPlanPanel({ plan, showTester }: { plan: Allocation[]; showTester: boolean }) {
+/**
+ * Interactive planner: inspect every requirement's arithmetic and test LAN-C candidates against the CURRENT plan.
+ * The tester deliberately omits the later incident's candidate, and the aligned split of the free space appears only
+ * when `showFreeBlocks` is set (after the free-space question has been answered).
+ */
+export function SubnetPlanPanel({ plan, showTester, showFreeBlocks = false }: { plan: Allocation[]; showTester: boolean; showFreeBlocks?: boolean }) {
   const [seg, setSeg] = useState<SegId>("LAN-A");
   const [cand, setCand] = useState(0);
   const a = plan.find((x) => x.id === seg)!;
@@ -66,6 +69,16 @@ export function SubnetPlanPanel({ plan, showTester }: { plan: Allocation[]; show
           </div>
         ))}
       </div>
+      {showFreeBlocks && (
+        <div className="rounded-lg border border-pv-border p-3">
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-pv-text-faint">Free space → aligned blocks</p>
+          {freeRanges(plan).map((f) => (
+            <p key={f.first} className="pv-mono text-xs text-pv-text">
+              {numToIp(f.first)} – {numToIp(f.last)} ({f.last - f.first + 1}) = {alignedBlocks(f).map((b) => `${b.network}/${b.prefix}`).join(" + ")}
+            </p>
+          ))}
+        </div>
+      )}
       {showTester && (
       <div className="rounded-lg border border-pv-border p-3">
         <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-pv-text-faint">Test a LAN-C candidate against the current plan</p>
@@ -85,7 +98,8 @@ export function SubnetPlanPanel({ plan, showTester }: { plan: Allocation[]; show
   );
 }
 
-/** Compact plan (historical-aware: fed the SHOWN state) with free space shown as ranges, not fake prefixes. */
+/** Compact plan (historical-aware: fed the SHOWN state) with free space shown as ranges, not fake prefixes. The aligned
+ * split lives in the planner, so this always-visible panel can't answer the free-space question early. */
 export function PlanSummary({ plan, faulty }: { plan: Allocation[]; faulty: boolean }) {
   const free = freeRanges(plan);
   return (
@@ -110,7 +124,7 @@ export function PlanSummary({ plan, faulty }: { plan: Allocation[]; faulty: bool
           ) : (
             free.map((f) => (
               <p key={f.first} className="pv-mono text-[10px] text-pv-text-faint">
-                {numToIp(f.first)} – {numToIp(f.last)} ({f.last - f.first + 1}) = {alignedBlocks(f).map((b) => `${b.network.split(".")[3]}/${b.prefix}`).join(" + ")}
+                {numToIp(f.first)} – {numToIp(f.last)} ({f.last - f.first + 1} addresses)
               </p>
             ))
           )}

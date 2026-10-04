@@ -1,5 +1,7 @@
 import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
 import { DTable } from "@/components/lesson/FundamentalsGuideSvg";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { ipToNum, numToIp } from "@/lib/sim-engine/scenarios/fundamentalsPackets";
 import { CORRECT_PLAN, PARENT, SD_ADDR, SEGMENTS, blockSize, dA, dB, dC, dT, describe, freeRanges, maskOf, prefixFor } from "@/lib/sim-engine/scenarios/subnettingDesign";
@@ -227,10 +229,11 @@ export function SubnettingLessonGuideContent() {
         <DiagramFrame caption="Each network gets the smallest block that fits. Some addresses are always left over, because blocks come in powers of two.">
           <RequirementsDiagram />
         </DiagramFrame>
+        <p>Each count already includes R1&apos;s own interface on that LAN — don&apos;t add one again. The transit link&apos;s 2 are exactly R1 and R2.</p>
       </GuideSection>
 
       <GuideSection id="sd-powers" eyebrow="Arithmetic" title="Powers of two and host bits" tone="violet">
-        <DiagramFrame caption="Ordinary subnets reserve the network (all zeros) and broadcast (all ones) addresses.">
+        <DiagramFrame caption="Ordinary LAN subnets reserve the network (all zeros) and broadcast (all ones) addresses. /31 and /32 work differently — see the Deep Dive.">
           <PowersDiagram />
         </DiagramFrame>
         <p>
@@ -282,14 +285,14 @@ export function SubnettingLessonGuideContent() {
         <FlowSteps
           steps={[
             { title: "Check the arithmetic", body: "Every block is aligned, big enough, and inside the parent.", tone: "cyan" },
-            { title: "Check for overlap", body: "Compare every pair of ranges. Routers reject overlapping interface subnets anyway.", tone: "warning" },
+            { title: "Check for overlap", body: "Compare every pair of ranges. Many routers refuse overlapping interface subnets — but don't rely on the device to catch a bad plan.", tone: "warning" },
             { title: "Deploy and test", body: "Ping across every pair of LANs and across the transit link.", tone: "success" },
           ]}
         />
       </GuideSection>
 
       <GuideSection id="sd-model" eyebrow="Mental model" title="Packing boxes on a shelf" tone="cyan">
-        <p>The /24 is a shelf 256 units long. Each network is a box whose size is a power of two, and a box may only sit at a position that is a multiple of its own size. Put the biggest boxes down first and the smaller ones fill in behind them, with no gaps. The space left at the end is still shelf, not a box.</p>
+        <p>The /24 is a shelf 256 units long. Each network is a box whose size is a power of two, and a box may only sit at a position that is a multiple of its own size. Put the biggest boxes down first and the smaller ones fill in behind them, with no gaps — the convenient order, though other orders can also fit if you track the gaps they leave. The space left at the end is still shelf, not a box.</p>
       </GuideSection>
 
       <GuideSection id="sd-glossary" eyebrow="Glossary" title="Terms used in this lesson" tone="violet">
@@ -298,7 +301,7 @@ export function SubnettingLessonGuideContent() {
             { term: "VLSM", def: "Variable-Length Subnet Masking: each subnet gets its own prefix length." },
             { term: "Host bits", def: "32 minus the prefix length. 2^h addresses per block." },
             { term: "Block size", def: "Addresses in one subnet. Network addresses are multiples of it." },
-            { term: "Ordinary usable hosts", def: "Block size − 2 (network and broadcast), for /30 and shorter." },
+            { term: "Ordinary usable hosts", def: "Block size − 2 (network and broadcast), for ordinary LAN subnets /30 and shorter. /31 (RFC 3021) and /32 differ." },
             { term: "Overlap", def: "Two subnets sharing any address. Always invalid." },
             { term: "Free space", def: "Unallocated addresses. Not automatically a single valid prefix." },
           ]}
@@ -306,8 +309,18 @@ export function SubnettingLessonGuideContent() {
       </GuideSection>
 
       <GuideSection id="sd-recap" eyebrow="Recap" title="What you can now do" tone="success">
-        <ChecklistCard tone="cyan" title="Subnetting Design Lab" mark="→" items={["Turn a host count into a prefix with 2^h − 2", "Place blocks largest first on aligned boundaries", "Reject misaligned, undersized and overlapping candidates, and explain why", "Describe leftover space as ranges or aligned blocks", "Verify a deployed plan with packets"]} />
+        <LessonLabBridge />
+        <ChecklistCard tone="cyan" title="Subnetting Design Lab" mark="→" items={["Turn a host count (R1's interface included) into a prefix with 2^h − 2 (ordinary LAN subnet)", "Place blocks largest first on aligned boundaries", "Reject misaligned, undersized and overlapping candidates, and explain why", "Describe leftover space as ranges or aligned blocks", "Verify a deployed plan with packets"]} />
       </GuideSection>
     </div>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the Subnet Design Studio" onPractice={openLab}>
+      Practise it: size, place and verify this 10.44.0.0/24 plan yourself, then troubleshoot a flawed spreadsheet plan. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
   );
 }

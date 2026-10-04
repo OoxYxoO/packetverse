@@ -11,6 +11,7 @@ import { sdNames } from "./addressNames";
 import { PlanSummary, SubnetPlanPanel } from "./SubnetPlanPanel";
 import { SD_LESSON_SECTIONS, SubnettingLessonGuideContent } from "./LessonGuideContent";
 import { SD_DEEP_DIVE_SECTIONS, SubnettingDeepDiveContent } from "./DeepDiveContent";
+import { SubnettingLabWorkspace } from "./subnetting-lab/SubnettingLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
   { id: "lesson", label: "This Lesson", hint: "10.44.0.0/24 → LAN-A/B/C + transit · VLSM · overlap incident", sections: SD_LESSON_SECTIONS, content: <SubnettingLessonGuideContent /> },
@@ -32,7 +33,7 @@ const config: FundamentalsLessonConfig<SdState> = {
   title: "Subnetting Design Lab",
   intro: `Design a real address plan: fit four networks into ${PARENT.network}/${PARENT.prefix} from their host counts, place them on valid boundaries, reject an overlapping proposal, and prove the plan with packets.`,
   facts: [
-    { q: "How big must a subnet be?", a: "2^h − 2 ≥ hosts. The smallest h that works sets the prefix: 32 − h." },
+    { q: "How big must a subnet be?", a: "For an ordinary LAN subnet: 2^h − 2 ≥ hosts. The smallest h that works sets the prefix: 32 − h. (/31 and /32 differ — see the Deep Dive.)" },
     { q: "Why largest first?", a: "Big blocks need big boundaries. Placing them first keeps every block aligned and the free space contiguous." },
     { q: "What is a valid network address?", a: "A multiple of the block size: host bits all zero." },
     { q: "What must never happen?", a: "Two subnets sharing any address." },
@@ -94,8 +95,13 @@ const config: FundamentalsLessonConfig<SdState> = {
       ];
     },
   },
-  panels: (s, stepId) => (stepId && PLANNER_STEPS.has(stepId) ? <SubnetPlanPanel plan={s.plan} showTester={TESTER_STEPS.has(stepId)} /> : null),
+  panels: (s, stepId) => (stepId && PLANNER_STEPS.has(stepId) ? <SubnetPlanPanel plan={s.plan} showTester={TESTER_STEPS.has(stepId)} showFreeBlocks={stepId === "plan-review"} /> : null),
   sidePanel: (s) => <PlanSummary plan={s.plan} faulty={s.faultActive} />,
+  practiceLab: {
+    entry: { title: "Subnet Design Studio", buttonLabel: "Practice subnetting", description: "Size, place and verify the 10.44.0.0/24 plan yourself: prefixes, block boundaries, an equal-size split, VLSM allocation, a new LAN-D — then troubleshoot a flawed spreadsheet plan." },
+    contextNote: (stepId) => (stepId && ["powers-of-two", "size-lan-a", "size-lan-b", "size-lan-c", "size-transit", "place-lan-a", "place-lan-b", "boundaries-27", "place-lan-c", "place-transit", "plan-review"].includes(stepId) ? "Want to design it yourself instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <SubnettingLabWorkspace open={open} onClose={onClose} />,
+  },
   complete: { badge: "Lesson Complete", title: "You designed and proved an address plan", message: "Host counts → prefixes → aligned, non-overlapping blocks → deployed and verified." },
 };
 
