@@ -1,0 +1,94 @@
+import type { NodeExplanation } from "@/components/network3d/types";
+import { ADDR, IPV4_INITIAL_TTL, TCP_ISN, firstConnectionSteps, tcpEndpointStates, macTableDisplay, type FirstConnectionDeviceId, type FirstConnectionState } from "@/lib/sim-engine/scenarios/firstConnection";
+
+const stepIndex = (id: string) => firstConnectionSteps.findIndex((s) => s.id === id);
+
+const DEVICE_TYPE: Record<FirstConnectionDeviceId, string> = {
+  laptop: "End Host",
+  switch: "Access Switch",
+  router: "Router (Default Gateway)",
+  server: "Server",
+};
+const ROLE: Record<FirstConnectionDeviceId, string> = {
+  laptop: "Sender — 192.168.10.10",
+  switch: "Layer 2 forwarding, LAN segment",
+  router: "Default gateway + Layer 3 forwarding",
+  server: "Destination — 10.20.20.20",
+};
+
+export function explainNode(state: FirstConnectionState, nodeId: FirstConnectionDeviceId, currentStepId: string): NodeExplanation {
+  const i = stepIndex(currentStepId);
+  const base: NodeExplanation = { id: nodeId, name: state.nodes[nodeId]?.label ?? nodeId, deviceType: DEVICE_TYPE[nodeId], role: ROLE[nodeId], currentAction: "" };
+  const macKnown = Object.keys(state.macTable.switch ?? {}).length > 0;
+
+  if (nodeId === "laptop") {
+    let currentAction = "Idle — no mission started yet.";
+    if (i === stepIndex("plan-question")) currentAction = "Working out what it needs before it can send anything off-subnet.";
+    else if (i === stepIndex("arp-request")) currentAction = "Broadcasting: \"Who has 192.168.10.1? Tell 192.168.10.10.\"";
+    else if (i >= stepIndex("arp-reply") && i < stepIndex("frame-to-gateway")) currentAction = `Learned the gateway's MAC — ${ADDR.gateway.mac}.`;
+    else if (i >= stepIndex("frame-to-gateway") && i < stepIndex("tcp-syn")) currentAction = "Sent the IP packet in a frame addressed to the gateway's MAC.";
+    else if (i === stepIndex("tcp-syn")) currentAction = `Opening the connection — SYN, seq=${state.tcp.clientSeq ?? TCP_ISN.client}. State: SYN-SENT.`;
+    else if (i === stepIndex("predict-synack") || i === stepIndex("tcp-synack")) currentAction = "SYN-SENT — waiting for the server's SYN-ACK.";
+    else if (i === stepIndex("predict-ack")) currentAction = "Has the SYN-ACK — processing it moves the Laptop to ESTABLISHED as it sends the final ACK.";
+    else if (state.tcp.state === "ESTABLISHED") currentAction = "TCP session ESTABLISHED with the Server.";
+    return {
+      ...base,
+      controlPlaneRole: "Resolves Layer 2 next-hop information (ARP) before sending anything off-subnet.",
+      dataPlaneRole: "Sends the IP packet and, later, the TCP segments — the IP destination never changes; only the Ethernet destination does, hop by hop.",
+      currentAction,
+      tables: [
+        { title: "ARP Table", rows: Object.entries(state.arpTable.laptop ?? {}).map(([ip, mac]) => ({ label: ip, value: mac })) },
+        ...(state.tcp.clientSeq !== undefined ? [{ title: "TCP Connection (Laptop's view)", rows: [{ label: "State", value: tcpEndpointStates(state.tcp).client }, { label: "Client ISN", value: String(state.tcp.clientSeq) }] }] : []),
+      ],
+    };
+  }
+
+  if (nodeId === "switch") {
+    let currentAction = "Idle — MAC table empty.";
+    if (i === stepIndex("arp-request")) currentAction = `Learned source MAC ${ADDR.laptop.mac} on Fa0/1 as the request entered; destination is broadcast, so flooding out every other port.`;
+    else if (i === stepIndex("arp-reply")) currentAction = `Learned source MAC ${ADDR.gateway.mac} on Fa0/2 as the reply entered; the Laptop's MAC was already known, so the reply goes out Fa0/1 only.`;
+    else if (macKnown) currentAction = "MAC table populated — forwarding as known unicast, no flooding.";
+    return {
+      ...base,
+      controlPlaneRole: "Purely reactive — learns source MACs from frames it forwards; runs no protocol of its own.",
+      dataPlaneRole: "Reads only the Ethernet destination MAC to decide flood vs. forward — never inspects the IP header underneath.",
+      currentAction,
+      tables: [{ title: "MAC / CAM Table", rows: Object.entries(macTableDisplay(state.macTable.switch)).map(([mac, port]) => ({ label: mac, value: port })) }],
+      note: "A switch's forwarding decision is Layer 2 only — it has no idea what IP address (or subnet) is inside the frame.",
+    };
+  }
+
+  if (nodeId === "router") {
+    let currentAction = "Idle.";
+    if (i === stepIndex("arp-request")) currentAction = `Recognized 192.168.10.1 as its own address and cached the sender: ${ADDR.laptop.ip} → ${ADDR.laptop.mac}. Preparing a unicast reply.`;
+    else if (i === stepIndex("arp-reply") || i === stepIndex("predict-next")) currentAction = `Replied directly to the Laptop: ${ADDR.gateway.ip} is at ${ADDR.gateway.mac}.`;
+    else if (i === stepIndex("frame-to-gateway")) currentAction = "Looked up 10.20.20.20 in its routing table — matched the directly-connected Server segment.";
+    else if (i === stepIndex("router-forwards")) currentAction = `Rewrote the Ethernet header for the Server segment; the IP addresses are unchanged and the TTL drops ${IPV4_INITIAL_TTL} → ${IPV4_INITIAL_TTL - 1}.`;
+    else if (state.routingTable.router.some((r) => r.matched)) currentAction = "Route already resolved — forwarding transparently.";
+    return {
+      ...base,
+      controlPlaneRole: "Answers ARP for its own interface IPs; otherwise runs no dynamic routing protocol in this lesson (routes are directly connected / static default).",
+      dataPlaneRole: "Reads only the IP destination to choose an egress interface, then builds a brand-new Ethernet header for that segment — the IP addresses ride through unchanged; it decrements the TTL.",
+      currentAction,
+      tables: [
+        { title: "ARP Table", rows: Object.entries(state.arpTable.router ?? {}).map(([ip, mac]) => ({ label: ip, value: mac })) },
+        { title: "Routing Table", rows: state.routingTable.router.map((r) => ({ label: r.network, value: `${r.iface}${r.matched ? " ◀ matched" : ""}` })) },
+      ],
+    };
+  }
+
+  // server
+  let currentAction = "Idle — no traffic yet.";
+  if (i === stepIndex("router-forwards")) currentAction = "Received the IP packet — no TCP connection exists yet.";
+  else if (i === stepIndex("tcp-syn")) currentAction = "Received a SYN — preparing SYN-ACK with its own initial sequence number.";
+  else if (i === stepIndex("predict-synack") || i === stepIndex("tcp-synack")) currentAction = state.tcp.serverSeq !== undefined ? `Sent SYN-ACK — seq=${state.tcp.serverSeq}, ack=${(state.tcp.clientSeq ?? TCP_ISN.client) + 1}. State: SYN-RECEIVED.` : "Building SYN-ACK.";
+  else if (state.tcp.state === "ESTABLISHED") currentAction = "TCP session ESTABLISHED with the Laptop.";
+  else if (i >= stepIndex("predict-ack")) currentAction = "Waiting for the final ACK.";
+  return {
+    ...base,
+    controlPlaneRole: "Passive — never initiates anything in this lesson; only responds to what arrives.",
+    dataPlaneRole: "Completes the three-way handshake, then would carry the HTTPS request/response (out of scope for this lesson).",
+    currentAction,
+    tables: [{ title: "TCP Connection (Server's view)", rows: [{ label: "State", value: tcpEndpointStates(state.tcp).server }, ...(state.tcp.serverSeq !== undefined ? [{ label: "Server ISN", value: String(state.tcp.serverSeq) }] : [])] }],
+  };
+}

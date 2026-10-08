@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -28,10 +28,12 @@ import { PacketFlowControls, type PlaySpeed } from "@/components/network3d/Packe
 import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, DeviceInterfaceData, DeviceProcessingTrace, InspectorSurface, Link3DData, LinkVisualState, Node3DStatus, NodeExplanation, PacketCallout3D, PacketStackFrame } from "@/components/network3d/types";
 import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "./LessonGuideDialog";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab, type PracticeLabEntry } from "@/components/practice-lab/PracticeLabLauncher";
 import { MissionBriefingCard, MissionBriefingStrip } from "./MissionBriefingCard";
 import { resolveBriefing, type BriefingPhaseDef, type BriefingStepNote } from "./briefing";
 import { bubblePacket } from "./mplsStack";
 import type { FundHop } from "./fundamentalsTrace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
 
 /**
  * One reusable page shell for the Fundamentals lessons (Ethernet & Switching, IPv4, VLANs). It carries NO protocol
@@ -96,6 +98,28 @@ export interface FundamentalsLessonConfig<S extends { hops: FundHop[] }> {
   /** Compact facts under the packet inspector (e.g. a MAC table), from the live state. */
   sidePanel?: (s: S) => ReactNode;
   complete: { badge: string; title: string; message: string };
+  /**
+   * Optional Practice Lab (Learning Contract). Absent → the lesson renders
+   * exactly as before. The lab is a sandbox: it gets no engine and no
+   * progress access from the shell — only open/close.
+   */
+  practiceLab?: {
+    entry: PracticeLabEntry;
+    /** Extra sentence on the card while the current step makes the lab especially relevant. */
+    contextNote?: (stepId: string | undefined, state: S) => string | undefined;
+    /** The lab workspace (typically built on PracticeLabShell). Mounted on first open, kept mounted so its session survives closing. */
+    render: (props: { open: boolean; onClose: () => void }) => ReactNode;
+  };
+  /**
+   * Optional visual presentation ("understand it first"). Absent → nothing changes. When present: a Presentation
+   * button and a "New to …?" card appear, the Lesson Guide can link to it, and the first time the learner opens the
+   * Practice Lab in a visit the presentation plays first. It gets no engine and no progress access.
+   */
+  presentation?: {
+    /** Short topic name, e.g. "Ethernet switching". */
+    topic: string;
+    render: (props: { open: boolean; onClose: () => void; onFinish: () => void; finishLabel: string }) => ReactNode;
+  };
 }
 
 const NARROW_QUERY = "(max-width: 640px)";
@@ -114,11 +138,24 @@ function framesFromPacket(p: PacketVisual | undefined): PacketStackFrame[] | und
   return p.layers.map((l, i) => ({ id: `${l.name}-${i}`, text: l.name, tone: /IPv4|IP /i.test(l.name) ? "ip" : /802\.1Q|Tag/i.test(l.name) ? "vpn" : "generic" }));
 }
 
+/** Set by the shell around the Lesson Guide when the lesson has a Practice Lab: closes the Guide and opens the lab. */
+const PracticeLabOpenerContext = createContext<(() => void) | undefined>(undefined);
+
+/**
+ * For Lesson Guide content: returns a function that opens this lesson's Practice Lab (e.g. for a `PracticeBridge`),
+ * or undefined when the lesson has no lab — in which case bridges simply don't render.
+ */
+export function usePracticeLabOpener(): (() => void) | undefined {
+  return useContext(PracticeLabOpenerContext);
+}
+
 export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config }: { config: FundamentalsLessonConfig<S> }) {
   const c = config;
   const { engine, snapshot } = useScenarioEngine<S>(c.createState(), c.steps);
   const narrow = useNarrow();
   const [autoPlay, setAutoPlay] = useState(false);
+  /** Optional Practice Lab flags (inert when the lesson supplies no lab). Opening it pauses Auto-Play, nothing else. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
   const [speed, setSpeed] = useState<0.5 | 1 | 2>(1);
   const [viewMode, setViewMode] = useState<"physical" | "3d">("physical");
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(undefined);
@@ -129,6 +166,21 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
   const [packetSelected, setPacketSelected] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const hasPresentation = !!c.presentation;
+  /** Opening the lab plays the presentation first (once per visit) when the lesson has one. */
+  const openLab = useCallback(() => (hasPresentation ? gatePresentation(openLabRaw) : openLabRaw()), [hasPresentation, gatePresentation, openLabRaw]);
+  /** Guide → Practice Lab bridge (only provided to the Guide when the lesson has a lab). */
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((st) => st.completeLesson);
@@ -381,9 +433,25 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
           <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">{c.title}</h1>
           <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">{c.intro}</p>
         </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title={c.guide.title} subtitle={c.guide.subtitle} tabs={c.guide.tabs} />
+        <div className="flex flex-wrap items-center gap-2">
+          {c.presentation && <PresentationButton onOpen={() => showPresentation()} />}
+          {c.practiceLab && <PracticeLabButton label={c.practiceLab.entry.buttonLabel} onOpen={openLab} />}
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={c.practiceLab ? openLabFromGuide : undefined}>
+          <PresentationOpenerContext.Provider value={c.presentation ? openPresentationFromGuide : undefined}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title={c.guide.title} subtitle={c.guide.subtitle} tabs={c.guide.tabs} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {c.presentation && presentation.mounted && c.presentation.render({ open: presentation.open, onClose: presentation.close, onFinish: presentation.finish, finishLabel: presentation.hasNext && c.practiceLab ? `Open the ${c.practiceLab.entry.title} →` : "Start the lesson →" })}
+        {c.practiceLab && practiceLab.mounted && c.practiceLab.render({ open: practiceLab.open, onClose: practiceLab.closeLab })}
       </div>
+
+      {c.presentation && (
+        <div className="mb-4">
+          <PresentationCard topic={c.presentation.topic} seen={presentation.seen} onOpen={() => showPresentation()} />
+        </div>
+      )}
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
         {c.facts.map((item) => (
@@ -500,6 +568,8 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
               </Button>
             </div>
           )}
+
+          {c.practiceLab && <PracticeLabCard entry={c.practiceLab.entry} contextNote={c.practiceLab.contextNote?.(currentStep?.id, state)} onOpen={openLab} />}
         </div>
 
         <div className="min-w-0 space-y-4">

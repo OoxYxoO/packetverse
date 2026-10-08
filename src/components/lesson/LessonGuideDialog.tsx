@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/Button";
 export interface LessonGuideSectionLink {
   id: string;
   label: string;
+  /** Optional outline group ("Foundation", "Advanced", …); consecutive sections sharing a group are shown under one heading. */
+  group?: string;
 }
 
 /** One top-level part of a guide (e.g. "This Lesson" vs a general deep dive), with its own section navigation. */
@@ -25,6 +27,8 @@ interface LessonGuideDialogProps {
   title: string;
   subtitle?: string;
   tabs: LessonGuideTab[];
+  /** Contextual nudge, e.g. "You're at an ARP step — open ARP Deep Dive". Shown while another tab is selected; never switches tabs by itself. */
+  recommendation?: { tabId: string; text: string };
 }
 
 /** Keys that copy, select-all, print, save or view source when combined with Ctrl/⌘. */
@@ -39,7 +43,7 @@ const BLOCKED_SHORTCUT_KEYS = new Set(["c", "x", "a", "p", "s", "u"]);
  * tools or reading the page source: the web platform does not allow it. It
  * only removes the easy paths.
  */
-export function LessonGuideDialog({ open, onClose, title, subtitle, tabs }: LessonGuideDialogProps) {
+export function LessonGuideDialog({ open, onClose, title, subtitle, tabs, recommendation }: LessonGuideDialogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [shielded, setShielded] = useState(false);
   const [notice, setNotice] = useState<string | undefined>(undefined);
@@ -124,6 +128,9 @@ export function LessonGuideDialog({ open, onClose, title, subtitle, tabs }: Less
     e.preventDefault();
     flash(msg);
   };
+
+  const jumpTo = (id: string) => scrollRef.current?.querySelector(`#${CSS.escape(id)}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const recommendedTab = recommendation && recommendation.tabId !== tab.id ? tabs.find((t) => t.id === recommendation.tabId) : undefined;
 
   const switchTab = (id: string) => {
     if (id === tab.id) return;
@@ -210,15 +217,25 @@ export function LessonGuideDialog({ open, onClose, title, subtitle, tabs }: Less
           </div>
         </header>
 
+        {recommendedTab && (
+          <div role="note" className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-pv-cyan/25 bg-pv-cyan/[0.06] px-4 py-2 text-xs text-pv-text-muted sm:px-5">
+            <span>{recommendation!.text}</span>
+            <button type="button" onClick={() => switchTab(recommendedTab.id)} className="rounded-full border border-pv-cyan/50 px-3 py-1 text-[11px] font-semibold text-pv-cyan-soft hover:bg-pv-cyan/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-pv-cyan">
+              Open {recommendedTab.label} →
+            </button>
+          </div>
+        )}
+
         <div className="flex min-h-0 flex-1">
           <nav className={clsx("hidden shrink-0 overflow-y-auto border-r border-pv-border p-3 md:block", expanded ? "w-64 lg:w-72" : "w-56")} aria-label={`${tab.label} sections`}>
             <p className="px-2.5 pb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-pv-text-faint">{tab.label}</p>
             <ol className="space-y-0.5">
               {sections.map((s, i) => (
                 <li key={s.id}>
+                  {s.group && s.group !== sections[i - 1]?.group && <p className="px-2.5 pb-1 pt-3 text-[9.5px] font-bold uppercase tracking-[0.18em] text-pv-violet/80 first:pt-0">{s.group}</p>}
                   <button
                     type="button"
-                    onClick={() => scrollRef.current?.querySelector(`#${CSS.escape(s.id)}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                    onClick={() => jumpTo(s.id)}
                     className={clsx(
                       "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors",
                       expanded ? "text-[13px]" : "text-xs",
@@ -233,8 +250,44 @@ export function LessonGuideDialog({ open, onClose, title, subtitle, tabs }: Less
             </ol>
           </nav>
 
-          <div className="relative min-h-0 flex-1">
-            <div ref={scrollRef} className="h-full overflow-y-auto overscroll-contain" role="tabpanel" aria-label={tab.label}>
+          <div className="relative min-h-0 min-w-0 flex-1">
+            {/* `relative` keeps absolutely positioned descendants (e.g. sr-only text) inside this scroller instead of leaking overflow into the card. */}
+            <div ref={scrollRef} className="relative h-full overflow-y-auto overscroll-contain" role="tabpanel" aria-label={tab.label}>
+              {sections.length > 1 && (
+                <div className="sticky top-0 z-10 border-b border-pv-border bg-pv-bg-elevated/95 px-4 py-2 backdrop-blur md:hidden">
+                  <label className="flex items-center gap-2 text-[11px] text-pv-text-faint">
+                    <span className="shrink-0 font-semibold uppercase tracking-wide">Jump to</span>
+                    <select
+                      value={activeSection ?? sections[0]?.id}
+                      onChange={(e) => jumpTo(e.target.value)}
+                      className="min-w-0 flex-1 rounded-md border border-pv-border bg-pv-bg px-2 py-1.5 text-xs text-pv-text"
+                    >
+                      {Object.entries(
+                        sections.reduce<Record<string, LessonGuideSectionLink[]>>((acc, sec) => {
+                          (acc[sec.group ?? ""] ??= []).push(sec);
+                          return acc;
+                        }, {}),
+                      ).map(([group, secs]) =>
+                        group ? (
+                          <optgroup key={group} label={group}>
+                            {secs.map((sec) => (
+                              <option key={sec.id} value={sec.id}>
+                                {sec.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ) : (
+                          secs.map((sec) => (
+                            <option key={sec.id} value={sec.id}>
+                              {sec.label}
+                            </option>
+                          ))
+                        ),
+                      )}
+                    </select>
+                  </label>
+                </div>
+              )}
               <div className={clsx("mx-auto space-y-10 px-5 py-8 sm:px-8", expanded ? "max-w-4xl sm:py-10 [&_.text-sm]:text-[15px] [&_.text-xs]:text-[13px]" : "max-w-3xl")}>{tab.content}</div>
             </div>
             <Watermark />

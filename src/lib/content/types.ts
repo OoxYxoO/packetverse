@@ -3,7 +3,7 @@
  * hard-coded UI — new topics are added by appending objects here, not
  * by writing new React components. LessonViewer (future work) will
  * render any lesson conforming to this shape; today the flagship demo
- * (/demo/first-connection) is the first hand-built simulation and
+ * lessons (/demo/arp-resolution, /demo/tcp-udp) are the first hand-built simulations and
  * `tcp-three-way-handshake` / `arp-resolution` below show how a topic
  * maps onto this schema even before it has a bespoke 3D scene.
  */

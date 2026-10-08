@@ -9,15 +9,16 @@ import { ETH_BRIEFING_NOTES, ETH_BRIEFING_PHASES } from "./briefing";
 import { ethInterfacesFor, ethTraceFor } from "./deviceTrace";
 import { ethTables, explainEth } from "./explain";
 import { ethNames } from "./addressNames";
+import { ETH_REGIONS, ethEdges, ethNodes, hostBAtSw1 } from "./topology";
 import { ETH_LESSON_SECTIONS, EthernetLessonGuideContent } from "./LessonGuideContent";
 import { ETH_DEEP_DIVE_SECTIONS, EthernetDeepDiveContent } from "./DeepDiveContent";
+import { EthernetLabWorkspace } from "./ethernet-lab/EthernetLabWorkspace";
+import { EthernetPresentation } from "./EthernetPresentation";
 
 const GUIDE_TABS: LessonGuideTab[] = [
   { id: "lesson", label: "This Lesson", hint: "SW1 · HOST-A/B/C · learning, flooding, aging, a MAC move and a stale entry", sections: ETH_LESSON_SECTIONS, content: <EthernetLessonGuideContent /> },
-  { id: "deep", label: "Ethernet & Switching Deep Dive", hint: "Ethernet frames and transparent bridging in general", sections: ETH_DEEP_DIVE_SECTIONS, content: <EthernetDeepDiveContent /> },
+  { id: "deep", label: "Ethernet & Switching Deep Dive", hint: "The full lesson on this LAN · frames, the FDB, aging, moves, CLI and troubleshooting", sections: ETH_DEEP_DIVE_SECTIONS, content: <EthernetDeepDiveContent /> },
 ];
-
-const hostBAtSw1 = (s: EthState) => s.hostB === "SW1 ge-0/0/2";
 
 function FdbPanel({ s }: { s: EthState }) {
   const table = (sw: EthSwitch) => (
@@ -71,20 +72,9 @@ const config: FundamentalsLessonConfig<EthState> = {
   ],
   guide: { title: "Ethernet & Switching", subtitle: "SW1 · 00:11:22:33:44:0A / 0B / 0C · ge-0/0/1–4", tabs: GUIDE_TABS },
   briefing: { phases: ETH_BRIEFING_PHASES, notes: ETH_BRIEFING_NOTES },
-  nodes: (s) => [
-    { id: "HOST-A", label: "HOST-A", subLabel: "…:44:0A", x: 10, y: 20, kind: "laptop" },
-    { id: "HOST-C", label: "HOST-C", subLabel: "…:44:0C", x: 26, y: 84, kind: "laptop" },
-    { id: "SW1", label: "SW1", subLabel: `FDB ${s.fdb.SW1.length}`, x: 45, y: 50, kind: "switch" },
-    { id: "DESK-SW", label: "DESK-SW", subLabel: "unmanaged", x: 70, y: 84, kind: "switch" },
-    hostBAtSw1(s) ? { id: "HOST-B", label: "HOST-B", subLabel: "…:44:0B", x: 88, y: 20, kind: "laptop" } : { id: "HOST-B", label: "HOST-B", subLabel: "…:44:0B · hot desk", x: 92, y: 56, kind: "laptop" },
-  ],
-  edges: (s) => [
-    { id: "a-sw1", a: "HOST-A", b: "SW1", label: "ge-0/0/1" },
-    { id: "c-sw1", a: "HOST-C", b: "SW1", label: "ge-0/0/3" },
-    { id: "sw1-desk", a: "SW1", b: "DESK-SW", label: "ge-0/0/4 ↔ port 1" },
-    hostBAtSw1(s) ? { id: "b-sw1", a: "SW1", b: "HOST-B", label: "ge-0/0/2" } : { id: "b-desk", a: "DESK-SW", b: "HOST-B", label: "port 2" },
-  ],
-  regions: [{ id: "lan", label: "One broadcast domain", x: 4, y: 6, width: 92, height: 90, tone: "muted" }],
+  nodes: ethNodes,
+  edges: ethEdges,
+  regions: ETH_REGIONS,
   enterable: ["SW1", "DESK-SW"],
   primaryDevice: { "b-accepts": "HOST-B", "c-discards": "HOST-C", "fdb-aging": "SW1", "move-intro": "SW1", "fault-injected": "SW1", "stale-lost": "DESK-SW", "repair-challenge": "SW1" },
   traceFor: (d, s, stepId) => ethTraceFor(d as EthDevice, s, stepId),
@@ -123,6 +113,12 @@ const config: FundamentalsLessonConfig<EthState> = {
     },
   },
   sidePanel: (s) => <FdbPanel s={s} />,
+  practiceLab: {
+    entry: { title: "Ethernet Lab", buttonLabel: "Practice Ethernet", description: "Four short levels on this same LAN (one frame, inside the switch, broadcast and time, a moving host), then an engineering workspace: SW1 in Cisco or Junos, captures on every port, tickets and challenges." },
+    contextNote: (stepId) => (stepId && ["a-sends", "predict-learn", "sw1-learns-a", "sw1-lookup-miss", "predict-flood", "flood-unknown", "fdb-aging", "move-intro", "stale-lost"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <EthernetLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "Ethernet switching", render: (p) => <EthernetPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read a switch's mind", message: "Source learning, flooding, known unicast, broadcast, aging, MAC moves and a stale-entry repair — all from one FDB." },
 };
 

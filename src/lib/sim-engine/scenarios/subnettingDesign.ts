@@ -104,8 +104,14 @@ export function planLargestFirst(segs: { id: SegId; hosts: number }[]): Allocati
 }
 /** Free address space left in the parent, as address ranges (not as fake prefixes). */
 export function freeRanges(plan: Allocation[]): Range[] {
-  const used = plan.filter((a) => a.network && a.prefix !== undefined).map((a) => rangeOf(a.network!, a.prefix!)).sort((a, b) => a.first - b.first);
   const parent = rangeOf(PARENT.network, PARENT.prefix);
+  // Only the part of each block that lies inside the parent counts: a block outside it must not stretch the free space past the parent.
+  const used = plan
+    .filter((a) => a.network && a.prefix !== undefined)
+    .map((a) => rangeOf(a.network!, a.prefix!))
+    .map((r) => ({ first: Math.max(r.first, parent.first), last: Math.min(r.last, parent.last) }))
+    .filter((r) => r.first <= r.last)
+    .sort((a, b) => a.first - b.first);
   const free: Range[] = [];
   let cur = parent.first;
   for (const u of used) {
@@ -180,7 +186,7 @@ const idle = (s: SdState): SdState => ({ ...s, packet: undefined, flood: [], not
 // ---------------------------------------------------------------------------------------------------------------
 export const PLAN_STAGES: ProcessingStage[] = [
   { id: "need", label: "Hosts needed" },
-  { id: "bits", label: "Host bits: 2^h − 2 ≥ hosts" },
+  { id: "bits", label: "Host bits: 2^h − 2 ≥ hosts (ordinary LAN)" },
   { id: "prefix", label: "Prefix = 32 − h" },
   { id: "place", label: "Lowest free aligned block" },
   { id: "verify", label: "No overlap · inside the parent" },
@@ -306,7 +312,7 @@ function deployHop(stepId: string, plan: Allocation[], rejected?: { seg: SegId; 
     lookupKey: rejected ? `${rejected.seg} ${rejected.check.network}/${rejected.check.prefix}` : "address plan",
     lookupResult: rejected ? rejected.check.reason : "all prefixes unique",
     action: rejected ? "CONFIG REJECTED" : "CONFIGURE",
-    reason: rejected ? "A router will not put two interfaces into overlapping subnets: an address in the shared range would belong to two links at once." : "Each segment's first usable address becomes R1's interface address and every prefix becomes a connected route.",
+    reason: rejected ? "R1 refuses this change, as many routers do: an address in the shared range would belong to two links at once. Don't rely on the device to catch a bad addressing plan — validate the design before deployment." : "Each segment's first usable address becomes R1's interface address and every prefix becomes a connected route.",
     input: rejected ? "revised plan" : "approved plan",
     output: rejected ? "configuration refused" : "connected routes installed",
   };
@@ -389,33 +395,33 @@ export const subnettingDesignSteps: ScenarioStep<SdState>[] = [
   {
     id: "requirements",
     label: "The requirements",
-    narrative: `LAN-A needs 100 hosts, LAN-B 50, LAN-C 25, and the R1 ↔ R2 transit link 2. "Hosts" means addresses for devices — the network and broadcast addresses come on top.`,
+    narrative: `LAN-A needs 100 addresses, LAN-B 50 and LAN-C 25 — each count already includes R1's own interface on that LAN. The R1 ↔ R2 transit link needs 2: exactly R1 and R2. The network and broadcast addresses come on top.`,
   },
   {
     id: "powers-of-two",
     label: "Capacity comes in powers of two",
-    narrative: "A subnet with h host bits has 2^h addresses. Two are reserved (all-zeros = network, all-ones = broadcast), so an ordinary subnet holds 2^h − 2 hosts: /30 → 2, /29 → 6, /28 → 14, /27 → 30, /26 → 62, /25 → 126.",
+    narrative: "A subnet with h host bits has 2^h addresses. Two are reserved (all-zeros = network, all-ones = broadcast), so an ordinary LAN subnet holds 2^h − 2 hosts: /30 → 2, /29 → 6, /28 → 14, /27 → 30, /26 → 62, /25 → 126. (/31 and /32 work differently — see the Deep Dive.)",
   },
   {
     id: "predict-order",
     label: "Predict: allocation order",
     narrative: "Before sizing anything, decide the order you will place the networks in.",
     question: {
-      prompt: "In which order should you place the four networks?",
+      prompt: "Which placement order is the most convenient?",
       options: [
-        { id: "largest", label: "Largest first: LAN-A, LAN-B, LAN-C, transit" },
         { id: "smallest", label: "Smallest first: transit, LAN-C, LAN-B, LAN-A" },
-        { id: "alpha", label: "Alphabetical — order doesn't matter" },
-        { id: "random", label: "Whatever order the requests arrived in" },
+        { id: "largest", label: "Largest first: LAN-A, LAN-B, LAN-C, transit" },
+        { id: "alpha", label: "Alphabetical: LAN-A, LAN-B, LAN-C, transit" },
+        { id: "random", label: "In the order the requests arrived" },
       ],
       correctOptionId: "largest",
-      explanation: "Big blocks need big boundaries (a /25 must start at .0 or .128). Placing them first keeps every later, smaller block aligned right after it and leaves the free space in one contiguous piece. Small-first scatters small blocks across the big boundaries.",
+      explanation: "Largest first. A block of 2^k addresses ends on a multiple of 2^k — and so on a multiple of every smaller power of two — so each smaller block can start exactly where the previous one ended: no gaps to skip, no backtracking, one contiguous free range at the end. Other orders can still produce a valid plan; they just leave holes you must track.",
     },
   },
   {
     id: "largest-first",
     label: "Largest first",
-    narrative: "VLSM (variable-length subnet masking) gives each network its own prefix length. Sorting largest-first is what lets the variable sizes pack together without gaps.",
+    narrative: "VLSM (variable-length subnet masking) gives each network its own prefix length. Sorting largest-first is what lets the variable sizes pack together without gaps — the convenient order, not the only valid one.",
   },
   sizeStep("size-lan-a", "LAN-A", "Size LAN-A", `100 hosts: 2^6 − 2 = 62 is too few, 2^7 − 2 = 126 is enough. 7 host bits → /25 (${maskOf(25)}), 128 addresses.`),
   {
@@ -425,10 +431,10 @@ export const subnettingDesignSteps: ScenarioStep<SdState>[] = [
     question: {
       prompt: "Which prefix is the smallest subnet that supports 50 ordinary hosts?",
       options: [
-        { id: "26", label: "/26 — 64 addresses, 62 usable" },
         { id: "27", label: "/27 — 32 addresses, 30 usable" },
         { id: "25", label: "/25 — 128 addresses, 126 usable" },
-        { id: "24", label: "/24 — the whole block" },
+        { id: "26", label: "/26 — 64 addresses, 62 usable" },
+        { id: "24", label: "/24 — 256 addresses, 254 usable" },
       ],
       correctOptionId: "26",
       explanation: "2^5 − 2 = 30 < 50, 2^6 − 2 = 62 ≥ 50 → 6 host bits → /26. A /25 would work but wastes 64 addresses that LAN-C and the transit link need.",
@@ -457,10 +463,10 @@ export const subnettingDesignSteps: ScenarioStep<SdState>[] = [
     question: {
       prompt: "Why is 10.44.0.200 not the network address of a /27?",
       options: [
-        { id: "boundary", label: "200 is not a multiple of 32 — it's a host inside 10.44.0.192/27" },
-        { id: "range", label: "It's fine; any address can start a subnet" },
         { id: "size", label: "A /27 is too small for LAN-C" },
-        { id: "class", label: "Because 10.x is a Class A network" },
+        { id: "class", label: "10.x is a Class A network" },
+        { id: "range", label: "It is valid — any address can start a subnet" },
+        { id: "boundary", label: "200 is not a multiple of 32" },
       ],
       correctOptionId: "boundary",
       explanation: "200 AND 224 (the /27 mask's last octet) = 192. So .200 lives inside 10.44.0.192/27 (.192–.223). A network address has all host bits zero; .200 has host bits 01000.",
@@ -481,18 +487,18 @@ export const subnettingDesignSteps: ScenarioStep<SdState>[] = [
   {
     id: "free-space",
     label: "What's left",
-    narrative: "10.44.0.228 – 10.44.0.255 (28 addresses) remains. 28 isn't a power of two and .228 isn't on a large boundary, so this is free ADDRESS SPACE, not one subnet. It can still hold aligned blocks: .228/30, .232/29 and .240/28.",
+    narrative: "28 addresses remain: 10.44.0.228 – 10.44.0.255. Can they form one subnet?",
     run: (s) => ({ state: { ...idle(s), candidate: undefined }, events: [] }),
     question: {
       prompt: "Can the remaining 10.44.0.228 – 10.44.0.255 be configured as a single subnet?",
       options: [
-        { id: "no", label: "No — 28 addresses on a .228 start is not one aligned CIDR block" },
+        { id: "no", label: "No" },
         { id: "27", label: "Yes, as 10.44.0.228/27" },
         { id: "28", label: "Yes, as 10.44.0.228/28" },
-        { id: "any", label: "Yes, any range can be one subnet" },
+        { id: "any", label: "Yes — any range can be one subnet" },
       ],
       correctOptionId: "no",
-      explanation: "A CIDR block has a power-of-two size and starts on a multiple of that size. .228/27 is really .224/27 (overlapping the transit link), and .228/28 is really .224/28. The range splits cleanly into .228/30 + .232/29 + .240/28.",
+      explanation: "A CIDR block has a power-of-two size and starts on a multiple of that size. 28 is not a power of two, .228/27 is really .224/27 (overlapping the transit link) and .228/28 is really .224/28. So the remainder is free ADDRESS SPACE, not one subnet — but it can still hold the aligned blocks .228/30 + .232/29 + .240/28.",
     },
   },
   {
@@ -517,10 +523,10 @@ export const subnettingDesignSteps: ScenarioStep<SdState>[] = [
     question: {
       prompt: `Which default gateway can HOST-C (${SD_ADDR["HOST-C"]}/${dC.prefix}) use?`,
       options: [
-        { id: "c", label: `${SD_ADDR["R1:LAN-C"]} — R1 on LAN-C, inside the same /27` },
         { id: "b", label: `${SD_ADDR["R1:LAN-B"]} — R1 on LAN-B` },
-        { id: "t", label: `${SD_ADDR["R1:TRANSIT"]} — R1's transit address` },
-        { id: "a", label: `${SD_ADDR["R1:LAN-A"]} — the first address in the /24` },
+        { id: "t", label: `${SD_ADDR["R1:TRANSIT"]} — R1 on the transit link` },
+        { id: "a", label: `${SD_ADDR["R1:LAN-A"]} — R1 on LAN-A` },
+        { id: "c", label: `${SD_ADDR["R1:LAN-C"]} — R1 on LAN-C` },
       ],
       correctOptionId: "c",
       explanation: `A gateway must be on-link: inside the host's own prefix. ${SD_ADDR["HOST-C"]}/${dC.prefix} covers ${dC.firstHost}–${dC.lastHost}, and only ${SD_ADDR["R1:LAN-C"]} of these options is in it.`,
@@ -606,7 +612,7 @@ export const subnettingDesignSteps: ScenarioStep<SdState>[] = [
   {
     id: "fault-apply",
     label: "R1 refuses the change",
-    narrative: `Applying the revision on a lab copy of R1: setting ge-0/0/3 to ${numToIp(ipToNum(SD_FAULT_LAN_C.network) + 1)}/${SD_FAULT_LAN_C.prefix} is refused with an overlapping-subnet error.`,
+    narrative: `Applying the revision on a lab copy of R1: setting ge-0/0/3 to ${numToIp(ipToNum(SD_FAULT_LAN_C.network) + 1)}/${SD_FAULT_LAN_C.prefix} — R1 refuses it with an overlapping-subnet error, as many routers do. Don't rely on that: a device check is a last line of defense, not the design review.`,
     run: (s) => {
       const check = checkCandidate(s.plan, "LAN-C", SD_FAULT_LAN_C.network, SD_FAULT_LAN_C.prefix);
       return { state: push({ ...idle(s), candidate: { ...check, seg: "LAN-C" }, note: { device: "R1", text: "R1: overlapping subnet — refused" } }, deployHop("fault-apply", s.plan, { seg: "LAN-C", check })), events: [ev("PACKET_DROPPED", "fault-apply", "configuration refused")] };
@@ -620,8 +626,8 @@ export const subnettingDesignSteps: ScenarioStep<SdState>[] = [
     question: {
       prompt: "What is wrong with 10.44.0.160/27 for LAN-C?",
       options: [
-        { id: "overlap", label: "It overlaps LAN-B's 10.44.0.128/26 (.128–.191)" },
         { id: "align", label: ".160 is not a valid /27 boundary" },
+        { id: "overlap", label: "It overlaps LAN-B" },
         { id: "small", label: "A /27 cannot hold 25 hosts" },
         { id: "transit", label: "It overlaps the transit /30" },
       ],

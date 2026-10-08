@@ -208,7 +208,7 @@ export function RoutingDeepDiveContent() {
         <DiagramFrame caption="Same table, same lookup — protocols just fill it.">
           <DynamicDiagram />
         </DiagramFrame>
-        <p>Static routes don&apos;t react to failures and don&apos;t scale well. OSPF (its own lesson) learns routes automatically. The forwarding decision you practised here stays exactly the same.</p>
+        <p>Static routes don&apos;t react to failures and don&apos;t scale well. OSPF (its own lesson) learns routes automatically. The forwarding decision you practiced here stays exactly the same.</p>
       </GuideSection>
 
       <GuideSection id="rtd-workflow" eyebrow="Workflow" title="Troubleshooting a routing problem" tone="danger">

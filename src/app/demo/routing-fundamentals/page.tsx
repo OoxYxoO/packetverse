@@ -10,6 +10,8 @@ import { explainRt, rtTables } from "./explain";
 import { rtNames } from "./addressNames";
 import { RoutingTablePanel } from "./RoutingTablePanel";
 import { RT_LESSON_SECTIONS, RoutingLessonGuideContent } from "./LessonGuideContent";
+import { RoutingPresentation } from "./RoutingPresentation";
+import { RoutingLabWorkspace } from "./routing-lab/RoutingLabWorkspace";
 import { RT_DEEP_DIVE_SECTIONS, RoutingDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
@@ -28,14 +30,14 @@ const config: FundamentalsLessonConfig<RtState> = {
   facts: [
     { q: "Where do routes come from?", a: "Connected interfaces, and static routes an operator configures. No routing protocol here." },
     { q: "Which route wins?", a: "Of all installed routes that contain the destination, the longest prefix." },
-    { q: "What is a next hop?", a: "The neighbour to hand the packet to. It never replaces the IPv4 destination." },
+    { q: "What is a next hop?", a: "The neighbor to hand the packet to. It never replaces the IPv4 destination." },
     { q: "What changes per router?", a: "A new Ethernet frame, TTL − 1 and a recomputed header checksum." },
   ],
   terms: [
     { term: "LPM", expansion: "Longest prefix match", meaning: "Most specific route wins" },
     { term: "Static", expansion: "Operator-configured route", meaning: "Prefix + next hop" },
     { term: "0.0.0.0/0", expansion: "Default route", meaning: "Matches everything, wins last" },
-    { term: "Next hop", expansion: "Neighbour router address", meaning: "Resolved via a connected route" },
+    { term: "Next hop", expansion: "Neighbor router address", meaning: "Resolved via a connected route" },
     { term: "Discard", expansion: "Blackhole / discard route", meaning: "Matching packets dropped here" },
   ],
   guide: { title: "Routing Fundamentals: Static Routes & Longest Prefix Match", subtitle: `HOST-A ${RT_ADDR["HOST-A"]} → R1 ${RT_ADDR["R1:TRANSIT"]} ↔ R2 ${RT_ADDR["R2:TRANSIT"]} → SERVER-A ${RT_ADDR["SERVER-A"]} · SERVER-B ${RT_ADDR["SERVER-B"]}`, tabs: GUIDE_TABS },
@@ -89,6 +91,12 @@ const config: FundamentalsLessonConfig<RtState> = {
     },
   },
   sidePanel: (s) => <RoutingTablePanel s={s} />,
+  practiceLab: {
+    entry: { title: "Routing Lab", buttonLabel: "Practice Routing", description: "Watch R1, R2 and R3 each choose by longest prefix, follow requests and replies separately, build the routes yourself on Cisco or Junos, and solve five routing incidents from evidence." },
+    contextNote: (stepId) => (stepId && ["r1-selects", "predict-lpm", "default-r2", "table-vs-decision", "fault-a-r1", "probe-b-r1", "trouble-question"].includes(stepId) ? "Want to try the lookup yourself?" : undefined),
+    render: ({ open, onClose }) => <RoutingLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "routing", render: (p) => <RoutingPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read a routing table like a router", message: "Connected, static and default routes, longest-prefix match, recursive next hops, a new frame per hop — and a /25 discard route found and removed." },
 };
 

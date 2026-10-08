@@ -388,7 +388,7 @@ export const routingFundamentalsSteps: ScenarioStep<RtState>[] = [
         lookupKey: NH,
         lookupResult: "via connected 10.0.12.0/30 → ge-0/0/1",
         action: "STATIC",
-        reason: `A static route is only usable while its next hop is reachable. ${NH} is inside R1's connected transit network, so the route resolves to ge-0/0/1. The next-hop address is used to pick the exit and the neighbour's MAC — it never replaces the packet's IPv4 destination.`,
+        reason: `A static route is only usable while its next hop is reachable. ${NH} is inside R1's connected transit network, so the route resolves to ge-0/0/1. The next-hop address is used to pick the exit and the neighbor's MAC — it never replaces the packet's IPv4 destination.`,
         input: `static 172.16.50.0/24 via ${NH}`,
         output: "resolved → ge-0/0/1",
       };
@@ -488,7 +488,7 @@ export const routingFundamentalsSteps: ScenarioStep<RtState>[] = [
         { id: "ipsrc", label: "The IPv4 source becomes R1's address" },
       ],
       correctOptionId: "eth",
-      explanation: "The next hop decides which neighbour gets the frame (its MAC goes in the new Ethernet header). It never goes into the IPv4 header. TTL drops by one, the checksum is recomputed, and with no NAT the addresses are untouched.",
+      explanation: "The next hop decides which neighbor gets the frame (its MAC goes in the new Ethernet header). It never goes into the IPv4 header. TTL drops by one, the checksum is recomputed, and with no NAT the addresses are untouched.",
     },
   },
   {
@@ -758,7 +758,7 @@ export const routingFundamentalsSteps: ScenarioStep<RtState>[] = [
   {
     id: "dynamic-context",
     label: "Where dynamic routing fits",
-    narrative: "Every route here was connected or typed in. A routing protocol such as OSPF fills the same table automatically — but the forwarding decision you practised is unchanged: find every matching route, and the longest prefix wins.",
+    narrative: "Every route here was connected or typed in. A routing protocol such as OSPF fills the same table automatically — but the forwarding decision you practiced is unchanged: find every matching route, and the longest prefix wins.",
     run: (s) => ({ state: idle(s), events: [] }),
   },
   {

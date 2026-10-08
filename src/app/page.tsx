@@ -44,7 +44,7 @@ export default function Home() {
             <Link href="/learn">
               <Button size="lg">Explore Network</Button>
             </Link>
-            <Link href="/demo/first-connection">
+            <Link href="/demo/arp-resolution">
               <Button size="lg" variant="secondary">
                 Try Interactive Demo
               </Button>
@@ -168,10 +168,10 @@ export default function Home() {
         <GlassPanel strong glow="cyan" className="mx-auto flex max-w-4xl flex-col items-center gap-6 p-12 text-center">
           <h2 className="text-2xl font-semibold text-pv-text sm:text-3xl">See your first packet in under two minutes.</h2>
           <p className="max-w-xl text-sm text-pv-text-muted">
-            The flagship demo walks a real HTTPS connection — ARP, switching, routing, and the TCP handshake — with
-            you driving every step.
+            The flagship demo walks a real HTTPS connection with you driving every step: the ARP lesson gets the first
+            packet across (ARP, switching, routing), and the TCP &amp; UDP lesson opens the session.
           </p>
-          <Link href="/demo/first-connection">
+          <Link href="/demo/arp-resolution">
             <Button size="lg">Start the Demo</Button>
           </Link>
         </GlassPanel>

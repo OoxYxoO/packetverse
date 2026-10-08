@@ -54,7 +54,7 @@ function Trunk({ which, mode }: { which: "primary" | "secondary"; mode: TrunkMod
   );
 }
 
-/** Both switches, four hosts, two parallel inter-switch links; each link coloured for one frame. */
+/** Both switches, four hosts, two parallel inter-switch links; each link colored for one frame. */
 export function TwoSwitches({ hosts = {}, primary = "idle", secondary = "down", subs = {}, hostSubs = {}, children }: { hosts?: Partial<Record<HostKey, HostMode>>; primary?: TrunkMode; secondary?: TrunkMode; subs?: Partial<Record<"SW1" | "SW2", string>>; hostSubs?: Partial<Record<HostKey, string>>; children?: ReactNode }) {
   return (
     <g>

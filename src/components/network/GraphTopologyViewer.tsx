@@ -50,6 +50,12 @@ interface GraphTopologyViewerProps {
   /** Region ids to highlight, e.g. while hovering an AS_PATH hop. */
   highlightedRegionIds?: string[];
   onNodeClick?: (id: string) => void;
+  /** Optional — outlined as selected (e.g. a device whose details are open). */
+  selectedNodeIds?: string[];
+  /** Optional — drawn faded (context-only devices). */
+  dimmedNodeIds?: string[];
+  /** Optional sizing override for the viewer box; defaults to the original fixed height. */
+  className?: string;
   onEdgeClick?: (id: string) => void;
   /** Overlay content in the same 0..100 coordinate space (e.g. <GraphPacket>) */
   children?: ReactNode;
@@ -90,12 +96,15 @@ export function GraphTopologyViewer({
   highlightedRegionIds = [],
   onNodeClick,
   onEdgeClick,
+  selectedNodeIds = [],
+  dimmedNodeIds = [],
+  className,
   children,
 }: GraphTopologyViewerProps) {
   const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
 
   return (
-    <div className="pv-grid-bg relative h-96 w-full overflow-hidden rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[26rem]">
+    <div className={clsx("pv-grid-bg relative w-full overflow-hidden rounded-2xl border border-pv-border bg-pv-bg-elevated", className ?? "h-96 sm:h-[26rem]")}>
       {regions.map((r) => (
         <div
           key={r.id}
@@ -189,8 +198,11 @@ export function GraphTopologyViewer({
           className={clsx(
             "absolute z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1 rounded-xl border px-3 py-2.5 text-center transition-all duration-300",
             activeNodeIds.includes(node.id) ? "pv-glow-cyan border-pv-cyan/50 bg-pv-cyan/10" : "pv-glass",
+            selectedNodeIds.includes(node.id) && "ring-2 ring-pv-text/80",
+            dimmedNodeIds.includes(node.id) && "opacity-50",
             onNodeClick && "cursor-pointer hover:-translate-y-[calc(50%+2px)]",
           )}
+          aria-pressed={onNodeClick && selectedNodeIds.length ? selectedNodeIds.includes(node.id) : undefined}
           style={{ left: `${node.x}%`, top: `${node.y}%` }}
         >
           <span

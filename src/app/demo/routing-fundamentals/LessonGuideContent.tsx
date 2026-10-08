@@ -1,19 +1,26 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DNode, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DNode, FlowSteps, Glossary, GuideSection, Mono, PathDivider, ProtocolStory, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import { DFieldRow, DTable } from "@/components/lesson/FundamentalsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { OUTSIDE_DST, R1_HEALTHY, R2_TABLE, RT_ADDR, RT_MAC, ipBits, routeKey, type Route } from "@/lib/sim-engine/scenarios/routingFundamentals";
 
 export const RT_LESSON_SECTIONS: LessonGuideSectionLink[] = [
   { id: "rtl-mission", label: "The mission" },
+  { id: "rtl-story", label: "The whole story" },
+  { id: "rtl-breaks", label: "When it breaks" },
   { id: "rtl-topology", label: "Topology" },
   { id: "rtl-tables", label: "The two tables" },
   { id: "rtl-nexthop", label: "Next hop" },
   { id: "rtl-lpm", label: "Longest prefix match" },
   { id: "rtl-hops", label: "Hop by hop" },
+  { id: "rtl-usable", label: "Configured vs usable" },
   { id: "rtl-return", label: "The return path" },
   { id: "rtl-default", label: "Default route" },
   { id: "rtl-incident", label: "The /25 incident" },
   { id: "rtl-repair", label: "Repair & verify" },
+  { id: "rtl-drops", label: "Four ways to drop" },
   { id: "rtl-l2l3", label: "Routing vs switching" },
   { id: "rtl-model", label: "Mental model" },
   { id: "rtl-glossary", label: "Glossary" },
@@ -85,7 +92,7 @@ function NextHopDiagram() {
     { x: 568, w: 132, t: "ARP", s: `${NH} → …:53:21`, c: D.arp },
   ];
   return (
-    <DiagramSvg h={150} label={`Recursive next-hop resolution: static route 172.16.50.0/24 via ${NH}; ${NH} lies inside connected 10.0.12.0/30 which gives egress ge-0/0/1; ARP gives the neighbour MAC ${RT_MAC["R2:TRANSIT"]}`}>
+    <DiagramSvg h={150} label={`Recursive next-hop resolution: static route 172.16.50.0/24 via ${NH}; ${NH} lies inside connected 10.0.12.0/30 which gives egress ge-0/0/1; ARP gives the neighbor MAC ${RT_MAC["R2:TRANSIT"]}`}>
       {box.map((b, i) => (
         <g key={b.t}>
           <DNode x={b.x} y={56} label={b.t} sub={b.s} accent={b.c} w={b.w} h={48} />
@@ -93,7 +100,7 @@ function NextHopDiagram() {
         </g>
       ))}
       <text x={320} y={118} textAnchor="middle" fill={D.text} fontSize={10.5} fontWeight={700}>
-        {`The next hop picks the exit and the neighbour's MAC — the IPv4 destination stays ${SA}.`}
+        {`The next hop picks the exit and the neighbor's MAC — the IPv4 destination stays ${SA}.`}
       </text>
       <text x={320} y={138} textAnchor="middle" fill={D.muted} fontSize={10}>
         If 10.0.12.0/30 went down, the static route would become unusable.
@@ -102,7 +109,7 @@ function NextHopDiagram() {
   );
 }
 
-/** Bit rows: destination vs prefixes; fixed bits coloured by match, host bits faint. */
+/** Bit rows: destination vs prefixes; fixed bits colored by match, host bits faint. */
 function BitRows({ dst, rows, y0 = 30 }: { dst: string; rows: { label: string; prefix: string; len: number; color?: string }[]; y0?: number }) {
   const d = ipBits(dst);
   const cx = (i: number) => 196 + i * 12 + Math.floor(i / 8) * 6;
@@ -280,6 +287,16 @@ function IncidentDiagram() {
   );
 }
 
+
+function StoryLabBridge() {
+  const open = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the Routing Lab" onPractice={open}>
+      Edit R1 and R2&apos;s routing tables, send traffic both ways and inspect every longest-prefix decision, bit by bit.
+    </PracticeBridge>
+  );
+}
+
 export function RoutingLessonGuideContent() {
   return (
     <div className="space-y-12">
@@ -291,6 +308,50 @@ export function RoutingLessonGuideContent() {
           Find every installed route that contains the destination. The one with the <strong>longest prefix</strong> wins.
         </Callout>
       </GuideSection>
+      <GuideSection id="rtl-story" eyebrow="How it works" title="One packet, two routing decisions, and the way back" tone="cyan">
+        <ProtocolStory
+          problem={<>HOST-A ({RT_ADDR["HOST-A"]}) wants SERVER-A ({RT_ADDR["SERVER-A"]}), on another network two routers away. No router sees the whole path: each one only decides which neighbor gets the packet next — from its own routing table.</>}
+          steps={[
+            { actor: "Why routes", action: <>HOST-A sees {SA} is not on its own network and hands the packet to its gateway, R1. From here on, <strong>routers</strong> decide — and a router can only send a packet somewhere its table describes.</>, verify: `A capture on HOST-A's LAN: the frame goes to R1's MAC, IP destination ${SA}.`, fails: { symptom: `HOST-A never sends anything to R1.`, evidence: `Wrong gateway or mask on HOST-A — a host problem; routing hasn't started.` }, tone: "ip" },
+            { actor: "Connected routes", action: <>R1&apos;s interfaces are configured and up, so it knows their networks by itself: 10.10.10.0/24 and 10.0.12.0/30. Nothing else.</>, verify: `show ip route connected (Cisco) / show route protocol direct (Junos): one C entry per interface that is up.`, fails: { symptom: `A network you expect as connected is missing.`, evidence: `Its interface is down (show ip interface brief) — the connected route disappears with it.` }, tone: "cyan" },
+            { actor: "Static route", action: <>An operator adds <Mono>172.16.50.0/24 via {NH}</Mono> on R1 (plus a /16 and a default). A static route is a prefix and a neighbor to hand matching packets to.</>, verify: `The route shows as S in R1's table — installed, not just configured.`, fails: { symptom: `It's in the configuration but not in the table.`, evidence: `Its next hop isn't inside any up, connected network: configured, not installed (Junos: show route hidden).` }, tone: "violet" },
+            { actor: "Destination lookup", action: <>A packet for {SA} arrives. R1 looks at the <strong>destination</strong> address — only — and checks it against every installed route.</>, verify: `show ip route ${SA} / show route ${SA}: the router's real answer for that address.`, fails: { symptom: `You read the table top to bottom and expect the first entry.`, evidence: `Order on screen is sorting, not the rule.` }, tone: "ip" },
+            { actor: "Matching prefixes", action: <>172.16.50.0/24, 172.16.0.0/16 and 0.0.0.0/0 all contain {SA}; 10.10.10.0/24 and 10.0.12.0/30 don&apos;t. A route matches when the destination&apos;s first /len bits equal the route&apos;s.</>, verify: `Write both addresses in binary for /len bits — they agree.`, fails: { symptom: `A route you expected to match doesn't.`, evidence: `A bit inside its prefix length differs — the destination isn't in that network.` }, tone: "warning" },
+            { actor: "Longest prefix match", action: <>Of the three matches, the <strong>/24</strong> is the most specific — it wins. The /16 and the /0 stay installed; they lose this lookup and win others.</>, why: "the most specific route describes the destination best", verify: `The /24 is the route shown for ${SA}; SERVER-C-style addresses outside it pick the /16.`, fails: { symptom: `Traffic for part of a network goes somewhere else.`, evidence: `A more specific route (a /25, a host /32) is winning for those addresses.` }, tone: "success" },
+            { actor: "Next hop", action: <>The winner says “via {NH}”. R1 must reach that neighbor: {NH} is inside its connected 10.0.12.0/30 → out ge-0/0/1 → ARP for {NH} → R2&apos;s MAC (<Mono>{RT_MAC["R2:TRANSIT"]}</Mono>).</>, changes: "the next-hop address is never written into the packet", verify: `R1's ARP cache has ${NH} with a MAC; the frame on the R1–R2 link goes to that MAC.`, fails: { symptom: `The route wins, and packets still die at R1 (Host Unreachable).`, evidence: `Nobody owns the next hop (a typo): show ip arp shows it Incomplete.` }, tone: "arp" },
+            { actor: "Forwarding", action: "R1 builds a new frame to R2, decrements TTL, recomputes the checksum. The IP source and destination are unchanged.", verify: `A capture on R1's ge-0/0/1: same IPs, TTL one lower, R2's MAC.`, fails: { symptom: `Nothing leaves R1 on the link you expected.`, evidence: `A different route won, or the interface is down.` }, tone: "ip" },
+            { actor: "Next router's lookup", action: "R2 does its own lookup for the same destination: 172.16.50.0/24 is connected → it delivers to SERVER-A in a new frame. R1 chose nothing beyond R2.", verify: `R2's table: 172.16.50.0/24 connected, interface up.`, fails: { symptom: `R1 forwards correctly and R2 drops it.`, evidence: `R2 has no usable route (or its interface is down) — each router decides alone.` }, tone: "success" },
+            { actor: "Return path", action: <>SERVER-A&apos;s reply is a <strong>new packet</strong> to {HA}. R2 must have its <strong>own</strong> route to 10.10.10.0/24 (via {RT_ADDR["R1:TRANSIT"]}), then R1 delivers on its connected LAN.</>, why: "routing is decided per packet, per router, per direction", verify: `show ip route ${HA} on R2; the reply visible on the R1–R2 link.`, fails: { symptom: `The server sees requests and answers; HOST-A never gets replies.`, evidence: `A missing or unusable return route on a router on the way back — the server gets Net Unreachable from it.` }, tone: "violet" },
+            { actor: "Default route", action: <>For {OUTSIDE_DST}, only 0.0.0.0/0 matches on R1, so it goes to the default&apos;s next hop. The next router must know more — or it drops it.</>, why: "a default route means “if nothing better matches” — it moves a packet one router further", verify: `R1 uses 0.0.0.0/0 only for destinations nothing longer contains.`, fails: { symptom: `A default exists and packets still die.`, evidence: `The next router has no route: follow the lookup to the router that returns Net Unreachable.` }, tone: "warning" },
+            { actor: "More-specific failure", action: <>A stray <Mono>172.16.50.0/25 discard</Mono> appears on R1. For {SA} (inside .0–.127) the /25 is longer than the /24 — it wins, and the packet is dropped silently. {SB} is outside the /25 and still works.</>, verify: `R1's answer for ${SA} is the /25 discard; for ${SB} it is the /24.`, fails: { symptom: `Half a subnet is unreachable; the other half works.`, evidence: `Same LAN, different winners: a more specific route covers the failing half.` }, tone: "danger" },
+            { actor: "Verify", action: "Prove with traffic, in both directions, and check a neighboring destination too.", verify: `Ping succeeds (requests AND replies), the lookup on each router shows the expected winner, and ${SB} still works.`, fails: { symptom: `“The route is configured” — but the ping still fails.`, evidence: `Configured isn't installed, installed isn't winning, winning isn't resolvable. Test, don't assume.` }, tone: "success" },
+            { actor: "Troubleshoot", action: "Do what the packet does: on each router, which installed routes contain the destination, which wins, is it usable, does the next hop answer ARP — then the same for the reply.", verify: `The first router whose answer is wrong (no route, a discard, a dead next hop, or pointing backwards) is the cause.`, fails: { symptom: `Time Exceeded, or traceroute alternating between two routers.`, evidence: `Two routers point at each other: a loop, until the TTL runs out.` }, tone: "cyan" },
+          ]}
+          outcome={<>Forwarding is the same small algorithm on every router: find every matching route, keep the longest, resolve the next hop, rebuild the frame. A more specific route always beats a broader one, which is exactly how the incident&apos;s 172.16.50.0/25 <strong>discard</strong> route silently steals SERVER-A&apos;s traffic while SERVER-B (outside the /25) keeps working. Check the lookup for each destination, remove the bad route, and verify both directions.</>}
+        />
+        <PresentationBridge>Try longest-prefix match yourself and watch the discard route steal SERVER-A&apos;s traffic in the Routing presentation.</PresentationBridge>
+        <StoryLabBridge />
+      </GuideSection>
+
+      <GuideSection id="rtl-breaks" eyebrow="When it breaks" title={`When a packet does not arrive: follow the lookups`} tone="danger">
+        <p className="text-sm text-pv-text-muted">{`No router sees the whole path. To troubleshoot, do what the packet does: the same lookup on each router, in each direction, until one of them goes wrong.`}</p>
+        <TroubleshootingFlow
+          steps={[
+            { question: `Which route wins on the first router?`, look: `List every route that contains the destination. The longest prefix wins, whatever it does, a discard included.` },
+            { question: `Is that route's next hop real and reachable?`, look: `The route is active, the next hop has an ARP entry, and the interface is up.` },
+            { question: `Repeat on every router up to the destination`, look: `Each router decides alone. The first one with no route, a wrong winner or a dead next hop is the cause.` },
+            { question: `Then do the same for the reply`, look: `From the destination back to the source, on each router. Return routes are separate configuration.` },
+            { question: `Is the packet looping?`, look: `TTL expiring, or traceroute alternating between two routers, means two routers point at each other.` },
+            { question: `How do you prove the fix?`, look: `Ping in both directions, check the lookup for the destination on every router, and check a neighboring destination (SERVER-B) still works.` },
+          ]}
+        />
+        <Callout tone="cyan" title="The habit to build" icon="✓">
+          Walk the story in order and confirm each step with real evidence (a table, a capture, a command). The first step you cannot confirm is where the problem is. The boxes under each story step above say what to look at.
+        </Callout>
+      </GuideSection>
+
+      <PathDivider title="Reference">Every part of the story in detail. Read the parts you need.</PathDivider>
+
 
       <GuideSection id="rtl-topology" eyebrow="Topology" title="Three networks, two routers" tone="cyan">
         <DiagramFrame caption="Both servers share one /24 behind R2 (their access switch isn't drawn).">
@@ -307,8 +368,8 @@ export function RoutingLessonGuideContent() {
         </p>
       </GuideSection>
 
-      <GuideSection id="rtl-nexthop" eyebrow="Next hop" title="A static route points at a neighbour" tone="arp">
-        <DiagramFrame caption="Recursive resolution: route → connected network → interface → neighbour MAC.">
+      <GuideSection id="rtl-nexthop" eyebrow="Next hop" title="A static route points at a neighbor" tone="arp">
+        <DiagramFrame caption="Recursive resolution: route → connected network → interface → neighbor MAC.">
           <NextHopDiagram />
         </DiagramFrame>
       </GuideSection>
@@ -331,6 +392,18 @@ export function RoutingLessonGuideContent() {
             { title: "R2", body: "Connected /24: the destination itself is the next hop, so the new frame goes straight to SERVER-A's MAC.", tone: "success" },
           ]}
         />
+      </GuideSection>
+
+      <GuideSection id="rtl-usable" eyebrow="Route activity" title="Configured is not installed; installed is not delivered" tone="warning">
+        <FlowSteps
+          steps={[
+            { title: "Configured", body: "The operator typed it: it is in the running configuration.", tone: "violet" },
+            { title: "Installed (active)", body: "Its next hop lies inside an up, connected network. Only installed routes take part in lookups. An interface going down withdraws its connected route — and every static route reached through it.", tone: "cyan" },
+            { title: "Winning", body: "Of the installed routes that contain this destination, it has the longest prefix.", tone: "success" },
+            { title: "Delivered", body: "Its next hop answers ARP, a frame is built and the next router does its own lookup. A next hop nobody owns fails here.", tone: "warning" },
+          ]}
+        />
+        <p>Each stage has its own evidence: running-config vs show ip route (or show route hidden), the router&apos;s answer for one address, its ARP cache, and a capture on the egress link.</p>
       </GuideSection>
 
       <GuideSection id="rtl-return" eyebrow="Both directions" title="The reply needs its own routes" tone="success">
@@ -359,6 +432,17 @@ export function RoutingLessonGuideContent() {
         <p>A new default route or an extra /16 could never beat a /25: both are shorter. TTL and ARP are not involved, because the packet is dropped at route selection.</p>
       </GuideSection>
 
+      <GuideSection id="rtl-drops" eyebrow="Failures" title="Four ways a packet stops at a router" tone="danger">
+        <CompareCards
+          items={[
+            { title: "No route", tone: "warning", tag: "Net Unreachable", points: ["No installed route contains the destination", "The router returns ICMP 3/0 to the source", "traceroute: !N"] },
+            { title: "Discard route", tone: "danger", tag: "silence", points: ["A route matched — its action is drop", "Nothing comes back: ping just times out", "It is in the table, winning"] },
+            { title: "Next hop unresolved", tone: "arp", tag: "Host Unreachable", points: ["A route matched; ARP for its next hop gets no answer", "show ip arp: Incomplete", "traceroute: !H"] },
+            { title: "Loop", tone: "violet", tag: "Time Exceeded", points: ["Every router forwarded it — back and forth", "TTL runs out, a router returns ICMP 11", "traceroute alternates between two addresses"] },
+          ]}
+        />
+      </GuideSection>
+
       <GuideSection id="rtl-l2l3" eyebrow="Layer 3 vs Layer 2" title="Routing is not switching" tone="ethernet">
         <CompareCards
           items={[
@@ -378,7 +462,7 @@ export function RoutingLessonGuideContent() {
             { term: "Connected route", def: "A network on a configured, up interface." },
             { term: "Static route", def: "An operator-configured prefix with a next hop (or discard)." },
             { term: "Default route", def: "0.0.0.0/0 — matches everything, chosen only when nothing longer matches." },
-            { term: "Next hop", def: "The neighbour to hand the packet to; resolved via a connected route." },
+            { term: "Next hop", def: "The neighbor to hand the packet to; resolved via a connected route." },
             { term: "Longest prefix match", def: "Of all matching routes, pick the one with the most fixed bits." },
             { term: "Discard route", def: "A route whose action is to drop matching packets locally." },
           ]}
@@ -390,7 +474,7 @@ export function RoutingLessonGuideContent() {
           tone="cyan"
           title="Recap"
           mark="•"
-          items={["Connected, static and default routes come from different places", "Several routes can match; the longest prefix wins", "A static next hop is resolved through a connected route and never replaces the destination", "Each router builds a new frame and decrements TTL", "A default route moves a packet one hop — no reachability promise", "A more-specific discard route drops exactly the addresses it covers"]}
+          items={["Connected, static and default routes come from different places", "Several routes can match; the longest prefix wins — never the list order", "A static route is used only while its next hop is reachable on a connected network", "A next hop is resolved to an interface and a MAC, and never replaces the destination", "Each router decides alone, for the packet it has — the reply is routed separately", "A default route moves a packet one hop — no reachability promise", "A more-specific discard route drops exactly the addresses it covers", "No route, discard, unresolved next hop and loop each leave different evidence"]}
         />
       </GuideSection>
     </div>

@@ -10,35 +10,43 @@ import { v4InterfacesFor, v4TraceFor } from "./deviceTrace";
 import { explainV4, v4Tables } from "./explain";
 import { v4Names } from "./addressNames";
 import { SubnetChamber } from "./SubnetChamber";
+import { V4_EDGES, V4_NODES, V4_REGIONS } from "./topology";
+import { Ipv4LabWorkspace } from "./ipv4-lab/Ipv4LabWorkspace";
 import { V4_LESSON_SECTIONS, Ipv4LessonGuideContent } from "./LessonGuideContent";
+import { Ipv4Presentation } from "./Ipv4Presentation";
 import { V4_DEEP_DIVE_SECTIONS, Ipv4DeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
   { id: "lesson", label: "This Lesson", hint: "HOST-A /26 → R1 → HOST-B /26 · AND test, gateway, TTL, wrong mask", sections: V4_LESSON_SECTIONS, content: <Ipv4LessonGuideContent /> },
-  { id: "deep", label: "IPv4 Addressing & Subnetting Deep Dive", hint: "IPv4 addressing, CIDR and forwarding in general", sections: V4_DEEP_DIVE_SECTIONS, content: <Ipv4DeepDiveContent /> },
+  { id: "deep", label: "IPv4 Addressing & Subnetting Deep Dive", hint: "The full lesson on this network · prefixes, local vs remote, next hop vs destination, R1, troubleshooting", sections: V4_DEEP_DIVE_SECTIONS, content: <Ipv4DeepDiveContent /> },
 ];
 
 const CHAMBER_STEPS = ["subnet-chamber", "predict-block", "four-subnets", "host-a-subnet", "host-b-subnet"];
 
+/**
+ * HOST-A's addressing at a glance. While the incident is unresolved the changed setting is not shown here: the learner
+ * finds it by inspecting HOST-A (its decision and configuration), so this always-visible panel never spoils the diagnosis.
+ */
 function HostAPanel({ s }: { s: Ipv4State }) {
   const p = s.hostAPrefix;
-  const wrong = p !== V4_PREFIX;
+  const conceal = s.faultActive && !s.repaired;
   const d = s.decision;
+  const hidden = "inspect HOST-A to see";
   const rows = [
-    { k: "HOST-A", v: `${V4_IP["HOST-A"]}/${p}` },
-    { k: "Mask", v: maskOf(p) },
-    { k: "Derived subnet", v: `${networkOf(V4_IP["HOST-A"], p)}/${p}` },
+    { k: "HOST-A", v: conceal ? V4_IP["HOST-A"] : `${V4_IP["HOST-A"]}/${p}` },
+    { k: "Mask", v: conceal ? hidden : maskOf(p) },
+    { k: "Derived subnet", v: conceal ? hidden : `${networkOf(V4_IP["HOST-A"], p)}/${p}` },
     { k: "Gateway", v: V4_IP.R1L },
     { k: "Last decision", v: d ? `${d.host} → ${d.onLink ? "on-link" : "remote"} · L2 next hop ${d.l2NextHop}` : "none yet" },
   ];
   return (
-    <GlassPanel className={wrong ? "border-pv-danger/40 p-4" : "p-4"}>
+    <GlassPanel className="p-4">
       <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-pv-cyan-soft">Host addressing</p>
       <div className="space-y-1 text-[11px]">
         {rows.map((r) => (
           <div key={r.k} className="flex flex-wrap justify-between gap-x-3">
             <span className="text-pv-text-faint">{r.k}</span>
-            <span className={`pv-mono ${wrong && r.k !== "Gateway" && r.k !== "Last decision" ? "text-pv-danger" : "text-pv-text"}`}>{r.v}</span>
+            <span className={`pv-mono ${r.v === hidden ? "text-pv-text-faint" : "text-pv-text"}`}>{r.v}</span>
           </div>
         ))}
       </div>
@@ -69,23 +77,9 @@ const config: FundamentalsLessonConfig<Ipv4State> = {
   ],
   guide: { title: "IPv4 Addressing & Subnetting", subtitle: `${V4_IP["HOST-A"]}/${V4_PREFIX} · ${V4_IP["HOST-B"]}/${V4_PREFIX} · R1 ${V4_IP.R1L} / ${V4_IP.R1R}`, tabs: GUIDE_TABS },
   briefing: { phases: V4_BRIEFING_PHASES, notes: V4_BRIEFING_NOTES },
-  nodes: (s) => [
-    { id: "HOST-A", label: "HOST-A", subLabel: `.10/${s.hostAPrefix}`, x: 8, y: 58, kind: "laptop" },
-    { id: "SW-A", label: "SW-A", subLabel: "L2 switch", x: 28, y: 42, kind: "switch" },
-    { id: "R1", label: "R1", subLabel: ".1 | .65", x: 50, y: 58, kind: "router" },
-    { id: "SW-B", label: "SW-B", subLabel: "L2 switch", x: 72, y: 42, kind: "switch" },
-    { id: "HOST-B", label: "HOST-B", subLabel: `.70/${V4_PREFIX}`, x: 92, y: 58, kind: "laptop" },
-  ],
-  edges: () => [
-    { id: "a-swa", a: "HOST-A", b: "SW-A", label: "p1" },
-    { id: "swa-r1", a: "SW-A", b: "R1", label: "ge-0/0/0 .1" },
-    { id: "r1-swb", a: "R1", b: "SW-B", label: "ge-0/0/1 .65" },
-    { id: "swb-b", a: "SW-B", b: "HOST-B", label: "p2" },
-  ],
-  regions: [
-    { id: "net-a", label: "192.168.10.0/26", x: 2, y: 14, width: 42, height: 76, tone: "cyan" },
-    { id: "net-b", label: "192.168.10.64/26", x: 56, y: 14, width: 42, height: 76, tone: "violet" },
-  ],
+  nodes: () => V4_NODES,
+  edges: () => V4_EDGES,
+  regions: V4_REGIONS,
   enterable: ["R1", "SW-A", "SW-B"],
   primaryDevice: { "and-math": "HOST-A", "b-receives": "HOST-B", "b-decides": "HOST-B", "fault-decision": "HOST-A", "fault-r1-silent": "R1", "fault-unresolved": "HOST-A", "repair-challenge": "HOST-A", "verify-decision": "HOST-A" },
   traceFor: (d, s, stepId) => v4TraceFor(d as Ipv4Device, s, stepId),
@@ -94,7 +88,8 @@ const config: FundamentalsLessonConfig<Ipv4State> = {
   explainNode: explainV4,
   tablesFor: (d, s) => v4Tables(d as Ipv4Device, s),
   callout: (p, s) => fundamentalsCallout(p, v4Names, { decision: s.note && (s.note.device === p.from || s.note.device === p.to) ? s.note.text : undefined }),
-  nodeBadges: (id, s) => (id === "HOST-A" && s.hostAPrefix !== V4_PREFIX ? [`MASK /${s.hostAPrefix}`] : id === "HOST-A" && s.hostAUnresolved ? ["UNREACHABLE"] : undefined),
+  // No badge names the changed setting: the incident is diagnosed from evidence (HOST-A's decision and configuration).
+  nodeBadges: (id, s) => (id === "HOST-A" && s.hostAUnresolved ? ["UNREACHABLE"] : undefined),
   repair: {
     stepId: "repair-challenge",
     prompt: "HOST-A cannot reach HOST-B. Which change fixes the cause?",
@@ -119,6 +114,12 @@ const config: FundamentalsLessonConfig<Ipv4State> = {
   },
   panels: (_s, stepId) => (stepId && CHAMBER_STEPS.includes(stepId) ? <SubnetChamber /> : null),
   sidePanel: (s) => <HostAPanel s={s} />,
+  practiceLab: {
+    entry: { title: "IPv4 Lab", buttonLabel: "Practice IPv4", description: "Five short levels (address and prefix, local or remote, through R1, TTL and checksum, wrong settings), then every host and R1 in its own window — Linux, Windows, Cisco and Junos terminals, captures, settings you change and verify — and tickets to solve from evidence." },
+    contextNote: (stepId) => (stepId && ["predict-local", "and-math", "predict-l2-next-hop", "a-sends", "r1-forwards", "header-recap", "verify-delivered"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <Ipv4LabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "IPv4", render: (p) => <Ipv4Presentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can subnet and follow a routed packet", message: "CIDR arithmetic, the AND test, gateway vs destination, TTL and checksum at the router — and a wrong mask found and fixed." },
 };
 

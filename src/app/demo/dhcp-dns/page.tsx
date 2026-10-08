@@ -10,6 +10,8 @@ import { dhTables, explainDh } from "./explain";
 import { dhNames } from "./addressNames";
 import { DhcpLeasePanel } from "./DhcpLeasePanel";
 import { DH_LESSON_SECTIONS, DhcpDnsLessonGuideContent } from "./LessonGuideContent";
+import { DhcpDnsPresentation } from "./DhcpDnsPresentation";
+import { DhcpDnsLabWorkspace } from "./dhcp-lab/DhcpDnsLabWorkspace";
 import { DH_DEEP_DIVE_SECTIONS, DhcpDnsDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
@@ -93,6 +95,12 @@ const config: FundamentalsLessonConfig<DhState> = {
     ],
   },
   sidePanel: (s) => <DhcpLeasePanel s={s} />,
+  practiceLab: {
+    entry: { title: "DHCP & DNS Lab", buttonLabel: "Practice DHCP & DNS", description: "Learn the story level by level, follow every message to where it stops, troubleshoot real tickets with each device's tables, logs and CLI, then build DHCP and DNS yourself from the devices' terminals and prove the service works." },
+    contextNote: (stepId) => (stepId && /relay|giaddr|dora|bound|dns|fault|renew|verify/i.test(stepId) ? "Want to drive the client yourself?" : undefined),
+    render: ({ open, onClose }) => <DhcpDnsLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "DHCP & DNS", render: (p) => <DhcpDnsPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "Boot to name, understood", message: "DORA through a relay, a DNS lookup, and an Option 6 fault fixed with a lease renewal." },
 };
 

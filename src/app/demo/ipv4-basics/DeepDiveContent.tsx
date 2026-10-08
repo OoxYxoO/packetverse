@@ -1,19 +1,153 @@
-import { Callout, ChecklistCard, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, FieldTable, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
-import { DFieldRow, DTable } from "@/components/lesson/FundamentalsGuideSvg";
+"use client";
+
+import type { ReactNode } from "react";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DNode, DPill, FailureSignatures, FieldTable, FlowSteps, GuideSection, Misconceptions, Mono, PacketAnatomy, StateTransition, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { DFieldRow } from "@/components/lesson/FundamentalsGuideSvg";
+import { ExplainIt, KnowledgeCheck, KnowledgeQuiz, PracticeBridge, type KnowledgeQuestion } from "@/components/lesson/GuideInteractive";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
-import { blockSize, hostRange, maskOf, networkOf, sameSubnet, subnetsOf } from "@/lib/sim-engine/scenarios/ipv4Basics";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { executeCli } from "@/lib/cli/parser";
+import type { CliVendor } from "@/lib/cli/types";
+import { INITIAL_TTL, V4_FAULT_PREFIX, V4_IP, V4_MAC, V4_PREFIX, blockSize, hostRange, maskOf, networkOf } from "@/lib/sim-engine/scenarios/ipv4Basics";
+import { V4_HOSTS, createV4Net, hex4, v4Apply, v4IfName, v4MacOwner, type V4Frame, type V4NetState } from "@/lib/sim-engine/scenarios/ipv4Net";
+import { v4R1Sets, type V4CliApi } from "./ipv4-lab/v4Cli";
+
+/**
+ * IPv4 DEEP DIVE — the complete IPv4 Basics lesson, taught on THIS network: HOST-A 192.168.10.10/26 and the lab-only
+ * HOST-C 192.168.10.30 on SW-A, R1 (.1 | .65), HOST-B 192.168.10.70/26 on SW-B. Every number, frame list, before/after
+ * comparison and CLI sample below is produced by running the IPv4 Lab's own model and the real R1 CLI adapter.
+ * Later lessons' topics (subnet design, route selection, ICMP, NAT, IPv6…) stay in "Beyond this lesson".
+ */
+
+const G = { foundation: "Foundation", decision: "The forwarding decision", header: "The IPv4 header", forward: "End to end", ops: "Operations", master: "Master it", beyond: "Beyond this lesson" };
 
 export const V4_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "v4d-header", label: "The IPv4 header" },
-  { id: "v4d-prefixes", label: "Prefix sizes" },
-  { id: "v4d-cidr", label: "CIDR aggregation" },
-  { id: "v4d-lpm", label: "Longest-prefix match" },
-  { id: "v4d-ttl", label: "TTL and loops" },
-  { id: "v4d-special", label: "/31 and /32" },
-  { id: "v4d-private", label: "Private ranges" },
-  { id: "v4d-workflow", label: "Troubleshooting workflow" },
-  { id: "v4d-glossary", label: "Glossary" },
+  { id: "v4d-why", label: "Why IPv4 exists", group: G.foundation },
+  { id: "v4d-l2l3", label: "Layer 2 vs Layer 3", group: G.foundation },
+  { id: "v4d-address", label: "The address model", group: G.foundation },
+  { id: "v4d-bits", label: "Network and host bits", group: G.foundation },
+  { id: "v4d-prefix", label: "Prefix length and mask", group: G.foundation },
+  { id: "v4d-cidr", label: "CIDR notation", group: G.foundation },
+  { id: "v4d-decision", label: "Local or remote?", group: G.decision },
+  { id: "v4d-and", label: "The AND comparison", group: G.decision },
+  { id: "v4d-local", label: "Local delivery", group: G.decision },
+  { id: "v4d-remote", label: "Remote delivery", group: G.decision },
+  { id: "v4d-gateway", label: "The default gateway", group: G.decision },
+  { id: "v4d-nexthop", label: "Next hop vs final destination", group: G.decision },
+  { id: "v4d-ipmac", label: "Destination IP vs destination MAC", group: G.decision },
+  { id: "v4d-arp", label: "ARP comes after the decision", group: G.decision },
+  { id: "v4d-header", label: "IPv4 header anatomy", group: G.header },
+  { id: "v4d-addrs", label: "Source and destination", group: G.header },
+  { id: "v4d-ttl", label: "TTL", group: G.header },
+  { id: "v4d-proto", label: "Protocol", group: G.header },
+  { id: "v4d-csum", label: "Header checksum", group: G.header },
+  { id: "v4d-changes", label: "What a router changes", group: G.header },
+  { id: "v4d-keeps", label: "What a router keeps", group: G.header },
+  { id: "v4d-connected", label: "Connected networks", group: G.forward },
+  { id: "v4d-hosttree", label: "The host's decision tree", group: G.forward },
+  { id: "v4d-router", label: "R1's connected lookup", group: G.forward },
+  { id: "v4d-walk-local", label: "Walkthrough: same subnet", group: G.forward },
+  { id: "v4d-walk-remote", label: "Walkthrough: remote subnet", group: G.forward },
+  { id: "v4d-diff", label: "Before and after R1", group: G.forward },
+  { id: "v4d-verify", label: "Operational verification", group: G.ops },
+  { id: "v4d-workflow", label: "Troubleshooting workflow", group: G.ops },
+  { id: "v4d-incident", label: "The wrong-mask incident", group: G.ops },
+  { id: "v4d-signatures", label: "Failure signatures", group: G.ops },
+  { id: "v4d-myths", label: "Common misconceptions", group: G.master },
+  { id: "v4d-quiz", label: "Knowledge check", group: G.master },
+  { id: "v4d-explain", label: "Can you explain it?", group: G.master },
+  { id: "v4d-practice", label: "Practice in the IPv4 Lab", group: G.master },
+  { id: "v4d-beyond", label: "Subnet design, routing, ICMP, NAT, IPv6…", group: G.beyond },
 ];
+
+// ------------------------------------------------------------------ one source of truth: the IPv4 Lab model
+
+const A = V4_IP["HOST-A"];
+const B = V4_IP["HOST-B"];
+const C = V4_HOSTS.hostc.cfg.ip;
+const GA = V4_IP.R1L;
+const GB = V4_IP.R1R;
+const MASK = maskOf(V4_PREFIX);
+// The IPv4 Lab's own model: HOST-A pings HOST-C, then HOST-B; and the wrong-mask ticket reproduced.
+const LAB_LOCAL = v4Apply(createV4Net(), { type: "ping", src: "hosta", dst: C });
+const LAB_ROUTED = v4Apply(LAB_LOCAL, { type: "ping", src: "hosta", dst: B });
+const LAB_INCIDENT = v4Apply(v4Apply(createV4Net(), { type: "ticket", id: "mask" }), { type: "ping", src: "hosta", dst: B });
+const runOf = (st: V4NetState) => (st.last?.type === "ping" ? st.last.result : undefined);
+const ROUTE_STEP = runOf(LAB_ROUTED)!.router.find((r) => r.outcome === "forwarded" && r.dst === B)!;
+const IN_F = ROUTE_STEP.inFrame;
+const OUT_F = ROUTE_STEP.outFrame!;
+const ROUTE_TEXT = `${ROUTE_STEP.route!.net}/${ROUTE_STEP.route!.prefix}`;
+const EGRESS = v4IfName(ROUTE_STEP.route!.iface);
+const ipv4Field: Record<string, (f: V4Frame) => string> = {
+  Version: () => "4",
+  IHL: () => "5 (20 bytes)",
+  "DSCP / ECN": () => "0 / 0",
+  "Total Length": (f) => String(f.ip!.len),
+  Identification: (f) => hex4(f.ip!.id),
+  Flags: () => "DF (Don't Fragment)",
+  "Fragment Offset": () => "0",
+  TTL: (f) => String(f.ip!.ttl),
+  Protocol: () => "1 (ICMP)",
+  "Header Checksum": (f) => hex4(f.ip!.checksum),
+  Source: (f) => f.ip!.src,
+  Destination: (f) => f.ip!.dst,
+};
+const ip = (f: V4Frame, l: string) => ipv4Field[l]?.(f) ?? "";
+const eth = (f: V4Frame, l: string) => (l === "Destination MAC" ? f.ethDst : f.ethSrc);
+const v4Owner = (mac: string) => (v4MacOwner(mac) === "nobody" ? undefined : v4MacOwner(mac));
+/** The echo HOST-A put on the wire toward R1. */
+const TO_R1 = LAB_ROUTED.captures.find((c) => c.run === runOf(LAB_ROUTED)!.run && c.dev === "hosta" && c.dir === "out" && c.frame.ip?.icmp === "echo-request")!.frame;
+
+/** Every frame the request put on the wire (senders' side), in order — the same list the lab's captures show. */
+const frameRows = (st: V4NetState, untilReply = true) =>
+  st.captures
+    .filter((c) => c.run === runOf(st)!.run && c.dir === "out" && (untilReply || c.frame.ip?.icmp !== "echo-reply"))
+    .filter((c) => !c.frame.ip || c.frame.ip.icmp === "echo-request")
+    .map((c) => {
+      const f = c.frame;
+      const isIp = f.type === "IPv4";
+      return [isIp ? "IPv4" : f.arp!.op === "request" ? "ARP request" : "ARP reply", <Mono key="m">{f.ethDst}</Mono>, v4Owner(f.ethDst) ?? (f.ethDst.startsWith("FF") ? "broadcast" : "—"), isIp ? `${f.ip!.src} → ${f.ip!.dst} · TTL ${f.ip!.ttl}` : `who has / is at ${f.arp!.op === "request" ? f.arp!.tip : f.arp!.sip}`];
+    });
+const FRAME_COLS = ["Frame", "Ethernet destination", "= device", "IPv4 / ARP"];
+/** A host's decision with a given prefix (the same AND the lab's hosts make). */
+const decide = (prefix: number, dst: string) => {
+  const local = networkOf(A, prefix) === networkOf(dst, prefix);
+  return { srcIp: A, dst, mask: maskOf(prefix), srcNet: networkOf(A, prefix), dstNet: networkOf(dst, prefix), local, nextHop: local ? dst : GA };
+};
+
+function cli(state: V4NetState, vendor: CliVendor, command: string) {
+  const api: V4CliApi = { view: state, act: () => state, cisco: { kind: "exec" }, setCisco: () => undefined, junosEdit: false, setJunosEdit: () => undefined, cand: state.r1, setCand: () => undefined, hist: [{ r1: state.r1, at: 0, by: "root" }], commit: () => undefined };
+  const set = v4R1Sets(api)[vendor];
+  const r = executeCli(set, command);
+  return { prompt: set.prompt, command, output: r.kind === "ok" ? r.output : "" };
+}
+function CliPanel({ prompt, command, output, caption }: { prompt: string; command: string; output: string; caption?: string }) {
+  return (
+    <figure className="min-w-0">
+      {caption && <figcaption className="mb-1 text-[10px] font-bold uppercase tracking-wide text-pv-text-faint">{caption}</figcaption>}
+      <div className="min-w-0 overflow-hidden rounded-lg border border-white/10 bg-[#05080d]">
+        <pre className="overflow-x-auto px-3 py-2 pv-mono text-[10.5px] leading-relaxed text-pv-text-muted">
+          <span className="text-pv-success">{prompt}</span>
+          <span className="text-pv-text">{command}</span>
+          {"\n"}
+          {output}
+        </pre>
+      </div>
+    </figure>
+  );
+}
+const Strong = ({ children }: { children: ReactNode }) => <b className="text-pv-text">{children}</b>;
+
+function LabBridge({ label, children }: { label: string; children: ReactNode }) {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label={label} onPractice={openLab}>
+      {children}
+    </PracticeBridge>
+  );
+}
+
+// ------------------------------------------------------------------ diagrams
 
 function HeaderDiagram() {
   const row = (y: number, fields: { label: string; w: number; strong?: boolean; color?: string }[]) => <DFieldRow x={40} y={y} h={30} fields={fields.map((f) => ({ ...f, color: f.color ?? D.ip }))} />;
@@ -49,11 +183,11 @@ function HeaderDiagram() {
 }
 
 function PrefixDiagram() {
-  const prefixes = [24, 25, 26, 27, 28, 29, 30];
+  const prefixes = [24, 25, 26, 27];
   return (
-    <DiagramSvg h={230} label={`Prefix sizes: ${prefixes.map((p) => `/${p} mask ${maskOf(p)} block ${blockSize(p)}`).join(", ")}`}>
+    <DiagramSvg h={150} label={`Prefix sizes: ${prefixes.map((p) => `/${p} mask ${maskOf(p)} block ${blockSize(p)}`).join(", ")}`}>
       {prefixes.map((p, i) => {
-        const y = 26 + i * 28;
+        const y = 22 + i * 30;
         const w = (blockSize(p) / 256) * 290;
         return (
           <g key={p}>
@@ -63,9 +197,9 @@ function PrefixDiagram() {
             <text x={60} y={y + 12} fill={D.muted} fontSize={10} fontFamily="monospace">
               {maskOf(p)}
             </text>
-            <rect x={200} y={y} width={Math.max(3, w)} height={16} rx={3} fill={p === 26 ? D.violet : D.ip} fillOpacity={0.5} />
+            <rect x={200} y={y} width={Math.max(3, w)} height={16} rx={3} fill={p === V4_PREFIX ? D.violet : D.ip} fillOpacity={0.5} />
             <text x={200 + Math.max(3, w) + 8} y={y + 12} fill={D.muted} fontSize={10}>
-              {blockSize(p)} addrs · {hostRange("10.0.0.0", p)?.count} hosts
+              {blockSize(p)} addresses · {hostRange("10.0.0.0", p)?.count} hosts
             </text>
           </g>
         );
@@ -74,59 +208,64 @@ function PrefixDiagram() {
   );
 }
 
-function CidrDiagram() {
-  const subs = subnetsOf("192.168.10.0", 24, 26);
+function BitsDiagram() {
+  const rows: [string, string][] = [
+    ["HOST-A", A],
+    ["HOST-C", C],
+    ["HOST-B", B],
+  ];
+  const net = V4_PREFIX - 24;
   return (
-    <DiagramSvg h={170} label="Four contiguous /26 subnets 192.168.10.0, .64, .128 and .192 aggregate into one /24 route 192.168.10.0/24">
-      {subs.map((s, i) => (
-        <g key={s.network}>
-          <DNode x={90 + i * 150} y={40} label={`${s.network}/26`} w={140} accent={D.violet} />
-          <DArrow x1={90 + i * 150} y1={62} x2={320} y2={112} color={D.muted} width={1.5} />
-        </g>
-      ))}
-      <DNode x={320} y={134} label="192.168.10.0/24" sub="one summary route" w={180} accent={D.success} />
+    <DiagramSvg h={170} label={`Last octet of HOST-A ${A}, HOST-C ${C} and HOST-B ${B} in bits; with /${V4_PREFIX} the first ${net} bits of the last octet are network bits: HOST-A and HOST-C share 00, HOST-B has 01`}>
+      <text x={20} y={20} fill={D.muted} fontSize={10}>
+        192.168.10 is shared by everyone here (24 network bits); /{V4_PREFIX} adds {net} more network bits inside the last octet
+      </text>
+      {rows.map(([name, addr], r) => {
+        const bits = Number(addr.split(".")[3]).toString(2).padStart(8, "0");
+        const y = 48 + r * 38;
+        return (
+          <g key={name}>
+            <text x={20} y={y + 14} fill={D.text} fontSize={11} fontWeight={700}>
+              {name}
+            </text>
+            <text x={90} y={y + 14} fill={D.muted} fontSize={10.5} fontFamily="monospace">
+              {addr}
+            </text>
+            {[...bits].map((b, i) => (
+              <g key={i}>
+                <rect x={240 + i * 30 + (i >= net ? 10 : 0)} y={y} width={26} height={22} rx={4} fill={i < net ? D.cyan : D.box} fillOpacity={i < net ? 0.22 : 1} stroke={i < net ? D.cyan : D.line} />
+                <text x={253 + i * 30 + (i >= net ? 10 : 0)} y={y + 15} textAnchor="middle" fill={i < net ? D.cyan : D.text} fontSize={11} fontFamily="monospace">
+                  {b}
+                </text>
+              </g>
+            ))}
+          </g>
+        );
+      })}
+      <text x={240} y={164} fill={D.cyan} fontSize={10} fontWeight={700}>
+        network
+      </text>
+      <text x={330} y={164} fill={D.muted} fontSize={10}>
+        host bits
+      </text>
     </DiagramSvg>
   );
 }
 
-function LpmDiagram() {
-  const dst = "192.168.10.70";
-  const routes = [
-    { p: "0.0.0.0/0", nh: "ISP" },
-    { p: "192.168.0.0/16", nh: "R-core" },
-    { p: "192.168.10.0/24", nh: "R2" },
-    { p: "192.168.10.64/26", nh: "ge-0/0/1" },
-  ];
-  const matches = routes.map((r) => sameSubnet(dst, r.p.split("/")[0], Number(r.p.split("/")[1])));
-  const best = routes.reduce((bi, r, i) => (matches[i] && Number(r.p.split("/")[1]) > Number(routes[bi].p.split("/")[1]) ? i : bi), 0);
+function SplitDiagram() {
   return (
-    <DiagramSvg h={190} label={`Longest-prefix match for ${dst}: every route matches, the /26 is the most specific and wins`}>
-      <DTable
-        x={30}
-        y={20}
-        title={`Lookup ${dst}`}
-        cols={[
-          { label: "PREFIX", w: 170 },
-          { label: "NEXT HOP", w: 100 },
-          { label: "MATCH?", w: 80 },
-        ]}
-        rows={routes.map((r, i) => [r.p, r.nh, matches[i] ? "yes" : "no"])}
-        highlight={{ row: best, color: D.success }}
-      />
-      <text x={420} y={70} fill={D.success} fontSize={11} fontWeight={800}>
-        Most specific wins
-      </text>
-      <text x={420} y={90} fill={D.muted} fontSize={10}>
-        All four contain {dst};
-      </text>
-      <text x={420} y={106} fill={D.muted} fontSize={10}>
-        the longest prefix (/26) is used.
-      </text>
-      <text x={420} y={130} fill={D.muted} fontSize={10}>
-        (Illustrative table — R1 in the
-      </text>
-      <text x={420} y={146} fill={D.muted} fontSize={10}>
-        lesson has only its two /26s.)
+    <DiagramSvg h={210} label={`Remote delivery: the IPv4 header carries destination ${B} end to end, while the Ethernet destination is R1 on the first link and HOST-B on the second`}>
+      <DNode x={80} y={60} label="HOST-A" sub={A} w={130} />
+      <DNode x={320} y={60} label="R1" sub={`${GA} | ${GB}`} accent={D.violet} w={150} />
+      <DNode x={560} y={60} label="HOST-B" sub={B} w={130} />
+      <DArrow x1={147} y1={60} x2={243} y2={60} color={D.ip} />
+      <DArrow x1={397} y1={60} x2={493} y2={60} color={D.ip} />
+      <DPill x={195} y={110} text={`Eth dst ${eth(TO_R1, "Destination MAC")} (R1)`} color={D.eth} w={230} />
+      <DPill x={445} y={110} text={`Eth dst ${eth(OUT_F, "Destination MAC")} (HOST-B)`} color={D.eth} w={230} />
+      <DPill x={195} y={145} text={`IPv4 dst ${B} · TTL ${ip(IN_F, "TTL")}`} color={D.ip} w={210} />
+      <DPill x={445} y={145} text={`IPv4 dst ${B} · TTL ${ip(OUT_F, "TTL")}`} color={D.ip} w={210} />
+      <text x={320} y={195} textAnchor="middle" fill={D.muted} fontSize={10}>
+        Layer 2 describes one link. Layer 3 describes the whole journey.
       </text>
     </DiagramSvg>
   );
@@ -147,121 +286,366 @@ function TtlDiagram() {
   );
 }
 
-function SpecialDiagram() {
-  return (
-    <DiagramSvg h={200} label="Special prefixes: a /31 point-to-point link uses both addresses as hosts (RFC 3021); a /32 identifies exactly one address such as a loopback or host route">
-      <text x={20} y={24} fill={D.violet} fontSize={11} fontWeight={800}>
-        /31 — point-to-point (RFC 3021)
-      </text>
-      <DNode x={110} y={70} label="R-X" sub="10.0.0.0/31" accent={D.ip} w={110} />
-      <DNode x={330} y={70} label="R-Y" sub="10.0.0.1/31" accent={D.ip} w={110} />
-      <DLink x1={165} y1={70} x2={275} y2={70} color={D.violet} />
-      <text x={420} y={64} fill={D.muted} fontSize={10}>
-        2 addresses, both usable;
-      </text>
-      <text x={420} y={80} fill={D.muted} fontSize={10}>
-        no network/broadcast pair.
-      </text>
-      <text x={20} y={128} fill={D.cyan} fontSize={11} fontWeight={800}>
-        /32 — exactly one address
-      </text>
-      <DNode x={110} y={168} label="Loopback" sub="192.0.2.1/32" accent={D.cyan} w={120} />
-      <text x={200} y={164} fill={D.muted} fontSize={10}>
-        Used for loopbacks and host routes. It is not a subnet with hosts in it.
-      </text>
-    </DiagramSvg>
-  );
-}
+// ------------------------------------------------------------------ knowledge checks
+
+const QUIZ: KnowledgeQuestion[] = [
+  { id: "q1", prompt: `HOST-A is ${A}/${V4_PREFIX}. Is ${C} local?`, options: [{ id: "a", label: "Yes — both AND to 192.168.10.0" }, { id: "b", label: "No — different last octet" }], correctId: "a", explanation: `${A} AND ${MASK} = ${networkOf(A, V4_PREFIX)}; ${C} AND ${MASK} = ${networkOf(C, V4_PREFIX)}.` },
+  { id: "q2", prompt: `HOST-A sends to ${B}. Which address does it ARP for?`, options: [{ id: "a", label: GA }, { id: "b", label: B }, { id: "c", label: GB }], correctId: "a", explanation: "Remote destination → next hop is the default gateway; ARP resolves only the next hop." },
+  { id: "q3", prompt: `In HOST-A's frame to ${B}, what is the IPv4 destination?`, options: [{ id: "a", label: B }, { id: "b", label: GA }], correctId: "a", explanation: "The IPv4 header always carries the final destination; only the Ethernet destination is the gateway." },
+  { id: "q4", prompt: "Which fields does R1 change when it forwards the packet?", options: [{ id: "a", label: "Both MACs, TTL and the header checksum" }, { id: "b", label: "The source IPv4 address" }, { id: "c", label: "Nothing" }], correctId: "a", explanation: "A new Ethernet header for the next link; TTL − 1; the checksum is recomputed because the header changed." },
+  { id: "q5", prompt: `What TTL does HOST-B receive?`, options: [{ id: "a", label: String(INITIAL_TTL - 1) }, { id: "b", label: String(INITIAL_TTL) }, { id: "c", label: "It depends on the time taken" }], correctId: "a", explanation: "One router hop: 64 − 1. TTL counts hops, not seconds." },
+  { id: "q6", prompt: `HOST-A's mask is wrongly /${V4_FAULT_PREFIX}. What does it do when sending to ${B}?`, options: [{ id: "a", label: `Decides LOCAL and ARPs for ${B} directly` }, { id: "b", label: "Sends to its gateway as usual" }, { id: "c", label: "Asks R1 for a route" }], correctId: "a", explanation: `Under /${V4_FAULT_PREFIX} both addresses AND to 192.168.10.0, so HOST-A never selects the gateway; its ARP for ${B} gets no answer.` },
+  { id: "q7", prompt: "HOST-A's gateway is wrong but its mask is right. What changes compared with a wrong mask?", options: [{ id: "a", label: "It still decides REMOTE; only the next hop is unusable" }, { id: "b", label: "Nothing — same symptom, same cause" }], correctId: "a", explanation: "Wrong mask → wrong class (LOCAL). Wrong gateway → right class, wrong next hop." },
+];
+
+// ------------------------------------------------------------------ content
 
 export function Ipv4DeepDiveContent() {
+  const route = cli(LAB_ROUTED, "cisco", "show ip route");
+  const arp = cli(LAB_ROUTED, "cisco", "show ip arp");
+  const jroute = cli(LAB_ROUTED, "juniper", "show route");
+  const brief = cli(LAB_ROUTED, "cisco", "show ip interface brief");
+  const wrong = decide(V4_FAULT_PREFIX, B);
+  const right = decide(V4_PREFIX, B);
+  const local = decide(V4_PREFIX, C);
+
   return (
     <div className="space-y-12">
-      <GuideSection id="v4d-header" eyebrow="RFC 791" title="The IPv4 header" tone="ip">
-        <DiagramFrame caption="20 bytes without options (IHL = 5).">
-          <HeaderDiagram />
-        </DiagramFrame>
-        <FieldTable
-          title="Key fields"
-          columns={["Field", "Meaning"]}
-          rows={[
-            ["Version / IHL", "4, and header length in 32-bit words (5 = 20 bytes)"],
-            ["Total Length", "Header plus payload, in bytes"],
-            ["Identification / Flags / Fragment Offset", "Fragmentation control; DF means don't fragment"],
-            ["TTL", "Hop limit; decremented by every router (RFC 1812)"],
-            ["Protocol", "Payload type: 1 ICMP, 6 TCP, 17 UDP"],
-            ["Header Checksum", "Ones'-complement checksum of the header only, recomputed per hop"],
+      {/* ------------------------------------------------------------ Foundation */}
+      <GuideSection id="v4d-why" eyebrow="Foundation" title="Why IPv4 exists" tone="ip">
+        <p>
+          Ethernet delivers frames inside one LAN. HOST-A ({A}) and HOST-B ({B}) are on <Strong>different LANs</Strong>, joined by R1. To get a packet across, every host and router needs an address that says <Strong>which network</Strong> a device is on — not just which network card it is. That address is IPv4.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="v4d-l2l3" eyebrow="Foundation" title="Layer 2 vs Layer 3" tone="ip">
+        <CompareCards
+          items={[
+            { title: "Layer 2 — Ethernet (MAC)", tone: "ethernet", tag: "one link", points: ["Gets a frame to the next device on THIS LAN", "Rewritten at every router", `e.g. HOST-A ${V4_MAC["HOST-A"]} → R1 ${V4_MAC.R1L}`] },
+            { title: "Layer 3 — IPv4", tone: "ip", tag: "whole journey", points: ["Names the final destination", "Unchanged across routers (TTL aside)", `e.g. ${A} → ${B}`] },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="v4d-prefixes" eyebrow="CIDR" title="Prefix length vs block size" tone="violet">
-        <DiagramFrame caption="Each extra prefix bit halves the block. The ordinary host count is the block size minus 2 (network and broadcast).">
+      <GuideSection id="v4d-address" eyebrow="Foundation" title="The address model" tone="ip">
+        <p>
+          An IPv4 address is 32 bits, written as four decimal octets. <Mono>{A}</Mono> is just shorthand. On its own an address says nothing about where its network ends — that needs the <Strong>prefix length</Strong>, which every host is configured with.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="v4d-bits" eyebrow="Foundation" title="Network and host bits" tone="cyan">
+        <DiagramFrame caption="Everyone here shares 192.168.10; with /26 the last octet's first two bits finish the network part.">
+          <BitsDiagram />
+        </DiagramFrame>
+        <p>The network bits are equal for every device on the same network; the host bits tell those devices apart. HOST-A and HOST-C share <Mono>00</Mono>; HOST-B has <Mono>01</Mono> — a different network.</p>
+      </GuideSection>
+
+      <GuideSection id="v4d-prefix" eyebrow="Foundation" title="Prefix length and mask" tone="cyan">
+        <p>
+          <Mono>/{V4_PREFIX}</Mono> means “the first {V4_PREFIX} bits are the network”. The same thing written as a mask is <Mono>{MASK}</Mono>: ones for network bits, zeros for host bits. Each extra prefix bit halves the block.
+        </p>
+        <DiagramFrame caption="The four prefixes the lab lets you try on HOST-A.">
           <PrefixDiagram />
         </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="v4d-cidr" eyebrow="RFC 4632" title="Aggregation: many routes as one" tone="success">
-        <DiagramFrame caption="Contiguous, aligned blocks can be summarised by a shorter prefix.">
-          <CidrDiagram />
-        </DiagramFrame>
-        <p>CIDR replaced the old classful scheme. The first octet no longer implies a network size: <Mono>192.168.10.0/26</Mono> and <Mono>192.168.0.0/16</Mono> are both perfectly valid.</p>
+      <GuideSection id="v4d-cidr" eyebrow="Foundation" title="CIDR notation" tone="cyan">
+        <p>
+          <Mono>{A}/{V4_PREFIX}</Mono> is CIDR notation: address plus prefix length. Old “class” rules tied network size to the first octet; they have not decided anything since CIDR. A <Mono>192.168.x.x</Mono> address is not automatically a /24 — here it is a /26.
+        </p>
       </GuideSection>
 
-      <GuideSection id="v4d-lpm" eyebrow="Forwarding" title="Longest-prefix match" tone="cyan">
-        <DiagramFrame caption="Routers choose the most specific matching route.">
-          <LpmDiagram />
-        </DiagramFrame>
+      {/* ------------------------------------------------------------ The decision */}
+      <GuideSection id="v4d-decision" eyebrow="The decision" title="Local or remote?" tone="warning">
+        <KnowledgeCheck question={{ id: "p-dec", prompt: `Before reading on: HOST-A (${A}/${V4_PREFIX}) wants to reach ${B}. Local or remote?`, options: [{ id: "r", label: "Remote" }, { id: "l", label: "Local — the first three octets match" }], correctId: "r", explanation: `With /${V4_PREFIX} the boundary is inside the last octet: ${networkOf(B, V4_PREFIX)} ≠ ${networkOf(A, V4_PREFIX)}.` }} />
+        <p>Before every send, a host asks one question: is the destination on MY network? It answers with its <Strong>own</Strong> address and mask — the router is not consulted, and the destination&apos;s own mask is irrelevant.</p>
       </GuideSection>
 
-      <GuideSection id="v4d-ttl" eyebrow="Safety" title="Why TTL exists" tone="warning">
-        <DiagramFrame caption="TTL guarantees a looping packet eventually dies.">
+      <GuideSection id="v4d-and" eyebrow="The decision" title="The AND comparison" tone="warning">
+        <FieldTable
+          title={`HOST-A's comparisons with its mask ${MASK}`}
+          columns={["Destination", "Destination AND mask", "HOST-A AND mask", "Result"]}
+          rows={[
+            [C, local.dstNet, local.srcNet, local.local ? "LOCAL" : "REMOTE"],
+            [B, right.dstNet, right.srcNet, right.local ? "LOCAL" : "REMOTE"],
+          ]}
+        />
+        <p>AND keeps the network bits and zeroes the host bits. Equal results → same network → LOCAL.</p>
+      </GuideSection>
+
+      <GuideSection id="v4d-local" eyebrow="The decision" title="Local delivery" tone="cyan">
+        <p>
+          LOCAL means the next hop is the destination itself: HOST-A sends straight to HOST-C on SW-A. R1 is not involved (it only sees an ARP broadcast and ignores it, because it is not for R1&apos;s address).
+        </p>
+      </GuideSection>
+
+      <GuideSection id="v4d-remote" eyebrow="The decision" title="Remote delivery" tone="cyan">
+        <p>REMOTE means the destination is on another network: HOST-A hands the packet to its default gateway, R1, which knows how to reach the other network.</p>
+      </GuideSection>
+
+      <GuideSection id="v4d-gateway" eyebrow="The decision" title="The default gateway" tone="violet">
+        <p>
+          HOST-A&apos;s default gateway is <Mono>{GA}</Mono> — R1&apos;s interface on HOST-A&apos;s own LAN. It must be on-link: HOST-A can only reach its gateway directly. HOST-B&apos;s gateway is R1&apos;s other address, <Mono>{GB}</Mono>. A host uses its gateway only for REMOTE destinations.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="v4d-nexthop" eyebrow="The decision" title="Next hop vs final destination" tone="violet">
+        <FieldTable
+          title="The two addresses every send involves"
+          columns={["Destination", "Final destination (IPv4 header)", "Next hop (where the frame goes)"]}
+          rows={[
+            [`HOST-C ${C}`, C, `${local.nextHop} — HOST-C itself`],
+            [`HOST-B ${B}`, B, `${right.nextHop} — the default gateway`],
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="v4d-ipmac" eyebrow="The decision" title="Destination IP vs destination MAC" tone="violet">
+        <DiagramFrame caption="Values from the lab's model.">
+          <SplitDiagram />
+        </DiagramFrame>
+        <Callout tone="ip" title="The rule">IP destination = the remote host. Ethernet destination = the default gateway. The router never becomes the IP destination.</Callout>
+      </GuideSection>
+
+      <GuideSection id="v4d-arp" eyebrow="The decision" title="ARP comes after the decision" tone="arp">
+        <StateTransition
+          states={[
+            { label: "Destination IPv4", detail: B, tone: "ip" },
+            { label: "My mask → REMOTE", detail: `${right.dstNet} ≠ ${right.srcNet}`, tone: "warning" },
+            { label: "Next hop", detail: `gateway ${right.nextHop}`, tone: "violet" },
+            { label: "ARP for the next hop", detail: `who has ${right.nextHop}?`, tone: "arp" },
+          ]}
+        />
+        <p>ARP never decides local vs remote; it only resolves the MAC of the next hop IPv4 already chose. That is why HOST-A never ARPs for {B}: it is not on HOST-A&apos;s LAN, so no one there could answer.</p>
+      </GuideSection>
+
+      {/* ------------------------------------------------------------ Header */}
+      <GuideSection id="v4d-header" eyebrow="The header" title="IPv4 header anatomy" tone="ip">
+        <DiagramFrame caption="20 bytes without options (IHL = 5).">
+          <HeaderDiagram />
+        </DiagramFrame>
+        <PacketAnatomy
+          title={`HOST-A's packet to HOST-B, as it leaves HOST-A (values from the lab)`}
+          layers={[
+            {
+              name: "IPv4 header",
+              tone: "ip",
+              fields: [
+                { name: "Version · IHL", value: `${ip(IN_F, "Version")} · ${ip(IN_F, "IHL")}`, why: "IPv4, 20-byte header (no options)." },
+                { name: "DSCP / ECN", value: ip(IN_F, "DSCP / ECN"), why: "Priority marking and congestion signalling — not used here." },
+                { name: "Total Length", value: ip(IN_F, "Total Length"), why: "Header + ICMP header + data, in bytes." },
+                { name: "Identification · Flags · Fragment Offset", value: `${ip(IN_F, "Identification")} · ${ip(IN_F, "Flags")} · ${ip(IN_F, "Fragment Offset")}`, why: "Fragmentation fields; DF set, never fragmented here." },
+                { name: "TTL", value: ip(IN_F, "TTL"), why: "Hop limit; each router subtracts one.", key: true },
+                { name: "Protocol", value: ip(IN_F, "Protocol"), why: "What the payload is." },
+                { name: "Header Checksum", value: ip(IN_F, "Header Checksum"), why: "Error check over the header only.", key: true },
+                { name: "Source · Destination", value: `${ip(IN_F, "Source")} → ${ip(IN_F, "Destination")}`, why: "End to end — the final destination.", key: true },
+              ],
+            },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="v4d-addrs" eyebrow="The header" title="Source and destination" tone="ip">
+        <p>The source is the original sender, the destination is the final receiver — for the whole journey. HOST-B receives the packet with source <Mono>{ip(OUT_F, "Source")}</Mono> even though the frame came from R1.</p>
+      </GuideSection>
+
+      <GuideSection id="v4d-ttl" eyebrow="The header" title="TTL" tone="warning">
+        <p>
+          TTL (Time To Live) is a <Strong>hop limit</Strong>, not a time. HOST-A sends {ip(IN_F, "TTL")}; R1 forwards {ip(OUT_F, "TTL")}. A router that would decrement it to 0 discards the packet instead, so routing loops can&apos;t circulate forever.
+        </p>
+        <DiagramFrame caption="Why TTL exists.">
           <TtlDiagram />
         </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="v4d-special" eyebrow="Advanced context" title="/31 and /32 are special cases" tone="violet">
-        <DiagramFrame caption="The network/broadcast rule from the lesson applies to /30 and shorter. It does not apply to /31 or /32.">
-          <SpecialDiagram />
-        </DiagramFrame>
-        <Callout tone="warning" title="Scope">
-          These are scoped exceptions for point-to-point links and single addresses. The lesson&apos;s /26s follow the ordinary rule.
-        </Callout>
+      <GuideSection id="v4d-proto" eyebrow="The header" title="Protocol" tone="ip">
+        <p>
+          <Mono>{ip(IN_F, "Protocol")}</Mono> tells HOST-B which transport protocol to hand the payload to. TCP is 6, ICMP is 1. Routers forward without reading the payload.
+        </p>
       </GuideSection>
 
-      <GuideSection id="v4d-private" eyebrow="RFC 1918" title="Private address ranges" tone="cyan">
-        <FieldTable
-          title="Private IPv4 blocks"
-          columns={["Block", "Size"]}
-          rows={[
-            ["10.0.0.0/8", "16,777,216 addresses"],
-            ["172.16.0.0/12", "1,048,576 addresses"],
-            [`${networkOf("192.168.10.10", 16)}/16`, "65,536 addresses (this lesson lives here)"],
-          ]}
-        />
+      <GuideSection id="v4d-csum" eyebrow="The header" title="Header checksum" tone="warning">
+        <p>
+          The checksum covers the header only (RFC 791 ones&apos;-complement sum). Because TTL is part of the header, R1 must recompute it: <Mono>{ip(IN_F, "Header Checksum")}</Mono> becomes <Mono>{ip(OUT_F, "Header Checksum")}</Mono> when TTL goes {ip(IN_F, "TTL")} → {ip(OUT_F, "TTL")}. Values computed by the lab, not invented.
+        </p>
       </GuideSection>
 
-      <GuideSection id="v4d-workflow" eyebrow="Workflow" title="Troubleshooting IPv4 reachability" tone="danger">
+      <GuideSection id="v4d-changes" eyebrow="The header" title="What a router changes" tone="warning">
+        <ChecklistCard tone="warning" mark="Δ" title="Changed by R1" items={[`Ethernet source: ${eth(IN_F, "Source MAC")} → ${eth(OUT_F, "Source MAC")} (R1 ge-0/0/1)`, `Ethernet destination: ${eth(IN_F, "Destination MAC")} → ${eth(OUT_F, "Destination MAC")} (HOST-B)`, `TTL: ${ip(IN_F, "TTL")} → ${ip(OUT_F, "TTL")}`, `Header checksum: ${ip(IN_F, "Header Checksum")} → ${ip(OUT_F, "Header Checksum")}`]} />
+      </GuideSection>
+
+      <GuideSection id="v4d-keeps" eyebrow="The header" title="What a router keeps" tone="success">
+        <ChecklistCard tone="success" mark="=" title="Unchanged" items={[`Source ${ip(OUT_F, "Source")} and destination ${ip(OUT_F, "Destination")}`, `Identification ${ip(OUT_F, "Identification")}, Flags, Fragment Offset, Total Length, Protocol`, "The ICMP payload"]} />
+        <p>Address changes would need NAT, which this network does not do.</p>
+      </GuideSection>
+
+      {/* ------------------------------------------------------------ End to end */}
+      <GuideSection id="v4d-connected" eyebrow="End to end" title="Connected networks" tone="cyan">
+        <p>
+          R1 knows a network because it has an interface on it: <Mono>{GA}/{V4_PREFIX}</Mono> on ge-0/0/0 gives the connected route <Mono>{networkOf(GA, V4_PREFIX)}/{V4_PREFIX}</Mono>, and <Mono>{GB}/{V4_PREFIX}</Mono> on ge-0/0/1 gives <Mono>{networkOf(GB, V4_PREFIX)}/{V4_PREFIX}</Mono>. No routing protocol, no static routes.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="v4d-hosttree" eyebrow="End to end" title="The host's decision tree" tone="warning">
         <FlowSteps
           steps={[
-            { title: "Host config", body: "Check the address, prefix/mask and gateway. Is the gateway inside the host's own subnet?", tone: "cyan" },
-            { title: "On-link decision", body: "AND both addresses with the host's mask. Do you expect on-link or via the gateway?", tone: "violet" },
-            { title: "Next-hop resolution", body: "Is there a complete ARP entry for the next hop (the gateway, or the host itself if on-link)?", tone: "warning" },
-            { title: "Router", body: "Is there a route for the destination (connected or otherwise), and is TTL large enough?", tone: "ip" },
-            { title: "Return path", body: "Does the destination have a correct mask and gateway to reply?", tone: "success" },
+            { title: "Destination IPv4", body: "Taken from the application.", tone: "ip" },
+            { title: "Apply MY mask", body: "My address AND mask vs destination AND mask.", tone: "warning" },
+            { title: "LOCAL → next hop = destination", body: "ARP for the destination itself.", tone: "cyan" },
+            { title: "REMOTE → next hop = gateway", body: "ARP for the gateway.", tone: "violet" },
+            { title: "Frame and send", body: "Ethernet to the next hop's MAC; IPv4 to the final destination.", tone: "success" },
           ]}
         />
-        <ChecklistCard tone="warning" title="Common traps" mark="!" items={["A mask that is too short makes remote hosts look on-link", "A mask that is too long makes local hosts look remote", "Proxy ARP can hide a wrong mask. It doesn't fix it"]} />
       </GuideSection>
 
-      <GuideSection id="v4d-glossary" eyebrow="Glossary" title="Deep-dive terms" tone="violet">
-        <Glossary
+      <GuideSection id="v4d-router" eyebrow="End to end" title="R1's connected lookup" tone="violet">
+        <StateTransition
+          states={[
+            { label: "Frame to my MAC", detail: "accept", tone: "ethernet" },
+            { label: "Look up destination", detail: `${B} ∈ ${ROUTE_TEXT}`, tone: "ip" },
+            { label: "Egress", detail: `${EGRESS} (connected → next hop = ${B})`, tone: "violet" },
+            { label: "ARP on egress LAN", detail: `who has ${B}?`, tone: "arp" },
+            { label: "TTL − 1, checksum, new frame", detail: `TTL ${ip(OUT_F, "TTL")}`, tone: "warning" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="v4d-walk-local" eyebrow="End to end" title="Walkthrough: same subnet" tone="cyan">
+        <FieldTable title={`HOST-A → HOST-C ${C}, empty ARP caches (from the lab's model)`} columns={FRAME_COLS} rows={frameRows(LAB_LOCAL)} />
+        <p>One ARP for the destination, one IPv4 frame straight to HOST-C. R1 routed {LAB_LOCAL.counters.forwarded} packets.</p>
+      </GuideSection>
+
+      <GuideSection id="v4d-walk-remote" eyebrow="End to end" title="Walkthrough: remote subnet" tone="violet">
+        <FieldTable title={`HOST-A → HOST-B ${B} (from the lab's model)`} columns={FRAME_COLS} rows={frameRows(LAB_ROUTED)} />
+        <p>HOST-A ARPs for the gateway (not for {B}); R1 ARPs for HOST-B on its other LAN and forwards a new frame with TTL {ip(OUT_F, "TTL")}.</p>
+        <LabBridge label="Practice this in the IPv4 Lab">Predict each ARP target and each Ethernet destination before the frames move.</LabBridge>
+      </GuideSection>
+
+      <GuideSection id="v4d-diff" eyebrow="End to end" title="Before and after R1" tone="warning">
+        <FieldTable
+          title="The same packet on either side of R1 (from the lab's model)"
+          columns={["Field", "Before R1", "After R1", ""]}
+          rows={(
+            [
+              ["Ethernet source", eth(IN_F, "Source MAC"), eth(OUT_F, "Source MAC")],
+              ["Ethernet destination", eth(IN_F, "Destination MAC"), eth(OUT_F, "Destination MAC")],
+              ["TTL", ip(IN_F, "TTL"), ip(OUT_F, "TTL")],
+              ["Header checksum", ip(IN_F, "Header Checksum"), ip(OUT_F, "Header Checksum")],
+              ["Identification · Flags", `${ip(IN_F, "Identification")} · ${ip(IN_F, "Flags")}`, `${ip(OUT_F, "Identification")} · ${ip(OUT_F, "Flags")}`],
+              ["Source IPv4", ip(IN_F, "Source"), ip(OUT_F, "Source")],
+              ["Destination IPv4", ip(IN_F, "Destination"), ip(OUT_F, "Destination")],
+            ] as [string, string, string][]
+          ).map(([f, a, b]) => [f, <Mono key="a">{a}</Mono>, <Mono key="b">{b}</Mono>, a === b ? "unchanged" : "CHANGED"])}
+        />
+      </GuideSection>
+
+      {/* ------------------------------------------------------------ Operations */}
+      <GuideSection id="v4d-verify" eyebrow="Operations" title="Operational verification" tone="cyan">
+        <p>Hosts show their address, mask, gateway and ARP cache; R1 — the managed router — answers on its CLI. Outputs below are R1 after the remote walkthrough:</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <CliPanel {...brief} caption="Cisco: interfaces and addresses" />
+          <CliPanel {...arp} caption="Cisco: R1's ARP cache" />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <CliPanel {...route} caption="Cisco: connected routes" />
+          <CliPanel {...jroute} caption="Junos: the same table" />
+        </div>
+      </GuideSection>
+
+      <GuideSection id="v4d-workflow" eyebrow="Operations" title="Troubleshooting workflow" tone="danger">
+        <TroubleshootingFlow
+          steps={[
+            { question: "Symptom — which destinations fail, which work?", look: "HOST-A reaches HOST-C but not HOST-B." },
+            { question: "Observation — what did the host decide?", look: "Start from the forwarding decision, not from the router." },
+            { question: "Evidence — what did the host do next?", look: "Which address did it ARP for? Did the ARP complete? Did R1 receive an IPv4 packet? What is configured?" },
+            { question: "Hypothesis — one cause for all of it", look: "Route? Gateway? Mask? Destination down? Switch?" },
+            { question: "Test — prove it with the host's own arithmetic", look: "Repeat the AND with the configured mask." },
+            { question: "Repair and verify", look: "Fix the cause; prove it with traffic: decision, next hop, ARP target, R1, TTL, delivery." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="v4d-incident" eyebrow="Operations" title="The wrong-mask incident" tone="danger">
+        <FieldTable
+          title={`HOST-A → HOST-B with HOST-A at /${V4_FAULT_PREFIX} (from the lab's model)`}
+          columns={["Evidence", "Value"]}
+          rows={[
+            ["Decision", `${wrong.srcIp} AND ${wrong.mask} = ${wrong.srcNet}; ${wrong.dst} AND ${wrong.mask} = ${wrong.dstNet} → ${wrong.local ? "LOCAL" : "REMOTE"}`],
+            ["Next hop", `${wrong.nextHop} — the destination itself`],
+            ["ARP", `who has ${runOf(LAB_INCIDENT)!.decisions[0]?.nextHop}? → ${LAB_INCIDENT.caches.hosta.some((e) => e.state === "failed") ? "no reply, INCOMPLETE" : "answered"}`],
+            ["IPv4 packets sent", LAB_INCIDENT.captures.some((c) => c.dev === "hosta" && c.dir === "out" && c.frame.type === "IPv4") ? "yes" : "none"],
+            ["R1", `connected 192.168.10.64/26 present; routed count unchanged (${LAB_INCIDENT.counters.forwarded})`],
+          ]}
+        />
+        <Callout tone="danger" title="Root cause">
+          HOST-A&apos;s mask makes {B} look local, so it never selects its gateway. HOST-B is on another LAN; R1 answers ARP only for its own addresses (no Proxy ARP), so the ARP never completes. Proxy ARP on R1 would make the traffic flow — and hide the misconfigured host. The fix is HOST-A&apos;s prefix: /{V4_PREFIX}.
+        </Callout>
+        <LabBridge label="Troubleshoot it in the IPv4 Lab">Reproduce the ticket, gather the evidence (including R1&apos;s CLI), prove the cause with the AND, repair and verify with traffic.</LabBridge>
+      </GuideSection>
+
+      <GuideSection id="v4d-signatures" eyebrow="Operations" title="Failure signatures" tone="danger">
+        <FailureSignatures
           items={[
-            { term: "IHL", def: "Internet Header Length, in 32-bit words." },
-            { term: "DF", def: "Don't Fragment flag." },
-            { term: "Longest-prefix match", def: "The forwarding rule that picks the most specific route." },
-            { term: "Aggregation / summarisation", def: "Advertising several aligned prefixes as one shorter prefix." },
-            { term: "RFC 3021", def: "Allows /31 on point-to-point links." },
-            { term: "Proxy ARP", def: "A router answering ARP on behalf of another host. It is off in this lesson." },
+            { tag: "A", title: "Host ARPs for a remote address", tone: "danger", points: ["Decision says LOCAL for an off-subnet destination", "ARP never completes; no IPv4 packet at the router", "→ wrong mask (too short)"] },
+            { tag: "B", title: "Host ARPs for its gateway, no answer", tone: "warning", points: ["Decision is REMOTE (correct)", "Next hop never answers ARP", "→ wrong or unreachable default gateway"] },
+            { tag: "C", title: "Local destinations work, remote ones don't", tone: "warning", points: ["Check the decision for a remote destination first"] },
+            { tag: "D", title: "Packet reaches the router, goes no further", tone: "violet", points: ["The host side is fine", "→ the router's routes (Routing Fundamentals)"] },
+          ]}
+        />
+      </GuideSection>
+
+      {/* ------------------------------------------------------------ Master it */}
+      <GuideSection id="v4d-myths" eyebrow="Master it" title="Common misconceptions" tone="warning">
+        <Misconceptions
+          items={[
+            { myth: "The subnet mask belongs to the router only.", correction: "Every host has one and uses it for every send — HOST-A's /26 decides whether HOST-B is local." },
+            { myth: "A host sends all traffic to the gateway.", correction: `Only REMOTE traffic. HOST-A → HOST-C (${C}) goes straight to HOST-C.` },
+            { myth: "A host ARPs for every destination IP, even remote ones.", correction: `For remote destinations it ARPs for the gateway (${GA}), never for ${B}.` },
+            { myth: "The gateway becomes the destination IP.", correction: `The IPv4 destination stays ${B}; only the Ethernet destination is R1.` },
+            { myth: "The router changes the packet's source and destination IP.", correction: "Not without NAT. R1 changes both MACs, TTL and the checksum." },
+            { myth: "MAC addresses travel unchanged end to end.", correction: "Each link gets a new Ethernet header; the MACs change at every router." },
+            { myth: "TTL is a time measured in seconds.", correction: "It is a hop count: 64 leaving HOST-A, 63 after R1." },
+            { myth: "If the IP address is different, the destination must be remote.", correction: `${C} differs from ${A} but is local: both are in ${networkOf(A, V4_PREFIX)}/${V4_PREFIX}.` },
+            { myth: "A /24 means the first three octets are always the network — for every prefix.", correction: `The prefix decides. At /${V4_PREFIX} the network ends 2 bits into the last octet.` },
+            { myth: "ARP decides whether the destination is local.", correction: "The host's mask decides; ARP only resolves the chosen next hop." },
+            { myth: "The routing table and the ARP table are the same thing.", correction: "Routes map destination networks to interfaces/next hops; ARP maps a neighbor's IPv4 to its MAC." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="v4d-quiz" eyebrow="Master it" title="Knowledge check" tone="success">
+        <KnowledgeQuiz questions={QUIZ} />
+      </GuideSection>
+
+      <GuideSection id="v4d-explain" eyebrow="Master it" title="Can you explain it?" tone="success">
+        <ExplainIt
+          items={[
+            { q: `Why does HOST-A ARP for ${GA} when it sends to ${B}?`, a: `Its own /${V4_PREFIX} makes ${B} remote, so the next hop is the default gateway ${GA}; ARP resolves only the next hop's MAC.` },
+            { q: "What does R1 change, and why?", a: "Both MACs (a new frame for the next link), TTL − 1 (hop limit) and the header checksum (the header changed). The IPv4 addresses stay, because the destination is still HOST-B." },
+            { q: "Why does a wrong mask break remote traffic but not local traffic?", a: `A too-short mask makes remote addresses look local, so the host ARPs for them directly and never uses its gateway. Truly local destinations like ${C} are local under both masks.` },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="v4d-practice" eyebrow="Practice" title="Practice in the IPv4 Lab" tone="cyan">
+        <ChecklistCard tone="cyan" title="In the lab you will" mark="→" items={["Make HOST-A's local/remote decision for HOST-C and HOST-B", "Watch live ARP resolve the destination (local) or the gateway (remote)", "Compare the packet before and after R1, field by field", "Check R1's routes and ARP cache on Cisco and Junos", "Troubleshoot the wrong-mask incident and verify the fix", "In free play: change HOST-A's prefix, try a wrong gateway"]} />
+        <LabBridge label="Open the IPv4 Lab">Same network plus a lab-only HOST-C. Nothing you do there changes your lesson progress.</LabBridge>
+      </GuideSection>
+
+      {/* ------------------------------------------------------------ Beyond */}
+      <GuideSection id="v4d-beyond" eyebrow="Beyond this lesson" title="Not covered here — on purpose" tone="violet">
+        <FieldTable
+          title="Later lessons and topics"
+          columns={["Topic", "Where / in short"]}
+          rows={[
+            ["Subnet design (VLSM)", "Subnetting Design Lab: sizing and placing many networks."],
+            ["Route selection, static and default routes", "Routing Fundamentals: longest-prefix match across several routes."],
+            ["Ping, traceroute, TTL-expired reports", "ICMP & Network Diagnostics."],
+            ["Fragmentation", "Identification/Flags/Offset exist; this lesson never fragments (DF set)."],
+            ["NAT", "Rewrites addresses — the one case where a router changes them."],
+            ["Proxy ARP", "A router answering ARP for others; a workaround, not a fix for wrong masks."],
+            ["/31, /32, aggregation", "Special prefixes and route summarisation — later lessons."],
+            ["IPv6", "128-bit addresses; neighbor discovery instead of ARP."],
           ]}
         />
       </GuideSection>

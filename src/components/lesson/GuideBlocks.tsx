@@ -27,7 +27,7 @@ const tint = (c: string, pct: number) => `color-mix(in srgb, ${c} ${pct}%, trans
 export function GuideSection({ id, eyebrow, title, tone = "cyan", children }: { id: string; eyebrow: string; title: string; tone?: GuideTone; children: ReactNode }) {
   const c = GUIDE_TONE[tone];
   return (
-    <section id={id} className="scroll-mt-6">
+    <section id={id} className="scroll-mt-16 md:scroll-mt-6">
       <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.2em]" style={{ color: c }}>
         {eyebrow}
       </p>
@@ -298,6 +298,262 @@ export function FieldTable({ title, columns, rows, accent = "cyan" }: { title: s
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------------
+ * Lesson-agnostic teaching primitives (introduced with the ARP Deep Dive,
+ * meant for every lesson): packet anatomy with a "why" per field, and a
+ * wrapping state-transition strip.
+ * ---------------------------------------------------------------------- */
+
+export interface AnatomyField {
+  name: string;
+  value: string;
+  /** Why the field holds this value — the teaching point, not a definition. */
+  why: ReactNode;
+  /** Emphasise the fields the lesson is about. */
+  key?: boolean;
+}
+
+/** A header/packet broken into layers; every field carries its value AND why it matters. Stacks on narrow screens. */
+export function PacketAnatomy({ title, layers }: { title: string; layers: { name: string; tone: GuideTone; note?: string; fields: AnatomyField[] }[] }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-white/10">
+      <div className="border-b border-white/10 bg-white/[0.03] px-4 py-2 text-[10px] font-bold uppercase tracking-wide text-pv-text-faint">{title}</div>
+      <div className="divide-y divide-white/5">
+        {layers.map((layer) => {
+          const c = GUIDE_TONE[layer.tone];
+          return (
+            <div key={layer.name} className="p-3" style={{ background: tint(c, 4) }}>
+              <p className="mb-2 flex flex-wrap items-baseline gap-x-2 text-xs font-bold" style={{ color: c }}>
+                {layer.name}
+                {layer.note && <span className="text-[10px] font-normal text-pv-text-faint">{layer.note}</span>}
+              </p>
+              <dl className="grid gap-1.5">
+                {layer.fields.map((f) => (
+                  <div key={f.name} className="grid gap-x-3 gap-y-0.5 rounded-lg border px-2.5 py-1.5 sm:grid-cols-[9.5rem_10.5rem_minmax(0,1fr)]" style={{ borderColor: f.key ? tint(c, 45) : "rgba(255,255,255,0.06)", background: f.key ? tint(c, 8) : "transparent" }}>
+                    <dt className="text-[11px] font-semibold text-pv-text">{f.name}</dt>
+                    <dd className="pv-mono text-[11px] break-all" style={{ color: f.key ? c : undefined }}>
+                      {f.value}
+                    </dd>
+                    <dd className="text-[11.5px] leading-snug text-pv-text-muted">{f.why}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Ordered states: an even row with → arrows from the sm breakpoint, a vertical stack with ↓ arrows on phones. Lifecycles, progressions, etc. */
+export function StateTransition({ states }: { states: { label: string; detail?: ReactNode; tone?: GuideTone }[] }) {
+  return (
+    <ol className="grid gap-4 sm:gap-5 sm:[grid-template-columns:var(--st-cols)]" style={{ ["--st-cols" as string]: `repeat(${states.length}, minmax(0, 1fr))` }}>
+      {states.map((s, i) => {
+        const c = GUIDE_TONE[s.tone ?? "cyan"];
+        const last = i === states.length - 1;
+        return (
+          <li key={s.label} className="relative">
+            <div className="h-full rounded-xl border px-3 py-2" style={{ borderColor: tint(c, 40), background: tint(c, 7) }}>
+              <p className="text-[11px] font-bold uppercase tracking-wide" style={{ color: c }}>
+                {s.label}
+              </p>
+              {s.detail && <div className="mt-0.5 text-[11.5px] leading-snug text-pv-text-muted">{s.detail}</div>}
+            </div>
+            {!last && (
+              <>
+                <span className="absolute -right-[15px] top-1/2 hidden -translate-y-1/2 text-pv-text-faint sm:block" aria-hidden>
+                  →
+                </span>
+                <span className="absolute -bottom-[17px] left-5 text-pv-text-faint sm:hidden" aria-hidden>
+                  ↓
+                </span>
+              </>
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/* ------------------------------------------------------------------------
+ * Troubleshooting & misconception primitives — every converted guide has
+ * these sections (Learning Contract); the lesson supplies all content.
+ * ---------------------------------------------------------------------- */
+
+/** Evidence-driven troubleshooting: an ordered list of engineering questions, each with where to look. */
+export function TroubleshootingFlow({ steps }: { steps: { question: string; look: ReactNode }[] }) {
+  return (
+    <ol className="space-y-1.5">
+      {steps.map((s, i) => (
+        <li key={s.question} className="grid gap-x-3 gap-y-0.5 rounded-lg border border-white/10 px-3 py-2 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+          <p className="text-xs font-semibold text-pv-text">
+            <span className="pv-mono mr-1.5 text-pv-cyan-soft">{String(i + 1).padStart(2, "0")}</span>
+            {s.question}
+          </p>
+          <div className="text-[11.5px] leading-snug text-pv-text-muted">{s.look}</div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** Failure signatures: where the process stops → what to investigate. */
+export function FailureSignatures({ items }: { items: { tag: string; title: string; tone: GuideTone; points: string[] }[] }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {items.map((c) => {
+        const tone = GUIDE_TONE[c.tone];
+        return (
+          <div key={c.tag} className="rounded-xl border p-3" style={{ borderColor: tint(tone, 35), background: tint(tone, 5) }}>
+            <p className="mb-1 flex items-center gap-2 text-xs font-bold text-pv-text">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full pv-mono text-[10px]" style={{ background: tint(tone, 20), color: tone }}>
+                {c.tag}
+              </span>
+              {c.title}
+            </p>
+            <ul className="space-y-0.5 text-[11.5px] text-pv-text-muted">
+              {c.points.map((p) => (
+                <li key={p}>▸ {p}</li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Myth → correction pairs. */
+export function Misconceptions({ items }: { items: { myth: string; correction: ReactNode }[] }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {items.map(({ myth, correction }) => (
+        <div key={myth} className="rounded-xl border border-white/10 p-3">
+          <p className="text-xs text-pv-text">
+            <span className="mr-1.5 font-bold text-pv-danger">✕ Myth</span>
+            {myth}
+          </p>
+          <p className="mt-1 text-xs text-pv-text-muted">
+            <span className="mr-1.5 font-bold text-pv-success">✓ Correction</span>
+            {correction}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------------
+ * The protocol story — the opening of every process-first guide: what
+ * happens, in order, who does it, what changes in the network, and why.
+ * ---------------------------------------------------------------------- */
+
+export interface StoryStep {
+  /** Who acts (a device, a host, "the switch"…). */
+  actor: string;
+  /** What it does, in one or two sentences. */
+  action: ReactNode;
+  /** What is different in the network afterwards (a table entry, a state, a field). */
+  changes?: ReactNode;
+  /** Why this step exists. */
+  why?: ReactNode;
+  /** How you confirm this step happened (a table entry, a capture, a command). */
+  verify?: ReactNode;
+  /** What you see when the process breaks at this step, and where to look. */
+  fails?: { symptom: ReactNode; evidence: ReactNode };
+  tone?: GuideTone;
+}
+
+/** A numbered, actor-by-actor walk through the protocol from first event to finished outcome. */
+export function ProtocolStory({ steps, problem, outcome }: { steps: StoryStep[]; /** The problem that starts the story. */ problem?: ReactNode; /** How the story ends. */ outcome?: ReactNode }) {
+  return (
+    <div className="space-y-3">
+      {problem && (
+        <div className="rounded-xl border border-pv-danger/35 bg-pv-danger/[0.06] px-4 py-3">
+          <p className="mb-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-pv-danger">The problem</p>
+          <div className="text-sm text-pv-text">{problem}</div>
+        </div>
+      )}
+      <ol className="relative space-y-2.5 border-l border-white/10 pl-6">
+        {steps.map((s, i) => {
+          const c = GUIDE_TONE[s.tone ?? "cyan"];
+          return (
+            <li key={i} className="relative rounded-xl border border-white/10 bg-white/[0.015] px-3.5 py-2.5">
+              <span className="pv-mono absolute -left-[37px] top-2.5 flex h-6 w-6 items-center justify-center rounded-full border text-[10px] font-bold" style={{ borderColor: c, color: c, background: "var(--pv-bg-elevated, #0a0e18)" }}>
+                {i + 1}
+              </span>
+              <p className="text-sm text-pv-text">
+                <span className="mr-2 rounded-full px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-wide" style={{ background: tint(c, 18), color: c }}>
+                  {s.actor}
+                </span>
+                {s.action}
+              </p>
+              {s.changes && (
+                <p className="mt-1 text-[12.5px] text-pv-text-muted">
+                  <span className="font-semibold text-pv-success">Changes → </span>
+                  {s.changes}
+                </p>
+              )}
+              {s.why && (
+                <p className="mt-0.5 text-[12.5px] text-pv-text-muted">
+                  <span className="font-semibold text-pv-warning">Why → </span>
+                  {s.why}
+                </p>
+              )}
+              {(s.verify || s.fails) && (
+                <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
+                  {s.verify && (
+                    <details className="rounded-lg border border-pv-success/30 bg-pv-success/[0.04] px-2.5 py-1">
+                      <summary className="cursor-pointer text-[11.5px] font-semibold text-pv-success">✓ How you confirm it</summary>
+                      <div className="mt-1 text-[12px] text-pv-text-muted">{s.verify}</div>
+                    </details>
+                  )}
+                  {s.fails && (
+                    <details className="rounded-lg border border-pv-danger/30 bg-pv-danger/[0.04] px-2.5 py-1">
+                      <summary className="cursor-pointer text-[11.5px] font-semibold text-pv-danger">✕ If it fails here</summary>
+                      <div className="mt-1 space-y-0.5 text-[12px] text-pv-text-muted">
+                        <p>
+                          <b className="text-pv-text">You see:</b> {s.fails.symptom}
+                        </p>
+                        <p>
+                          <b className="text-pv-text">Evidence:</b> {s.fails.evidence}
+                        </p>
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      {outcome && (
+        <div className="rounded-xl border border-pv-success/35 bg-pv-success/[0.06] px-4 py-3">
+          <p className="mb-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-pv-success">The outcome</p>
+          <div className="text-sm text-pv-text">{outcome}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Separates the guide's main learning path from the reference material below it. */
+export function PathDivider({ title = "In detail", children }: { title?: string; children?: ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 pt-2" role="separator">
+      <span className="h-px flex-1 bg-white/10" />
+      <span className="text-center">
+        <span className="block text-[10px] font-bold uppercase tracking-[0.22em] text-pv-text-faint">{title}</span>
+        {children && <span className="block text-[11.5px] text-pv-text-muted">{children}</span>}
+      </span>
+      <span className="h-px flex-1 bg-white/10" />
     </div>
   );
 }
