@@ -80,6 +80,8 @@ interface CLITerminalProps {
   stateVersion?: number | string;
   staleHint?: string;
   className?: string;
+  /** For hosts (e.g. "Linux shell"): hides the network-OS vendor selector and labels the session with this instead. */
+  shellLabel?: string;
 }
 
 const VENDORS: CliVendor[] = ["cisco", "juniper"];
@@ -93,7 +95,7 @@ const VENDOR_SHORT: Record<CliVendor, string> = { cisco: "IOS", juniper: "Junos"
  * entirely from the supplied CliCommandSet (the lesson's network state,
  * which all sessions share).
  */
-export function CLITerminal({ commandSets, vendor, onVendorChange, sessions: lifted, onSessionsChange, deviceRole, contextLabel, badge, footer, onExecuted, focusRequest, stateVersion, staleHint = "Network state changed — rerun a command to inspect it.", className }: CLITerminalProps) {
+export function CLITerminal({ commandSets, vendor, onVendorChange, sessions: lifted, onSessionsChange, deviceRole, contextLabel, badge, footer, onExecuted, focusRequest, stateVersion, staleHint = "Network state changed — rerun a command to inspect it.", className, shellLabel }: CLITerminalProps) {
   const set = commandSets[vendor];
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -106,7 +108,7 @@ export function CLITerminal({ commandSets, vendor, onVendorChange, sessions: lif
   const [tabRelease, setTabRelease] = useState(false);
 
   const key = cliSessionKey(vendor, set?.deviceName ?? "device");
-  const welcomeNow = `Connected to ${set?.deviceName ?? "device"} · ${CLI_VENDOR_LABEL[vendor]}${contextLabel ? ` · ${contextLabel}` : ""}. Press ? for context help and Tab to complete.`;
+  const welcomeNow = `Connected to ${set?.deviceName ?? "device"} · ${shellLabel ?? CLI_VENDOR_LABEL[vendor]}${contextLabel ? ` · ${contextLabel}` : ""}. Press ? for context help and Tab to complete.`;
   // An untouched session is shown fresh; it is written to the map (welcome line frozen) on its first change.
   const session = sessions[key] ?? blankSession(welcomeNow);
   const update = (fn: (s: CliSession) => CliSession) => setSessions((prev) => ({ ...prev, [key]: fn(prev[key] ?? blankSession(welcomeNow)) }));
@@ -195,6 +197,7 @@ export function CLITerminal({ commandSets, vendor, onVendorChange, sessions: lif
   return (
     <div className={clsx("min-w-0 overflow-hidden rounded-xl border border-pv-border bg-[#05080d] shadow-inner", className)}>
       <div className="flex flex-wrap items-center gap-2 border-b border-white/10 bg-white/[0.03] px-3 py-2">
+        {!shellLabel && (
         <div role="radiogroup" aria-label="CLI vendor" className="flex gap-0.5 rounded-full border border-pv-border p-0.5">
           {VENDORS.map((v) => (
             <button
@@ -213,11 +216,12 @@ export function CLITerminal({ commandSets, vendor, onVendorChange, sessions: lif
             </button>
           ))}
         </div>
+        )}
         <span className="rounded-md border border-pv-border px-2 py-0.5 pv-mono text-[10px] font-bold text-pv-text-muted" aria-label={`Device ${set?.deviceName ?? ""}`}>
           {set?.deviceName ?? "—"}
           {deviceRole && <span className="font-normal text-pv-text-faint"> · {deviceRole}</span>}
         </span>
-        <span className="rounded-md bg-white/5 px-2 py-0.5 pv-mono text-[10px] uppercase tracking-wide text-pv-text-faint">{VENDOR_SHORT[vendor]} · read-only</span>
+        <span className="rounded-md bg-white/5 px-2 py-0.5 pv-mono text-[10px] uppercase tracking-wide text-pv-text-faint">{shellLabel ?? VENDOR_SHORT[vendor]} · read-only</span>
         {badge}
         <button
           type="button"
@@ -233,7 +237,7 @@ export function CLITerminal({ commandSets, vendor, onVendorChange, sessions: lif
         ref={transcriptRef}
         role="log"
         aria-live="polite"
-        aria-label={`${set?.deviceName ?? "Device"} ${CLI_VENDOR_LABEL[vendor]} terminal transcript`}
+        aria-label={`${set?.deviceName ?? "Device"} ${shellLabel ?? CLI_VENDOR_LABEL[vendor]} terminal transcript`}
         data-session={key}
         onClick={() => {
           if (!window.getSelection()?.toString()) inputRef.current?.focus();

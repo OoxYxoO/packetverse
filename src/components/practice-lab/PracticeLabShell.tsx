@@ -54,6 +54,8 @@ export interface PracticeLabShellProps {
   /** Scrolling left column: the Teaching Board and anything that belongs with it. */
   board: ReactNode;
   liveState?: ReactNode;
+  /** Heading above liveState (default "Live state"); an empty string hides it. */
+  liveStateLabel?: string;
   eventLog?: ReactNode;
   /** Optional — labs/devices without a meaningful CLI simply omit it. */
   cli?: ReactNode;
@@ -199,7 +201,7 @@ export function PracticeLabShell(props: PracticeLabShellProps) {
               <div className={clsx("space-y-2 px-3 pt-3 sm:px-5", tab === "state" ? "block" : "hidden", "lg:block")}>
                 {liveState && (
                   <>
-                    <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-text-faint">Live state</p>
+                    {(props.liveStateLabel ?? "Live state") && <p className="text-[10px] font-semibold uppercase tracking-wide text-pv-text-faint">{props.liveStateLabel ?? "Live state"}</p>}
                     {liveState}
                   </>
                 )}

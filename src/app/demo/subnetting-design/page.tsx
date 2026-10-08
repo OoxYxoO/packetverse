@@ -11,6 +11,7 @@ import { sdNames } from "./addressNames";
 import { PlanSummary, SubnetPlanPanel } from "./SubnetPlanPanel";
 import { SD_LESSON_SECTIONS, SubnettingLessonGuideContent } from "./LessonGuideContent";
 import { SD_DEEP_DIVE_SECTIONS, SubnettingDeepDiveContent } from "./DeepDiveContent";
+import { SubnetPresentationOverlay } from "./subnetting-lab/SubnetPresentation";
 import { SubnettingLabWorkspace } from "./subnetting-lab/SubnettingLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
@@ -98,10 +99,11 @@ const config: FundamentalsLessonConfig<SdState> = {
   panels: (s, stepId) => (stepId && PLANNER_STEPS.has(stepId) ? <SubnetPlanPanel plan={s.plan} showTester={TESTER_STEPS.has(stepId)} showFreeBlocks={stepId === "plan-review"} /> : null),
   sidePanel: (s) => <PlanSummary plan={s.plan} faulty={s.faultActive} />,
   practiceLab: {
-    entry: { title: "Subnet Design Studio", buttonLabel: "Practice subnetting", description: "Size, place and verify the 10.44.0.0/24 plan yourself: prefixes, block boundaries, an equal-size split, VLSM allocation, a new LAN-D — then troubleshoot a flawed spreadsheet plan." },
+    entry: { title: "Subnet Explorer", buttonLabel: "Practice Subnetting", description: "See address space on a board, calculate subnets yourself, compare FLSM with VLSM, then subnet a real branch network: design the plan, configure R1 and every PC and server from it (Cisco/Junos and host terminals), watch the packets, and troubleshoot seven addressing tickets." },
     contextNote: (stepId) => (stepId && ["powers-of-two", "size-lan-a", "size-lan-b", "size-lan-c", "size-transit", "place-lan-a", "place-lan-b", "boundaries-27", "place-lan-c", "place-transit", "plan-review"].includes(stepId) ? "Want to design it yourself instead of only watching?" : undefined),
-    render: ({ open, onClose }) => <SubnettingLabWorkspace open={open} onClose={onClose} />,
+    render: ({ open, onClose }) => <SubnettingLabWorkspace open={open} onClose={onClose} initialMode="explore" />,
   },
+  presentation: { topic: "subnetting", render: (p) => <SubnetPresentationOverlay {...p} /> },
   complete: { badge: "Lesson Complete", title: "You designed and proved an address plan", message: "Host counts → prefixes → aligned, non-overlapping blocks → deployed and verified." },
 };
 

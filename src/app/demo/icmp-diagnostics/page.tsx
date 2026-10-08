@@ -10,6 +10,8 @@ import { explainIc, icTables } from "./explain";
 import { icNames } from "./addressNames";
 import { IcmpProbePanel, PmtuCalculator } from "./IcmpProbePanel";
 import { IC_LESSON_SECTIONS, IcmpLessonGuideContent } from "./LessonGuideContent";
+import { IcmpPresentation } from "./IcmpPresentation";
+import { IcmpLabWorkspace } from "./icmp-lab/IcmpLabWorkspace";
 import { IC_DEEP_DIVE_SECTIONS, IcmpDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
@@ -86,6 +88,12 @@ const config: FundamentalsLessonConfig<IcmpState> = {
   },
   panels: (_s, stepId) => (stepId && CALC_STEPS.has(stepId) ? <PmtuCalculator /> : null),
   sidePanel: (s) => <IcmpProbePanel s={s} />,
+  practiceLab: {
+    entry: { title: "ICMP Lab", buttonLabel: "Practice ICMP", description: "Six short levels on what the network's signals mean (one ping, TTL, traceroute, unreachables, MTU and DF, silence), then a diagnostics desk: follow every probe on the topology, open the routers (Cisco/Junos) and hosts, read captures and counters, and solve six tickets by fixing the real configuration and proving the repair." },
+    contextNote: (stepId) => (stepId && /trace|pmtu|ttl|frag|big|fix|verify/i.test(stepId) ? "Want to run the tools yourself?" : undefined),
+    render: ({ open, onClose }) => <IcmpLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "ICMP", render: (p) => <IcmpPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read the network through ICMP", message: "Echo for reachability, Time Exceeded for the path, Fragmentation Needed for the path MTU." },
 };
 

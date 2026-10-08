@@ -8,11 +8,9 @@ import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDial
 import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import { executeCli } from "@/lib/cli/parser";
 import type { CliVendor } from "@/lib/cli/types";
-import type { PacketVisual } from "@/lib/sim-engine/types";
 import { INITIAL_TTL, V4_FAULT_PREFIX, V4_IP, V4_MAC, V4_PREFIX, blockSize, hostRange, maskOf, networkOf } from "@/lib/sim-engine/scenarios/ipv4Basics";
-import { V4_LAB_HOST_C, createV4LabState, fieldOf, v4Decide, v4Owner, type V4LabAction, type V4LabState, type V4Record } from "@/lib/sim-engine/scenarios/ipv4Lab";
-import { r1Cli } from "./cliAdapter";
-import { v4LabDryRun } from "./ipv4-lab/Ipv4LabBoard";
+import { V4_HOSTS, createV4Net, hex4, v4Apply, v4IfName, v4MacOwner, type V4Frame, type V4NetState } from "@/lib/sim-engine/scenarios/ipv4Net";
+import { v4R1Sets, type V4CliApi } from "./ipv4-lab/v4Cli";
 
 /**
  * IPv4 DEEP DIVE — the complete IPv4 Basics lesson, taught on THIS network: HOST-A 192.168.10.10/26 and the lab-only
@@ -58,7 +56,7 @@ export const V4_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "v4d-myths", label: "Common misconceptions", group: G.master },
   { id: "v4d-quiz", label: "Knowledge check", group: G.master },
   { id: "v4d-explain", label: "Can you explain it?", group: G.master },
-  { id: "v4d-practice", label: "Practise in the IPv4 Lab", group: G.master },
+  { id: "v4d-practice", label: "Practice in the IPv4 Lab", group: G.master },
   { id: "v4d-beyond", label: "Subnet design, routing, ICMP, NAT, IPv6…", group: G.beyond },
 ];
 
@@ -66,39 +64,60 @@ export const V4_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
 
 const A = V4_IP["HOST-A"];
 const B = V4_IP["HOST-B"];
-const C = V4_LAB_HOST_C.ip;
+const C = V4_HOSTS.hostc.cfg.ip;
 const GA = V4_IP.R1L;
 const GB = V4_IP.R1R;
 const MASK = maskOf(V4_PREFIX);
-const play = (s: V4LabState, actions: V4LabAction[]) => actions.reduce(v4LabDryRun, s);
-const LAB_LOCAL = play(createV4LabState(), [{ type: "send", src: "HOST-A", dst: C }]);
-const LAB_AT_R1 = play(LAB_LOCAL, [{ type: "send", src: "HOST-A", dst: B }]);
-const LAB_ROUTED = play(LAB_AT_R1, [{ type: "route" }]);
-const LAB_INCIDENT = play(LAB_ROUTED, [{ type: "incident" }, { type: "send", src: "HOST-A", dst: B }]);
-const lastRec = (s: V4LabState) => s.records[s.records.length - 1];
-const REC_LOCAL = lastRec(LAB_LOCAL);
-const REC_TO_R1 = lastRec(LAB_AT_R1);
-const REC_ROUTE = lastRec(LAB_ROUTED);
-const REC_INC = lastRec(LAB_INCIDENT);
-const IN_F = REC_ROUTE.frames[REC_ROUTE.routing!.inFrame];
-const OUT_F = REC_ROUTE.frames[REC_ROUTE.routing!.outFrame];
-const ip = (p: PacketVisual, l: string) => fieldOf(p, /^IPv4/, l);
-const eth = (p: PacketVisual, l: string) => fieldOf(p, /^Ethernet/, l);
+// The IPv4 Lab's own model: HOST-A pings HOST-C, then HOST-B; and the wrong-mask ticket reproduced.
+const LAB_LOCAL = v4Apply(createV4Net(), { type: "ping", src: "hosta", dst: C });
+const LAB_ROUTED = v4Apply(LAB_LOCAL, { type: "ping", src: "hosta", dst: B });
+const LAB_INCIDENT = v4Apply(v4Apply(createV4Net(), { type: "ticket", id: "mask" }), { type: "ping", src: "hosta", dst: B });
+const runOf = (st: V4NetState) => (st.last?.type === "ping" ? st.last.result : undefined);
+const ROUTE_STEP = runOf(LAB_ROUTED)!.router.find((r) => r.outcome === "forwarded" && r.dst === B)!;
+const IN_F = ROUTE_STEP.inFrame;
+const OUT_F = ROUTE_STEP.outFrame!;
+const ROUTE_TEXT = `${ROUTE_STEP.route!.net}/${ROUTE_STEP.route!.prefix}`;
+const EGRESS = v4IfName(ROUTE_STEP.route!.iface);
+const ipv4Field: Record<string, (f: V4Frame) => string> = {
+  Version: () => "4",
+  IHL: () => "5 (20 bytes)",
+  "DSCP / ECN": () => "0 / 0",
+  "Total Length": (f) => String(f.ip!.len),
+  Identification: (f) => hex4(f.ip!.id),
+  Flags: () => "DF (Don't Fragment)",
+  "Fragment Offset": () => "0",
+  TTL: (f) => String(f.ip!.ttl),
+  Protocol: () => "1 (ICMP)",
+  "Header Checksum": (f) => hex4(f.ip!.checksum),
+  Source: (f) => f.ip!.src,
+  Destination: (f) => f.ip!.dst,
+};
+const ip = (f: V4Frame, l: string) => ipv4Field[l]?.(f) ?? "";
+const eth = (f: V4Frame, l: string) => (l === "Destination MAC" ? f.ethDst : f.ethSrc);
+const v4Owner = (mac: string) => (v4MacOwner(mac) === "nobody" ? undefined : v4MacOwner(mac));
+/** The echo HOST-A put on the wire toward R1. */
+const TO_R1 = LAB_ROUTED.captures.find((c) => c.run === runOf(LAB_ROUTED)!.run && c.dev === "hosta" && c.dir === "out" && c.frame.ip?.icmp === "echo-request")!.frame;
 
-/** Every frame an action put on the wire (the same list the lab shows). */
-const frameRows = (records: V4Record[]) =>
-  records.flatMap((r) =>
-    // A route record's first frame is the packet R1 received (already listed with the sender's frames).
-    r.frames.filter((_f, i) => !(r.kind === "route" && r.routing?.inFrame === i)).map((f) => {
-      const isIp = f.protocol !== "ARP";
-      const dstMac = eth(f, "Destination MAC");
-      return [isIp ? "IPv4" : fieldOf(f, /^ARP/, "Operation").includes("request") ? "ARP request" : "ARP reply", <Mono key="m">{dstMac}</Mono>, v4Owner(dstMac) ?? (dstMac.startsWith("FF") ? "broadcast" : "—"), isIp ? `${ip(f, "Source")} → ${ip(f, "Destination")} · TTL ${ip(f, "TTL")}` : `who has / is at ${fieldOf(f, /^ARP/, "Operation").includes("request") ? fieldOf(f, /^ARP/, "Target IP") : fieldOf(f, /^ARP/, "Sender IP")}`];
-    }),
-  );
+/** Every frame the request put on the wire (senders' side), in order — the same list the lab's captures show. */
+const frameRows = (st: V4NetState, untilReply = true) =>
+  st.captures
+    .filter((c) => c.run === runOf(st)!.run && c.dir === "out" && (untilReply || c.frame.ip?.icmp !== "echo-reply"))
+    .filter((c) => !c.frame.ip || c.frame.ip.icmp === "echo-request")
+    .map((c) => {
+      const f = c.frame;
+      const isIp = f.type === "IPv4";
+      return [isIp ? "IPv4" : f.arp!.op === "request" ? "ARP request" : "ARP reply", <Mono key="m">{f.ethDst}</Mono>, v4Owner(f.ethDst) ?? (f.ethDst.startsWith("FF") ? "broadcast" : "—"), isIp ? `${f.ip!.src} → ${f.ip!.dst} · TTL ${f.ip!.ttl}` : `who has / is at ${f.arp!.op === "request" ? f.arp!.tip : f.arp!.sip}`];
+    });
 const FRAME_COLS = ["Frame", "Ethernet destination", "= device", "IPv4 / ARP"];
+/** A host's decision with a given prefix (the same AND the lab's hosts make). */
+const decide = (prefix: number, dst: string) => {
+  const local = networkOf(A, prefix) === networkOf(dst, prefix);
+  return { srcIp: A, dst, mask: maskOf(prefix), srcNet: networkOf(A, prefix), dstNet: networkOf(dst, prefix), local, nextHop: local ? dst : GA };
+};
 
-function cli(state: V4LabState, vendor: CliVendor, command: string) {
-  const set = r1Cli(vendor, state);
+function cli(state: V4NetState, vendor: CliVendor, command: string) {
+  const api: V4CliApi = { view: state, act: () => state, cisco: { kind: "exec" }, setCisco: () => undefined, junosEdit: false, setJunosEdit: () => undefined, cand: state.r1, setCand: () => undefined, hist: [{ r1: state.r1, at: 0, by: "root" }], commit: () => undefined };
+  const set = v4R1Sets(api)[vendor];
   const r = executeCli(set, command);
   return { prompt: set.prompt, command, output: r.kind === "ok" ? r.output : "" };
 }
@@ -241,7 +260,7 @@ function SplitDiagram() {
       <DNode x={560} y={60} label="HOST-B" sub={B} w={130} />
       <DArrow x1={147} y1={60} x2={243} y2={60} color={D.ip} />
       <DArrow x1={397} y1={60} x2={493} y2={60} color={D.ip} />
-      <DPill x={195} y={110} text={`Eth dst ${eth(REC_TO_R1.frames[REC_TO_R1.ipFrame!], "Destination MAC")} (R1)`} color={D.eth} w={230} />
+      <DPill x={195} y={110} text={`Eth dst ${eth(TO_R1, "Destination MAC")} (R1)`} color={D.eth} w={230} />
       <DPill x={445} y={110} text={`Eth dst ${eth(OUT_F, "Destination MAC")} (HOST-B)`} color={D.eth} w={230} />
       <DPill x={195} y={145} text={`IPv4 dst ${B} · TTL ${ip(IN_F, "TTL")}`} color={D.ip} w={210} />
       <DPill x={445} y={145} text={`IPv4 dst ${B} · TTL ${ip(OUT_F, "TTL")}`} color={D.ip} w={210} />
@@ -286,9 +305,9 @@ export function Ipv4DeepDiveContent() {
   const arp = cli(LAB_ROUTED, "cisco", "show ip arp");
   const jroute = cli(LAB_ROUTED, "juniper", "show route");
   const brief = cli(LAB_ROUTED, "cisco", "show ip interface brief");
-  const wrong = v4Decide("HOST-A", { prefix: V4_FAULT_PREFIX, gateway: GA }, B);
-  const right = v4Decide("HOST-A", { prefix: V4_PREFIX, gateway: GA }, B);
-  const local = v4Decide("HOST-A", { prefix: V4_PREFIX, gateway: GA }, C);
+  const wrong = decide(V4_FAULT_PREFIX, B);
+  const right = decide(V4_PREFIX, B);
+  const local = decide(V4_PREFIX, C);
 
   return (
     <div className="space-y-12">
@@ -414,7 +433,7 @@ export function Ipv4DeepDiveContent() {
               fields: [
                 { name: "Version · IHL", value: `${ip(IN_F, "Version")} · ${ip(IN_F, "IHL")}`, why: "IPv4, 20-byte header (no options)." },
                 { name: "DSCP / ECN", value: ip(IN_F, "DSCP / ECN"), why: "Priority marking and congestion signalling — not used here." },
-                { name: "Total Length", value: ip(IN_F, "Total Length"), why: "Header + UDP header + data, in bytes." },
+                { name: "Total Length", value: ip(IN_F, "Total Length"), why: "Header + ICMP header + data, in bytes." },
                 { name: "Identification · Flags · Fragment Offset", value: `${ip(IN_F, "Identification")} · ${ip(IN_F, "Flags")} · ${ip(IN_F, "Fragment Offset")}`, why: "Fragmentation fields; DF set, never fragmented here." },
                 { name: "TTL", value: ip(IN_F, "TTL"), why: "Hop limit; each router subtracts one.", key: true },
                 { name: "Protocol", value: ip(IN_F, "Protocol"), why: "What the payload is." },
@@ -456,7 +475,7 @@ export function Ipv4DeepDiveContent() {
       </GuideSection>
 
       <GuideSection id="v4d-keeps" eyebrow="The header" title="What a router keeps" tone="success">
-        <ChecklistCard tone="success" mark="=" title="Unchanged" items={[`Source ${ip(OUT_F, "Source")} and destination ${ip(OUT_F, "Destination")}`, `Identification ${ip(OUT_F, "Identification")}, Flags, Fragment Offset, Total Length, Protocol`, "The UDP payload"]} />
+        <ChecklistCard tone="success" mark="=" title="Unchanged" items={[`Source ${ip(OUT_F, "Source")} and destination ${ip(OUT_F, "Destination")}`, `Identification ${ip(OUT_F, "Identification")}, Flags, Fragment Offset, Total Length, Protocol`, "The ICMP payload"]} />
         <p>Address changes would need NAT, which this network does not do.</p>
       </GuideSection>
 
@@ -483,8 +502,8 @@ export function Ipv4DeepDiveContent() {
         <StateTransition
           states={[
             { label: "Frame to my MAC", detail: "accept", tone: "ethernet" },
-            { label: "Look up destination", detail: `${B} ∈ ${REC_ROUTE.routing!.route}`, tone: "ip" },
-            { label: "Egress", detail: `${REC_ROUTE.routing!.egress} (connected → next hop = ${B})`, tone: "violet" },
+            { label: "Look up destination", detail: `${B} ∈ ${ROUTE_TEXT}`, tone: "ip" },
+            { label: "Egress", detail: `${EGRESS} (connected → next hop = ${B})`, tone: "violet" },
             { label: "ARP on egress LAN", detail: `who has ${B}?`, tone: "arp" },
             { label: "TTL − 1, checksum, new frame", detail: `TTL ${ip(OUT_F, "TTL")}`, tone: "warning" },
           ]}
@@ -492,14 +511,14 @@ export function Ipv4DeepDiveContent() {
       </GuideSection>
 
       <GuideSection id="v4d-walk-local" eyebrow="End to end" title="Walkthrough: same subnet" tone="cyan">
-        <FieldTable title={`HOST-A → HOST-C ${C}, empty ARP caches (from the lab's model)`} columns={FRAME_COLS} rows={frameRows([REC_LOCAL])} />
-        <p>One ARP for the destination, one IPv4 frame straight to HOST-C. R1 routed {LAB_LOCAL.r1Forwarded} packets.</p>
+        <FieldTable title={`HOST-A → HOST-C ${C}, empty ARP caches (from the lab's model)`} columns={FRAME_COLS} rows={frameRows(LAB_LOCAL)} />
+        <p>One ARP for the destination, one IPv4 frame straight to HOST-C. R1 routed {LAB_LOCAL.counters.forwarded} packets.</p>
       </GuideSection>
 
       <GuideSection id="v4d-walk-remote" eyebrow="End to end" title="Walkthrough: remote subnet" tone="violet">
-        <FieldTable title={`HOST-A → HOST-B ${B} (from the lab's model)`} columns={FRAME_COLS} rows={frameRows([REC_TO_R1, REC_ROUTE])} />
+        <FieldTable title={`HOST-A → HOST-B ${B} (from the lab's model)`} columns={FRAME_COLS} rows={frameRows(LAB_ROUTED)} />
         <p>HOST-A ARPs for the gateway (not for {B}); R1 ARPs for HOST-B on its other LAN and forwards a new frame with TTL {ip(OUT_F, "TTL")}.</p>
-        <LabBridge label="Practise this in the IPv4 Lab">Predict each ARP target and each Ethernet destination before the frames move.</LabBridge>
+        <LabBridge label="Practice this in the IPv4 Lab">Predict each ARP target and each Ethernet destination before the frames move.</LabBridge>
       </GuideSection>
 
       <GuideSection id="v4d-diff" eyebrow="End to end" title="Before and after R1" tone="warning">
@@ -553,9 +572,9 @@ export function Ipv4DeepDiveContent() {
           rows={[
             ["Decision", `${wrong.srcIp} AND ${wrong.mask} = ${wrong.srcNet}; ${wrong.dst} AND ${wrong.mask} = ${wrong.dstNet} → ${wrong.local ? "LOCAL" : "REMOTE"}`],
             ["Next hop", `${wrong.nextHop} — the destination itself`],
-            ["ARP", `who has ${REC_INC.arp[0]?.ip}? → ${REC_INC.arp[0]?.outcome === "no-reply" ? "no reply, INCOMPLETE" : REC_INC.arp[0]?.outcome}`],
-            ["IPv4 packets sent", REC_INC.frameKinds.includes("ipv4") ? "yes" : "none"],
-            ["R1", `connected 192.168.10.64/26 present; routed count unchanged (${LAB_INCIDENT.r1Forwarded})`],
+            ["ARP", `who has ${runOf(LAB_INCIDENT)!.decisions[0]?.nextHop}? → ${LAB_INCIDENT.caches.hosta.some((e) => e.state === "failed") ? "no reply, INCOMPLETE" : "answered"}`],
+            ["IPv4 packets sent", LAB_INCIDENT.captures.some((c) => c.dev === "hosta" && c.dir === "out" && c.frame.type === "IPv4") ? "yes" : "none"],
+            ["R1", `connected 192.168.10.64/26 present; routed count unchanged (${LAB_INCIDENT.counters.forwarded})`],
           ]}
         />
         <Callout tone="danger" title="Root cause">
@@ -589,7 +608,7 @@ export function Ipv4DeepDiveContent() {
             { myth: "If the IP address is different, the destination must be remote.", correction: `${C} differs from ${A} but is local: both are in ${networkOf(A, V4_PREFIX)}/${V4_PREFIX}.` },
             { myth: "A /24 means the first three octets are always the network — for every prefix.", correction: `The prefix decides. At /${V4_PREFIX} the network ends 2 bits into the last octet.` },
             { myth: "ARP decides whether the destination is local.", correction: "The host's mask decides; ARP only resolves the chosen next hop." },
-            { myth: "The routing table and the ARP table are the same thing.", correction: "Routes map destination networks to interfaces/next hops; ARP maps a neighbour's IPv4 to its MAC." },
+            { myth: "The routing table and the ARP table are the same thing.", correction: "Routes map destination networks to interfaces/next hops; ARP maps a neighbor's IPv4 to its MAC." },
           ]}
         />
       </GuideSection>
@@ -608,7 +627,7 @@ export function Ipv4DeepDiveContent() {
         />
       </GuideSection>
 
-      <GuideSection id="v4d-practice" eyebrow="Practice" title="Practise in the IPv4 Lab" tone="cyan">
+      <GuideSection id="v4d-practice" eyebrow="Practice" title="Practice in the IPv4 Lab" tone="cyan">
         <ChecklistCard tone="cyan" title="In the lab you will" mark="→" items={["Make HOST-A's local/remote decision for HOST-C and HOST-B", "Watch live ARP resolve the destination (local) or the gateway (remote)", "Compare the packet before and after R1, field by field", "Check R1's routes and ARP cache on Cisco and Junos", "Troubleshoot the wrong-mask incident and verify the fix", "In free play: change HOST-A's prefix, try a wrong gateway"]} />
         <LabBridge label="Open the IPv4 Lab">Same network plus a lab-only HOST-C. Nothing you do there changes your lesson progress.</LabBridge>
       </GuideSection>
@@ -626,7 +645,7 @@ export function Ipv4DeepDiveContent() {
             ["NAT", "Rewrites addresses — the one case where a router changes them."],
             ["Proxy ARP", "A router answering ARP for others; a workaround, not a fix for wrong masks."],
             ["/31, /32, aggregation", "Special prefixes and route summarisation — later lessons."],
-            ["IPv6", "128-bit addresses; neighbour discovery instead of ARP."],
+            ["IPv6", "128-bit addresses; neighbor discovery instead of ARP."],
           ]}
         />
       </GuideSection>

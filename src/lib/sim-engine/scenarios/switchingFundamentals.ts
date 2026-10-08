@@ -9,8 +9,8 @@ import type { FundHop } from "@/components/lesson/fundamentalsTrace";
  *            │  (ge-0/0/23 primary, ge-0/0/24 secondary)
  *          HOST-D         HOST-C (on SW2)
  *
- * Modeled exactly (IEEE 802.1D / 802.1Q transparent-bridge behaviour):
- * - Each bridge has its OWN forwarding database. Nothing synchronises them: a bridge learns a MAC only when a frame
+ * Modeled exactly (IEEE 802.1D / 802.1Q transparent-bridge behavior):
+ * - Each bridge has its OWN forwarding database. Nothing synchronizes them: a bridge learns a MAC only when a frame
  *   SOURCED by that MAC arrives on one of its own ports, and it learns it against that ingress port.
  * - Every bridge performs its own destination lookup: known unicast → one port; unknown unicast → flood (destination
  *   MAC unchanged); broadcast FF:FF:FF:FF:FF:FF → flood. A flood never goes back out the ingress port, and only uses
@@ -23,7 +23,7 @@ import type { FundHop } from "@/components/lesson/fundamentalsTrace";
  * - MAC "flapping" is ordinary source learning: the same source MAC keeps arriving on different ports, so the entry
  *   keeps moving. When copies arrive at the same instant the processing order is timing-dependent; the model processes
  *   them in port order.
- * - Disabling a port flushes the dynamic entries learned on it (common managed-switch behaviour, as in the Ethernet lesson).
+ * - Disabling a port flushes the dynamic entries learned on it (common managed-switch behavior, as in the Ethernet lesson).
  * No STP election or port-state logic exists in this lesson.
  */
 
@@ -829,7 +829,7 @@ export const switchingFundamentalsSteps: ScenarioStep<SwfState>[] = [
       prompt: "How many copies of HOST-A's broadcast will SW1 send toward SW2?",
       options: [
         { id: "two", label: "Two — one out each forwarding inter-switch port" },
-        { id: "one", label: "One — a switch only ever uses one link to a neighbour switch" },
+        { id: "one", label: "One — a switch only ever uses one link to a neighbor switch" },
         { id: "zero", label: "None — broadcasts stay on the switch they entered" },
         { id: "load", label: "One, alternating between the links for load sharing" },
       ],

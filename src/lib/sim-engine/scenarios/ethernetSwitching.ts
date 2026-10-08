@@ -3,7 +3,7 @@ import type { ProcessingStage } from "@/components/network3d/types";
 import type { FundHop } from "@/components/lesson/fundamentalsTrace";
 
 /**
- * Ethernet & Switching — the first Fundamentals lesson. One learning bridge (SW1, IEEE 802.1D behaviour) with three
+ * Ethernet & Switching — the first Fundamentals lesson. One learning bridge (SW1, IEEE 802.1D behavior) with three
  * hosts and an unmanaged hot-desk switch (DESK-SW) on ge-0/0/4.
  *
  * Modeled exactly (IEEE 802.1D / 802.1Q transparent-bridge concepts):
@@ -13,7 +13,7 @@ import type { FundHop } from "@/components/lesson/fundamentalsTrace";
  *   (FF:FF:FF:FF:FF:FF) → flooded because it is addressed to everyone, regardless of FDB contents.
  * - Hosts filter on destination MAC: a flooded unicast not addressed to them is discarded.
  * - Dynamic entries age out after the aging time (IEEE 802.1D recommended default 300 s) without refresh.
- * - A port going DOWN flushes the dynamic entries learned on it (the common managed-switch behaviour); a port that
+ * - A port going DOWN flushes the dynamic entries learned on it (the common managed-switch behavior); a port that
  *   stays UP keeps them — which is exactly how a stale entry survives behind DESK-SW in the incident.
  * The frame itself is never modified by a switch.
  */
@@ -143,7 +143,7 @@ const withDetail = (base: ProcessingStage[], d: Partial<Record<string, string>>)
 // ---------------------------------------------------------------------------------------------------------------
 // Bridge logic (pure)
 // ---------------------------------------------------------------------------------------------------------------
-/** Where SW1 is physically connected to each neighbour right now. */
+/** Where SW1 is physically connected to each neighbor right now. */
 export function sw1PortNeighbor(s: EthState, port: string): EthDevice | undefined {
   if (s.downPorts.includes(`SW1 ${port}`)) return undefined;
   if (port === "ge-0/0/1") return "HOST-A";
@@ -584,7 +584,7 @@ export const ethernetSwitchingSteps: ScenarioStep<EthState>[] = [
   {
     id: "move-intro",
     label: "HOST-B moves to the hot desk",
-    narrative: "HOST-B is unplugged from ge-0/0/2 and plugged into DESK-SW's free port. ge-0/0/2 goes DOWN, and SW1 flushes the dynamic entries learned on that port (the usual managed-switch behaviour on link-down). SW1 has NOT been told where HOST-B went — nothing can tell it except a frame from HOST-B.",
+    narrative: "HOST-B is unplugged from ge-0/0/2 and plugged into DESK-SW's free port. ge-0/0/2 goes DOWN, and SW1 flushes the dynamic entries learned on that port (the usual managed-switch behavior on link-down). SW1 has NOT been told where HOST-B went — nothing can tell it except a frame from HOST-B.",
     run: (s) => {
       const hop: FundHop = {
         stepId: "move-intro",

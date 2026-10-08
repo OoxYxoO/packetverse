@@ -11,6 +11,7 @@ import { swfNames } from "./addressNames";
 import { SWF_REGIONS, swfEdges, swfNodes } from "./topology";
 import { SwitchFdbPanel } from "./SwitchFdbPanel";
 import { SWF_LESSON_SECTIONS, SwitchingLessonGuideContent } from "./LessonGuideContent";
+import { SwitchingPresentation } from "./SwitchingPresentation";
 import { SWF_DEEP_DIVE_SECTIONS, SwitchingDeepDiveContent } from "./DeepDiveContent";
 import { SwitchingLabWorkspace } from "./switching-lab/SwitchingLabWorkspace";
 
@@ -91,10 +92,11 @@ const config: FundamentalsLessonConfig<SwfState> = {
   },
   sidePanel: (s) => <SwitchFdbPanel s={s} />,
   practiceLab: {
-    entry: { title: "Switching Lab", buttonLabel: "Practice switching", description: "Send frames across SW1 and SW2 yourself, compare both switches on their Cisco and Junos CLIs, then create and troubleshoot a Layer-2 loop." },
+    entry: { title: "Switching Lab", buttonLabel: "Practice Switching", description: "Watch each switch learn on its own, move a host, add a second link and see the loop — then open SW1 and SW2 (Cisco or Junos), capture on any port and solve five tickets from evidence." },
     contextNote: (stepId) => (stepId && ["a-sends", "sw1-learn-lookup", "sw2-learn", "fdb-compare", "sw1-local", "sw2-partial", "sw1-partial", "bcast-sw2", "wave-stop", "trouble-question", "verify-unicast-sw1"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
     render: ({ open, onClose }) => <SwitchingLabWorkspace open={open} onClose={onClose} />,
   },
+  presentation: { topic: "multi-switch forwarding", render: (p) => <SwitchingPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can follow a frame through several switches", message: "Independent FDBs, hop-by-hop learning, partial knowledge, domain-wide broadcast — and why two active paths without loop prevention become an endless loop." },
 };
 

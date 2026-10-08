@@ -11,7 +11,7 @@ import { SL_CALC, SL_INCIDENT_PLAN, SL_LAN_D, capacityLadder, dotOct, lastOctet,
 /**
  * SUBNETTING DESIGN DEEP DIVE — the complete lesson on THIS address space: parent 10.44.0.0/24, LAN-A 100, LAN-B 50,
  * LAN-C 25 (each count includes R1's interface) and the R1 ↔ R2 transit link 2. Every plan, range, verdict, free
- * block and symptom below is produced by the guided lesson's arithmetic and the Subnet Design Studio's validator —
+ * block and symptom below is produced by the guided lesson's arithmetic and the Subnet Explorer's validator —
  * nothing is hand-typed. The 2^h − 2 rule is scoped to ordinary LAN subnets throughout; /31 and /32 get their own
  * section. Routing, aggregation, IPv6 and IPAM stay in "Beyond this lesson".
  */
@@ -60,7 +60,7 @@ export const SD_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "sdd-quiz", label: "Knowledge check", group: G.master },
   { id: "sdd-challenge", label: "Design challenge", group: G.master },
   { id: "sdd-explain", label: "Can you explain it?", group: G.master },
-  { id: "sdd-practice", label: "Practise in the Studio", group: G.master },
+  { id: "sdd-practice", label: "Practice in the Explorer", group: G.master },
   { id: "sdd-beyond", label: "Aggregation, IPv6, IPAM…", group: G.beyond },
 ];
 
@@ -74,7 +74,7 @@ const rowsOf = (plan: { id: SlRow["id"]; prefix?: number; network?: string }[]):
 const REF: SlRow[] = rowsOf(CORRECT_PLAN);
 const REF_REPORT = planReport(REF);
 const REF_FREE = REF_REPORT.space.ranges[0];
-/** Smallest-first with the same placement rule (lowest free aligned block), built by the Studio's firstFit. */
+/** Smallest-first with the same placement rule (lowest free aligned block), built by the Explorer's firstFit. */
 const SMALL_FIRST: SlRow[] = [...SEGMENTS]
   .sort((a, b) => a.hosts - b.hosts)
   .reduce<SlRow[]>((rows, s) => [...rows, { id: s.id, hosts: s.hosts, prefix: minP(s.hosts), network: firstFit(rows, s.id, s.hosts)!.network }], []);
@@ -483,7 +483,7 @@ export function SubnettingDeepDiveContent() {
 
       <GuideSection id="sdd-allocate" eyebrow="VLSM" title="Allocation walk-through" tone="cyan">
         <FieldTable title="Largest-first in this /24" columns={["Network", "Block", "Next free before", "Placed at", "Range"]} rows={[A, B, C, T].map((c, i, all) => [c.id, String(blockSize(c.prefix)), i === 0 ? dotOct(PARENT.network) : dotOct(numToIp(all[i - 1].realRange.last + 1)), `${dotOct(c.real)}/${c.prefix}`, rangeLabel(c.realRange)])} />
-        <LabBridge label="Allocate it yourself">Place the four blocks in any order in the Subnet Design Studio and watch the validator and the address ruler.</LabBridge>
+        <LabBridge label="Allocate it yourself">Place the four blocks in any order in the Subnet Explorer and watch the boxes land on the address board.</LabBridge>
       </GuideSection>
 
       <GuideSection id="sdd-free" eyebrow="VLSM" title="Free space as ranges" tone="violet">
@@ -519,7 +519,7 @@ export function SubnettingDeepDiveContent() {
 
       <GuideSection id="sdd-misaligned" eyebrow="Validation" title="Misalignment and the real block" tone="danger">
         <p>
-          A misaligned start is not rejected by hosts or routers — it is <Strong>normalised</Strong>: they compute address AND mask. So “10.44.0.200/27” is really {CALC.network}/27, and “10.44.0.160/26” is really {INC_B.real}/26 ({rangeLabel(INC_B.realRange)}). A plan must be judged on these real blocks, and a good tool shows both the written start and the real block instead of silently fixing it.
+          A misaligned start is not rejected by hosts or routers — it is <Strong>normalized</Strong>: they compute address AND mask. So “10.44.0.200/27” is really {CALC.network}/27, and “10.44.0.160/26” is really {INC_B.real}/26 ({rangeLabel(INC_B.realRange)}). A plan must be judged on these real blocks, and a good tool shows both the written start and the real block instead of silently fixing it.
         </p>
         <DiagramFrame caption="10.44.0.160 under /26.">
           <BinaryAddress ip={INC_B.written} prefix={INC_B.prefix} caption="10.44.0.160/26" />
@@ -555,7 +555,7 @@ export function SubnettingDeepDiveContent() {
           <Slash31Diagram />
         </DiagramFrame>
         <p>
-          <Strong>/31</Strong>: on a point-to-point link (RFC 3021) both addresses are usable — there is no conventional network/broadcast reservation on that subnet. It saves two addresses per link where both ends support it. This plan uses the conventional /30 for the transit link, and the Studio&apos;s allocator stays within /23–/30.
+          <Strong>/31</Strong>: on a point-to-point link (RFC 3021) both addresses are usable — there is no conventional network/broadcast reservation on that subnet. It saves two addresses per link where both ends support it. This plan uses the conventional /30 for the transit link, and the Explorer stays within /23–/30.
         </p>
         <DiagramFrame caption="Loopbacks and host routes.">
           <Slash32Diagram />
@@ -587,7 +587,7 @@ export function SubnettingDeepDiveContent() {
         <Callout tone="danger" title="Cause vs consequence">
           Root cause: an invalid boundary. Consequence: overlap. After a redesign (for example LAN-B {FIX.find((r) => r.id === "LAN-B")!.network}/26, LAN-C {FIX.find((r) => r.id === "LAN-C")!.network}/27) the same host check gives {FIX_SYM.host} → {FIX_SYM.server}: <Strong>{FIX_SYM.decision.local ? "LOCAL" : "REMOTE"}</Strong>. Other layouts pass too — LAN-B .192/26, LAN-C .128/27, Transit .160/30 is {ALT_OK ? "also valid" : "not valid"}.
         </Callout>
-        <LabBridge label="Troubleshoot it in the Studio">Investigate the spreadsheet plan from evidence, test your hypothesis by applying the mask, then redesign until every rule passes.</LabBridge>
+        <LabBridge label="Troubleshoot it in the Explorer">It is a ticket in Engineer · Troubleshoot: reproduce the failing ping, climb the evidence ladder, name the root cause (not its consequences), redesign, re-apply and prove it.</LabBridge>
       </GuideSection>
 
       <GuideSection id="sdd-workflow" eyebrow="Operations" title="Troubleshooting workflow" tone="warning">
@@ -600,7 +600,7 @@ export function SubnettingDeepDiveContent() {
             { question: "What are the real blocks?", look: "Address AND mask for every row." },
             { question: "Do any real blocks overlap?", look: "Pairwise matrix of real ranges." },
             { question: "Root cause or consequence?", look: "Which finding created the others?" },
-            { question: "Redesign and verify", look: "All rules pass AND the failing behaviour is recomputed correct." },
+            { question: "Redesign and verify", look: "All rules pass AND the failing behavior is recomputed correct." },
           ]}
         />
       </GuideSection>
@@ -645,7 +645,7 @@ export function SubnettingDeepDiveContent() {
 
       <GuideSection id="sdd-challenge" eyebrow="Master it" title="Design challenge" tone="success">
         <p>
-          Keep the four networks and add LAN-D ({SL_LAN_D.hosts} addresses). Where can it go without moving anything? Then try: LAN-C grows to 40 — what has to change? Do it in the Studio&apos;s free play and let the validator judge.
+          Keep the four networks and add LAN-D ({SL_LAN_D.hosts} addresses). Where can it go without moving anything? Then try: LAN-C grows to 40 — what has to change? Do it in the Explorer&apos;s Engineer · Design stage and let the validator judge.
         </p>
         <details className="rounded-lg border border-white/10 p-3 text-sm text-pv-text-muted">
           <summary className="cursor-pointer text-xs font-semibold text-pv-cyan-soft">Show the reasoning</summary>
@@ -666,9 +666,9 @@ export function SubnettingDeepDiveContent() {
         />
       </GuideSection>
 
-      <GuideSection id="sdd-practice" eyebrow="Master it" title="Practise in the Subnet Design Studio" tone="success">
-        <p>Same {P}, your own copy: size a subnet from its requirement, test boundaries, calculate a whole subnet, try an equal split, allocate with VLSM, verify the plan, fit LAN-D, then troubleshoot the spreadsheet incident.</p>
-        <LabBridge label="Open the Subnet Design Studio">Nothing you do there changes your lesson progress.</LabBridge>
+      <GuideSection id="sdd-practice" eyebrow="Master it" title="Practice in the Subnet Explorer" tone="success">
+        <p>Same {P}, your own copy: explore prefixes, boundaries and blocks; calculate subnets yourself (last and third octet); try an equal split and VLSM; then subnet a real branch network (and three more briefs): design the plan, configure R1 and every device from it with Cisco/Junos and host terminals, watch the packets on the topology, and solve seven addressing tickets — the spreadsheet incident among them.</p>
+        <LabBridge label="Open the Subnet Explorer">Nothing you do there changes your lesson progress.</LabBridge>
       </GuideSection>
 
       {/* ---------------------------------------------------------------- Beyond */}
@@ -683,7 +683,7 @@ export function SubnettingDeepDiveContent() {
             ["Route summarisation / aggregation", `Because every block came from ${P}, a distant router needs one route instead of four. How it is advertised is a routing topic.`],
             ["IPv6 subnetting", "Same alignment ideas with /64 LANs and nibble boundaries — a different address family."],
             ["IPAM", "Tools that store, reserve and audit address plans at scale."],
-            ["Growth policy", "Deliberately oversizing blocks or reserving neighbours for future growth."],
+            ["Growth policy", "Deliberately oversizing blocks or reserving neighbors for future growth."],
             ["Routing-table design", "Longest-prefix match across many summaries and more-specifics (Routing Fundamentals)."],
             ["NAT", "Translating private plans to public addresses."],
           ]}

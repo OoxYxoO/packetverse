@@ -1,4 +1,5 @@
-import { Callout, ChecklistCard, CompareCards, DIAGRAM as D, DiagramFrame, DiagramSvg, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DIAGRAM as D, DiagramFrame, DiagramSvg, FlowSteps, Glossary, GuideSection, Mono, PathDivider, ProtocolStory, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
 import { DTable } from "@/components/lesson/FundamentalsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { PracticeBridge } from "@/components/lesson/GuideInteractive";
@@ -8,6 +9,8 @@ import { HostNote, SwNote, TwoSwitches } from "./guideSvg";
 
 export const SWF_LESSON_SECTIONS: LessonGuideSectionLink[] = [
   { id: "swl-mission", label: "The mission" },
+  { id: "swl-story", label: "The whole story" },
+  { id: "swl-breaks", label: "When it breaks" },
   { id: "swl-topology", label: "Two switches" },
   { id: "swl-fdbs", label: "Two FDBs" },
   { id: "swl-first", label: "First frame" },
@@ -15,14 +18,17 @@ export const SWF_LESSON_SECTIONS: LessonGuideSectionLink[] = [
   { id: "swl-known", label: "Two lookups" },
   { id: "swl-local", label: "Local & partial" },
   { id: "swl-broadcast", label: "Broadcast" },
+  { id: "swl-state", label: "Learned state changes" },
   { id: "swl-loop", label: "The loop" },
+  { id: "swl-storm", label: "Storm & flapping" },
   { id: "swl-repair", label: "Repair" },
   { id: "swl-verify", label: "Verification" },
+  { id: "swl-stp", label: "Why STP exists" },
   { id: "swl-l2l3", label: "Switching vs routing" },
   { id: "swl-model", label: "Mental model" },
   { id: "swl-glossary", label: "Glossary" },
   { id: "swl-recap", label: "Recap" },
-  { id: "swl-practice", label: "Practise it" },
+  { id: "swl-practice", label: "Practice it" },
 ];
 
 const P = PRIMARY_PORT;
@@ -201,6 +207,50 @@ export function SwitchingLessonGuideContent() {
           There is no network-wide MAC table. Every switch learns only from frames arriving on <strong>its own</strong> ports, and looks up only in <strong>its own</strong> FDB.
         </Callout>
       </GuideSection>
+      <GuideSection id="swl-story" eyebrow="How it works" title="From one switch to two — and what a second cable does" tone="cyan">
+        <ProtocolStory
+          problem={<>One switch runs out of ports, or the hosts are on two floors. SW1 (HOST-A, HOST-D) and SW2 (HOST-B, HOST-C) are joined by an uplink on {P}: still one broadcast domain, but now two switches each make their own forwarding decision — with their own table.</>}
+          steps={[
+            { actor: "One switch", action: <>Everything you know from the Ethernet lesson still holds inside each switch: learn the SOURCE MAC against the port it came in on, look up the DESTINATION, forward to one port or flood.</>, verify: "Each switch's own table (show mac address-table / show ethernet-switching table) fills only from frames that reach it.", fails: { symptom: "A switch shows no entries at all.", evidence: "No frame has reached it — or its ports are down. Check link state first." }, tone: "ethernet" },
+            { actor: "Add SW2", action: <>A second switch joins over the uplink {P}. Nothing is shared between the two: there is no network-wide MAC table, and no switch ever asks the other.</>, changes: "two tables, both empty", verify: "show lldp neighbors on SW1 names SW2 on the uplink; both tables are independent.", fails: { symptom: "Hosts on SW1 can't reach SW2 at all.", evidence: "The uplink is down at one end (show interfaces status: disabled / notconnect)." }, tone: "cyan" },
+            { actor: "HOST-A → HOST-C (first frame)", action: <>SW1 learns A on ge-0/0/1, misses C, floods — to HOST-D and up the uplink. SW2 learns A <strong>behind its uplink</strong>, misses C too, floods to HOST-B and HOST-C.</>, changes: `SW1: A → ge-0/0/1 · SW2: A → ${P}`, why: "each switch learns only from frames entering its own ports, so a remote host is learned against the uplink", verify: `SW2's table: HOST-A on ${P}. A capture on ${P} shows the flooded copy crossing.`, fails: { symptom: "SW2 never learns HOST-A.", evidence: "The frame never crossed: uplink down, or SW1 knew C on a wrong port (a stale or static entry)." }, tone: "warning" },
+            { actor: "HOST-C answers (cross-switch traffic)", action: <>The reply is known at both switches: SW2 sends it up the uplink only, SW1 sends it out ge-0/0/1 only. Both switches have now learned C — each against its own port.</>, changes: "selective forwarding in both directions", verify: "Only HOST-A receives the reply; both tables hold both MACs.", fails: { symptom: "The reply is flooded or lost.", evidence: "An entry aged out or points at the wrong port. Compare both tables for both MACs." }, tone: "success" },
+            { actor: "Local traffic", action: <>HOST-D → HOST-A: SW1 knows A, so the frame leaves ge-0/0/1 and never touches the uplink. SW2 never hears of HOST-D.</>, verify: "The uplink counters don't move; SW2's table has no HOST-D.", fails: { symptom: "Local frames show up on the uplink.", evidence: "SW1 points the destination at its uplink — its table was misled (a loop, a duplicate MAC, a stale entry)." }, tone: "cyan" },
+            { actor: "Broadcast", action: <>An ARP request to <Mono>{BROADCAST_MAC}</Mono> is flooded by SW1 (including the uplink) and again by SW2, whatever their tables say.</>, verify: "Every host receives exactly one copy; both switches learn the sender on the way.", fails: { symptom: "Some hosts never see broadcasts — or see them several times.", evidence: "Missing: an uplink is down. Several copies: two paths between the switches (a loop)." }, tone: "violet" },
+            { actor: "Unknown unicast across switches", action: <>A frame can be known at one switch and unknown at the next: SW2 floods HOST-B → HOST-D (it never heard from D), SW1 forwards the same frame out one port.</>, verify: "The journey shows SW2: unknown → flood, SW1: known → one port.", fails: { symptom: "Both switches flood everything, always.", evidence: "Tables keep emptying: aging, ports flapping, or someone clearing them." }, tone: "warning" },
+            { actor: "Learned state changes", action: <>Entries age out after 300 s without a frame from that MAC, are flushed when their port goes down, and go <strong>stale</strong> when a silent host moves: SW2 still points HOST-D at the uplink after D was re-cabled to SW2.</>, changes: "flooding returns, or frames go the old way", verify: "Compare where each host really is with where each switch thinks it is. An entry corrects itself the moment that host SENDS.", fails: { symptom: "A host that moved is unreachable until it speaks.", evidence: "A switch's entry points at the port the host left. Clear that entry, or make the host send." }, tone: "warning" },
+            { actor: "Add a second link", action: <>ge-0/0/24 is enabled on both switches “for redundancy”, with no loop prevention. The links come up — and nothing happens until something is flooded. Known unicast still takes one port.</>, verify: "show lldp neighbors lists SW2 twice; show spanning-tree: no instance.", fails: { symptom: "Two forwarding links between the same two switches.", evidence: "That alone is the fault: a loop waiting for its first broadcast." }, tone: "danger" },
+            { actor: "The loop", action: <>A broadcast flooded up both uplinks arrives at SW2 twice; each copy is flooded out the other uplink, back to SW1, which floods it back up… forever.</>, why: "an Ethernet frame has no TTL — a switch forwards it unchanged, so the copy after a thousand laps is identical to the first", verify: "Hosts receive the same broadcast again and again; uplink counters climb with nobody sending.", fails: { symptom: "Everything crawls, port lights flash non-stop.", evidence: "Duplicate broadcasts at the hosts + climbing counters on two uplinks." }, tone: "danger" },
+            { actor: "Storm", action: <>Every new broadcast adds more endless copies; with a third path each copy is flooded two ways and the number doubles every hop — a broadcast storm that saturates links and CPUs.</>, verify: "The per-hop link load grows instead of staying constant.", fails: { symptom: "Links at 100 %, switches unreachable.", evidence: "Remove a path immediately; nothing else stops it." }, tone: "danger" },
+            { actor: "MAC flapping", action: <>Every copy still carries the sender&apos;s MAC as its source, so each switch keeps re-learning it on whichever uplink the latest copy came in on: SW1 believes HOST-A — plugged into its own ge-0/0/1 — is behind the uplinks.</>, verify: "show logging: %SW_MATM-4-MACFLAP_NOTIF (Cisco) · show ethernet-switching mac-learning-log (Junos).", fails: { symptom: "Unicast to the flapping host goes the wrong way and is filtered or lost.", evidence: "Flapping between two uplinks = a loop. Flapping between an access port and an uplink with no storm = two devices sharing one MAC." }, tone: "danger" },
+            { actor: "Remove the loop", action: <>Disable ge-0/0/24 (one end is enough: the link goes down at both). Copies on it are lost, entries learned on it are flushed, the rest drain at the hosts.</>, verify: "Only one uplink forwards; nothing is left circulating.", fails: { symptom: "Copies still circulating after the change.", evidence: "Another path is still forwarding — check every inter-switch link." }, tone: "success" },
+            { actor: "Verify", action: <>Prove it with fresh traffic, not with the configuration: a new broadcast reaches every host exactly once, no MAC moves, and a unicast that failed during the loop now works.</>, verify: "Copies per host = 1; flaps = 0; the stale entries were corrected by the first frames.", fails: { symptom: "A unicast still fails after the loop is gone.", evidence: "A table still holds an entry the loop left behind — the next frame from that host corrects it." }, tone: "success" },
+            { actor: "Why STP exists", action: <>You wanted two cables so one can fail — but two forwarding paths make a loop nothing in Ethernet can stop. Spanning Tree keeps both cabled, blocks one port, and unblocks it when the active path fails.</>, verify: "That's the next lesson; here you've seen the problem it solves.", tone: "violet" },
+          ]}
+          outcome={<>Multi-switch forwarding is per-switch learning and lookup, repeated hop by hop with independent tables. Those tables change — they age, get flushed, go stale. A second forwarding path without loop prevention turns floods into an endless, multiplying storm and makes learning flap. Remove the path, then prove it with traffic.</>}
+        />
+        <PresentationBridge>See both MAC tables fill, the storm and the MAC flapping animated in the Switching presentation.</PresentationBridge>
+      </GuideSection>
+
+      <GuideSection id="swl-breaks" eyebrow="When it breaks" title={`When frames go missing across switches: follow them switch by switch`} tone="danger">
+        <p className="text-sm text-pv-text-muted">{`Each switch decides alone, using only its own table. To find a Layer 2 problem across several switches, follow the frame and read each switch's table along the way.`}</p>
+        <TroubleshootingFlow
+          steps={[
+            { question: `Which hosts are affected — on the same switch or across the uplink?`, look: `Local failures point at one switch; cross-switch failures at the uplink or the other switch.` },
+            { question: `Where is the destination learned on each switch?`, look: `Read every FDB on the path. Each must point towards the destination: the uplink, or the host's own port. A static entry or a stale one (host moved) points elsewhere.` },
+            { question: `Is the uplink up and forwarding?`, look: `Check the port state at both ends (one end disabled = the other notconnect).` },
+            { question: `Is a MAC flapping, or is traffic exploding?`, look: `That is a loop: two active paths. Disable one, and use STP.` },
+            { question: `Did the destination answer?`, look: `If it did, follow the reply the same way, switch by switch.` },
+            { question: `How do you prove the fix?`, look: `Send again. The FDBs stay stable, frames take one path, and each broadcast reaches each host once.` },
+          ]}
+        />
+        <Callout tone="cyan" title="The habit to build" icon="✓">
+          Walk the story in order and confirm each step with real evidence (a table, a capture, a command). The first step you cannot confirm is where the problem is. The boxes under each story step above say what to look at.
+        </Callout>
+      </GuideSection>
+
+      <PathDivider title="Reference">Every part of the story in detail. Read the parts you need.</PathDivider>
+
 
       <GuideSection id="swl-topology" eyebrow="Topology" title="Two switches, four hosts, two cables between them" tone="cyan">
         <DiagramFrame caption="The primary link forwards. The secondary cable is connected but disabled until the incident.">
@@ -268,6 +318,17 @@ export function SwitchingLessonGuideContent() {
         </p>
       </GuideSection>
 
+      <GuideSection id="swl-state" eyebrow="State" title="Learned state changes: aging, flushing, stale entries" tone="warning">
+        <FlowSteps
+          steps={[
+            { title: "Aging", body: "A dynamic entry lives 300 s after the last frame FROM that MAC. Then it is removed, and frames to that MAC are flooded again until it sends.", tone: "warning" },
+            { title: "Flushing", body: "When a port goes down, the switch forgets everything learned on it. A link coming up teaches nothing.", tone: "cyan" },
+            { title: "Stale after a move", body: <>HOST-D is re-cabled from SW1 to SW2 ge-0/0/3. SW1 flushes it (its port went down). SW2 still says HOST-D → <Mono>{P}</Mono> — and sends HOST-B&apos;s frames up the uplink, away from HOST-D.</>, tone: "danger" },
+            { title: "Self-correcting", body: "The moment HOST-D sends anything, SW2 moves the entry to ge-0/0/3. Clearing the entry, or waiting for it to age out, also works.", tone: "success" },
+          ]}
+        />
+      </GuideSection>
+
       <GuideSection id="swl-loop" eyebrow="Incident" title="Two active paths, no loop prevention" tone="danger">
         <DiagramFrame caption={`${S2} enabled while no STP or other loop-prevention mechanism runs. Counts are after wave ${LOOP_WAVES_SHOWN}.`}>
           <LoopDiagram />
@@ -280,6 +341,17 @@ export function SwitchingLessonGuideContent() {
         </Callout>
       </GuideSection>
 
+      <GuideSection id="swl-storm" eyebrow="Consequences" title="Storm growth and MAC flapping" tone="danger">
+        <FlowSteps
+          steps={[
+            { title: "Two paths", body: "One broadcast becomes two copies that circulate forever. Each new broadcast adds two more; link counters climb with nobody sending.", tone: "warning" },
+            { title: "Three paths", body: "A copy arriving on one link is flooded out the two others: the copies double every hop. Links and switch CPUs saturate within milliseconds.", tone: "danger" },
+            { title: "Flapping", body: "Each copy re-teaches the sender's MAC on the port it arrived on, so the entry jumps between uplinks. Unicast to that host follows the latest — wrong — entry.", tone: "danger" },
+            { title: "Flapping without a loop", body: "Between an access port and an uplink, with broadcasts arriving once: two devices share one MAC (a cloned VM). Different cause, different fix.", tone: "violet" },
+          ]}
+        />
+      </GuideSection>
+
       <GuideSection id="swl-repair" eyebrow="Repair" title="Back to one forwarding path" tone="success">
         <DiagramFrame caption="The copy on the disabled cable is lost; the last copy on the primary link is flooded once and has nowhere to return.">
           <RepairDiagram />
@@ -289,6 +361,10 @@ export function SwitchingLessonGuideContent() {
 
       <GuideSection id="swl-verify" eyebrow="Verify" title="How you know it's fixed" tone="success">
         <ChecklistCard tone="success" title="After the repair" mark="✓" items={["No copies left circulating between SW1 and SW2", "A new broadcast reaches each host exactly once", "HOST-A's entry is back on SW1 ge-0/0/1 and stays there", "HOST-B → HOST-A is known unicast at SW2 and at SW1"]} />
+      </GuideSection>
+
+      <GuideSection id="swl-stp" eyebrow="What comes next" title="Why Spanning Tree exists" tone="violet">
+        <p>Redundant links are good engineering: one cable is a single point of failure. But two <em>forwarding</em> paths are a loop, and Ethernet itself has no way to end one. Spanning Tree lets the switches agree on one loop-free set of forwarding links, keep the others blocked, and unblock one if the active path fails. How it elects and blocks is the next lesson. In this lesson STP is off on purpose — which is why enabling the second cable created a loop, and why the fix was to remove the path by hand.</p>
       </GuideSection>
 
       <GuideSection id="swl-l2l3" eyebrow="Layer 2 vs Layer 3" title="Switching is not routing" tone="ip">
@@ -322,7 +398,7 @@ export function SwitchingLessonGuideContent() {
           tone="cyan"
           title="Recap"
           mark="•"
-          items={["Each bridge has its own FDB — learning is hop by hop", "A frame can be known at one switch and unknown at the next", "Local traffic stays on its switch", "A broadcast reaches every host across every switch", "Two active paths without loop prevention form a loop that never expires", "Disabling the extra path restores one copy per host and stable entries"]}
+          items={["Each bridge has its own FDB — learning is hop by hop; remote hosts sit behind the uplink", "A frame can be known at one switch and unknown at the next", "Local traffic stays on its switch", "A broadcast reaches every host across every switch", "Entries age, get flushed and go stale when a silent host moves", "Two active paths without loop prevention form a loop that never expires — a third makes it multiply", "Disabling the extra path, then proving it with traffic, restores one copy per host and stable entries", "Spanning Tree automates exactly that: keep the cable, block the path"]}
         />
       </GuideSection>
 

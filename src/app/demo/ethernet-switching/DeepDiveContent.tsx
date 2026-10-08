@@ -12,7 +12,7 @@ import type { CliVendor } from "@/lib/cli/types";
 import { BROADCAST_MAC, ETH_MAC, FDB_AGING_SEC } from "@/lib/sim-engine/scenarios/ethernetSwitching";
 import { createEthLabState, type EthLabAction, type EthLabState } from "@/lib/sim-engine/scenarios/ethernetLab";
 import { ethernetSw1Cli } from "./cliAdapter";
-import { ethLabDryRun } from "./ethernet-lab/EthernetLabBoard";
+import { runInstant } from "@/lib/sim-engine/scenarios/ethernetLab";
 import { BroadcastVsUnknownDiagram, FirstFrameDiagram, MoveDiagram, ReplyDiagram, StaleDiagram, TopologyDiagram } from "./LessonGuideContent";
 
 /**
@@ -54,7 +54,7 @@ export const ETH_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "ethd-router", label: "Switch vs router", group: G.advanced },
   { id: "ethd-quiz", label: "Knowledge check", group: G.master },
   { id: "ethd-explain", label: "Can you explain it?", group: G.master },
-  { id: "ethd-practice", label: "Practise in the Ethernet Lab", group: G.master },
+  { id: "ethd-practice", label: "Practice in the Ethernet Lab", group: G.master },
 ];
 
 // ------------------------------------------------------------------ network facts (one source)
@@ -64,7 +64,7 @@ const B = ETH_MAC["HOST-B"];
 const C = ETH_MAC["HOST-C"];
 
 // The Ethernet Lab's own model produces every state below (and so every CLI sample).
-const play = (s: EthLabState, actions: EthLabAction[]) => actions.reduce(ethLabDryRun, s);
+const play = (s: EthLabState, actions: EthLabAction[]) => actions.reduce(runInstant, s);
 const send = (src: "HOST-A" | "HOST-B" | "HOST-C", dst: "HOST-A" | "HOST-B" | "HOST-C" | "broadcast"): EthLabAction => ({ type: "send", src, dst });
 const LAB_T0 = createEthLabState();
 const LAB_T1 = play(LAB_T0, [send("HOST-A", "HOST-B")]);
@@ -74,7 +74,7 @@ const LAB_AGED = play(LAB_T4, [{ type: "time", seconds: 200 }, send("HOST-A", "H
 const LAB_MOVED = play(LAB_AGED, [send("HOST-B", "HOST-A"), { type: "move-b", to: "desk" }]);
 const LAB_DESK = play(LAB_MOVED, [send("HOST-B", "HOST-A")]);
 const LAB_STALE = play(LAB_DESK, [{ type: "move-b", to: "sw1" }, send("HOST-A", "HOST-B")]);
-const LAB_FIXED = play(LAB_STALE, [{ type: "repair", choice: "clear-stale" }, send("HOST-A", "HOST-B"), send("HOST-B", "HOST-A"), send("HOST-A", "HOST-B")]);
+const LAB_FIXED = play(LAB_STALE, [{ type: "clear", mac: B }, send("HOST-A", "HOST-B"), send("HOST-B", "HOST-A"), send("HOST-A", "HOST-B")]);
 
 function cli(state: EthLabState, vendor: CliVendor, command: string) {
   const set = ethernetSw1Cli(vendor, state.net);
@@ -152,7 +152,7 @@ function MacDiagram() {
     <DiagramSvg h={190} label={`MAC address ${A}: first three octets are the OUI, last three are assigned by the vendor; in the first octet bit 0 is I/G (group) and bit 1 is U/L (locally administered)`}>
       <DFieldRow x={80} y={30} fields={A.split(":").map((o, i) => ({ label: o, sub: `octet ${i + 1}`, w: 80, color: i < 3 ? D.violet : D.cyan, strong: i === 0 }))} />
       <text x={200} y={110} textAnchor="middle" fill={D.violet} fontSize={10.5} fontWeight={700}>
-        OUI (organisation)
+        OUI (organization)
       </text>
       <text x={440} y={110} textAnchor="middle" fill={D.cyan} fontSize={10.5} fontWeight={700}>
         vendor-assigned
@@ -449,7 +449,7 @@ export function EthernetDeepDiveContent() {
 
       <GuideSection id="ethd-flush" eyebrow="Link events" title="Link-down flush" tone="danger">
         <p>
-          When HOST-B was unplugged, ge-0/0/2 went <Strong>down</Strong> and SW1 flushed the dynamic entries learned on it — HOST-B vanished from the table. That is common managed-switch behaviour: a MAC learned on a dead port can no longer be reached there.
+          When HOST-B was unplugged, ge-0/0/2 went <Strong>down</Strong> and SW1 flushed the dynamic entries learned on it — HOST-B vanished from the table. That is common managed-switch behavior: a MAC learned on a dead port can no longer be reached there.
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <CliPanel {...cMovedStatus} caption="Cisco: Gi1/0/2 notconnect after the unplug" />
@@ -599,7 +599,7 @@ export function EthernetDeepDiveContent() {
         />
       </GuideSection>
 
-      <GuideSection id="ethd-practice" eyebrow="Practice" title="Practise in the Ethernet Lab" tone="cyan">
+      <GuideSection id="ethd-practice" eyebrow="Practice" title="Practice in the Ethernet Lab" tone="cyan">
         <ChecklistCard
           tone="cyan"
           title="In the lab you will"

@@ -33,6 +33,7 @@ import { MissionBriefingCard, MissionBriefingStrip } from "./MissionBriefingCard
 import { resolveBriefing, type BriefingPhaseDef, type BriefingStepNote } from "./briefing";
 import { bubblePacket } from "./mplsStack";
 import type { FundHop } from "./fundamentalsTrace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
 
 /**
  * One reusable page shell for the Fundamentals lessons (Ethernet & Switching, IPv4, VLANs). It carries NO protocol
@@ -109,6 +110,16 @@ export interface FundamentalsLessonConfig<S extends { hops: FundHop[] }> {
     /** The lab workspace (typically built on PracticeLabShell). Mounted on first open, kept mounted so its session survives closing. */
     render: (props: { open: boolean; onClose: () => void }) => ReactNode;
   };
+  /**
+   * Optional visual presentation ("understand it first"). Absent → nothing changes. When present: a Presentation
+   * button and a "New to …?" card appear, the Lesson Guide can link to it, and the first time the learner opens the
+   * Practice Lab in a visit the presentation plays first. It gets no engine and no progress access.
+   */
+  presentation?: {
+    /** Short topic name, e.g. "Ethernet switching". */
+    topic: string;
+    render: (props: { open: boolean; onClose: () => void; onFinish: () => void; finishLabel: string }) => ReactNode;
+  };
 }
 
 const NARROW_QUERY = "(max-width: 640px)";
@@ -155,12 +166,21 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
   const [packetSelected, setPacketSelected] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
-  const { openLab } = practiceLab;
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const hasPresentation = !!c.presentation;
+  /** Opening the lab plays the presentation first (once per visit) when the lesson has one. */
+  const openLab = useCallback(() => (hasPresentation ? gatePresentation(openLabRaw) : openLabRaw()), [hasPresentation, gatePresentation, openLabRaw]);
   /** Guide → Practice Lab bridge (only provided to the Guide when the lesson has a lab). */
   const openLabFromGuide = useCallback(() => {
     setGuideOpen(false);
     openLab();
   }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const completeLesson = useProgressStore((st) => st.completeLesson);
@@ -413,19 +433,25 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
           <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">{c.title}</h1>
           <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">{c.intro}</p>
         </div>
-        {c.practiceLab ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <PracticeLabButton label={c.practiceLab.entry.buttonLabel} onOpen={practiceLab.openLab} />
-            <LessonGuideButton onClick={() => setGuideOpen(true)} />
-          </div>
-        ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          {c.presentation && <PresentationButton onOpen={() => showPresentation()} />}
+          {c.practiceLab && <PracticeLabButton label={c.practiceLab.entry.buttonLabel} onOpen={openLab} />}
           <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        )}
+        </div>
         <PracticeLabOpenerContext.Provider value={c.practiceLab ? openLabFromGuide : undefined}>
-          <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title={c.guide.title} subtitle={c.guide.subtitle} tabs={c.guide.tabs} />
+          <PresentationOpenerContext.Provider value={c.presentation ? openPresentationFromGuide : undefined}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title={c.guide.title} subtitle={c.guide.subtitle} tabs={c.guide.tabs} />
+          </PresentationOpenerContext.Provider>
         </PracticeLabOpenerContext.Provider>
+        {c.presentation && presentation.mounted && c.presentation.render({ open: presentation.open, onClose: presentation.close, onFinish: presentation.finish, finishLabel: presentation.hasNext && c.practiceLab ? `Open the ${c.practiceLab.entry.title} →` : "Start the lesson →" })}
         {c.practiceLab && practiceLab.mounted && c.practiceLab.render({ open: practiceLab.open, onClose: practiceLab.closeLab })}
       </div>
+
+      {c.presentation && (
+        <div className="mb-4">
+          <PresentationCard topic={c.presentation.topic} seen={presentation.seen} onOpen={() => showPresentation()} />
+        </div>
+      )}
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
         {c.facts.map((item) => (
@@ -543,7 +569,7 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
             </div>
           )}
 
-          {c.practiceLab && <PracticeLabCard entry={c.practiceLab.entry} contextNote={c.practiceLab.contextNote?.(currentStep?.id, state)} onOpen={practiceLab.openLab} />}
+          {c.practiceLab && <PracticeLabCard entry={c.practiceLab.entry} contextNote={c.practiceLab.contextNote?.(currentStep?.id, state)} onOpen={openLab} />}
         </div>
 
         <div className="min-w-0 space-y-4">

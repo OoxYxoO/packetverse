@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/Button";
 const links = [
   { href: "/learn", label: "Learning Map" },
   { href: "/lessons", label: "Lessons" },
-  { href: "/demo/first-connection", label: "Interactive Demo" },
+  { href: "/demo/arp-resolution", label: "Interactive Demo" },
   { href: "/dashboard", label: "Dashboard" },
 ];
 
@@ -43,7 +43,7 @@ export function Navbar() {
         </div>
 
         <div className="flex items-center gap-3">
-          <Link href="/demo/first-connection">
+          <Link href="/demo/arp-resolution">
             <Button size="sm">Try Interactive Demo</Button>
           </Link>
         </div>

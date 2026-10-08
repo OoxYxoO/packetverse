@@ -1,7 +1,7 @@
 # Practice Lab framework
 
 Reusable learning-experience framework extracted from the ARP reference lab
-(`src/app/demo/first-connection/arp-lab`). It covers the learning EXPERIENCE only.
+(`src/app/demo/arp-resolution/arp-lab`). It covers the learning EXPERIENCE only.
 Protocol truth, table schemas, PDUs, predictions, the Teaching Board copy and CLI
 adapters always stay in the lesson.
 
@@ -61,7 +61,7 @@ practiceLab: {
 },
 ```
 
-## 2b. Bespoke page (like first-connection)
+## 2b. Bespoke page (like /demo/arp-resolution or /demo/tcp-udp)
 
 ```tsx
 const lab = usePracticeLab(() => setAutoPlay(false));

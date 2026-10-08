@@ -6,7 +6,7 @@ import { ipToNum } from "@/lib/sim-engine/scenarios/fundamentalsPackets";
 import { freeSpace, overlapMatrix, parseIPv4, rangeLabel, realBlock, slParentRange, slPlaced, slPrefixOk, validateRow, type SlRow, type SlSeg } from "@/lib/sim-engine/scenarios/subnettingLab";
 
 /**
- * Live address ruler for the Subnet Design Studio. Every position is an address offset inside the parent /24 turned
+ * Live address ruler for the Subnet Explorer. Every position is an address offset inside the parent /24 turned
  * into a percentage — nothing is hand-placed. Layers: boundary grid · allocated real blocks (overlaps in extra lanes,
  * shared range hatched red) · "as written" dashed ranges for misaligned rows · free space hatched · ghost preview.
  * While `conceal` is set (incident before the mask is applied) it draws the WRITTEN ranges only, with no verdicts.

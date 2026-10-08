@@ -1,4 +1,5 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, DRegion, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, DRegion, FlowSteps, Glossary, GuideSection, Mono, PathDivider, ProtocolStory, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
 import { DFieldRow } from "@/components/lesson/FundamentalsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { PracticeBridge } from "@/components/lesson/GuideInteractive";
@@ -7,6 +8,8 @@ import { GATEWAY, INITIAL_TTL, V4_FAULT_PREFIX, V4_IP, V4_MAC, V4_PREFIX, broadc
 
 export const V4_LESSON_SECTIONS: LessonGuideSectionLink[] = [
   { id: "v4-mission", label: "The mission" },
+  { id: "v4-story", label: "The whole story" },
+  { id: "v4-breaks", label: "When it breaks" },
   { id: "v4-topology", label: "Two subnets" },
   { id: "v4-binary", label: "Binary boundary" },
   { id: "v4-blocks", label: "The four /26 blocks" },
@@ -15,10 +18,11 @@ export const V4_LESSON_SECTIONS: LessonGuideSectionLink[] = [
   { id: "v4-router", label: "Inside R1" },
   { id: "v4-incident", label: "Wrong-mask incident" },
   { id: "v4-verify", label: "Verification" },
+  { id: "v4-signatures", label: "Failure signatures" },
   { id: "v4-model", label: "Mental model" },
   { id: "v4-glossary", label: "Glossary" },
   { id: "v4-recap", label: "Recap" },
-  { id: "v4-practice", label: "Practise it" },
+  { id: "v4-practice", label: "Practice it" },
 ];
 
 const A = V4_IP["HOST-A"];
@@ -230,6 +234,41 @@ export function Ipv4LessonGuideContent() {
         </Callout>
       </GuideSection>
 
+      <GuideSection id="v4-story" eyebrow="How it works" title="One packet from HOST-A to HOST-B, decision by decision" tone="cyan">
+        <ProtocolStory
+          problem={<>MAC addresses only work inside one LAN. HOST-A ({V4_IP["HOST-A"]}) and HOST-B ({V4_IP["HOST-B"]}) are on different LANs joined by R1. IP solves this by giving every address a <strong>network part</strong> that routers can forward on.</>}
+          steps={[
+            { actor: "HOST-A", action: <>ANDs its own address and the destination with <strong>its own</strong> mask (/{V4_PREFIX}): {V4_IP["HOST-A"]} → {networkOf(V4_IP["HOST-A"], V4_PREFIX)}, {V4_IP["HOST-B"]} → {networkOf(V4_IP["HOST-B"], V4_PREFIX)}.</>, changes: "different networks, so HOST-B is remote", why: "only same-network destinations can be reached directly on this LAN", verify: `AND both addresses with HOST-A's mask yourself. The network parts differ, so HOST-A must use its gateway (its routing table shows a default route).`, fails: { symptom: `HOST-A ARPs for HOST-B directly and gets no answer.`, evidence: `A wrong mask makes a remote host look local. Compare HOST-A's configured mask with the subnet's real one (the lesson incident).` }, tone: "violet" },
+            { actor: "HOST-A", action: <>chooses its <strong>default gateway</strong>, R1 {GATEWAY["HOST-A"]}, and frames the packet to R1&apos;s MAC <Mono>{V4_MAC.R1L}</Mono>. The IP destination stays {V4_IP["HOST-B"]}; TTL {INITIAL_TTL}.</>, why: "the frame goes to the next hop; the packet goes to the final host", verify: `Capture on LAN-A: frame destination = R1's MAC, IP destination = HOST-B.`, fails: { symptom: `Nothing leaves HOST-A, or it reports destination unreachable itself.`, evidence: `Missing or wrong default gateway, or the gateway does not answer ARP. The gateway address must be inside HOST-A's own subnet.` }, tone: "ip" },
+            { actor: "SW-A", action: "forwards the frame by MAC to R1 ge-0/0/0, without reading the IP header.", verify: `SW-A's FDB has R1's MAC on the port towards R1.`, fails: { symptom: `The frame never reaches R1.`, evidence: `A Layer 2 problem on LAN-A: cable, port or VLAN. The IP header plays no part here.` }, tone: "cyan" },
+            { actor: "R1", action: <>accepts the frame (it&apos;s for R1&apos;s MAC), strips it, and looks up {V4_IP["HOST-B"]}: it matches the connected 192.168.10.64/26 on ge-0/0/1.</>, changes: "the routing decision picks the egress interface", verify: `R1's routing table: 192.168.10.64/26 connected on ge-0/0/1, interface up.`, fails: { symptom: `R1 drops the packet (ICMP Net Unreachable).`, evidence: `R1 has no route that contains the destination: interface down or wrongly addressed.` }, tone: "success" },
+            { actor: "R1", action: <>decrements TTL ({INITIAL_TTL} → {INITIAL_TTL - 1}) and recomputes the header checksum. Source and destination IP don&apos;t change.</>, why: "TTL stops packets looping forever; the checksum covers the changed header", verify: `On LAN-B the packet's TTL is one lower, with the same source and destination IPs.`, fails: { symptom: `Time Exceeded instead of delivery.`, evidence: `TTL reached 0: packets are looping between routers. This is a routing problem, not a host problem.` }, tone: "warning" },
+            { actor: "R1", action: <>builds a <strong>new</strong> frame on LAN-B: source <Mono>{V4_MAC.R1R}</Mono>, destination HOST-B <Mono>{V4_MAC["HOST-B"]}</Mono>.</>, changes: "Layer 2 rebuilt; Layer 3 unchanged", verify: `On LAN-B the frame source is R1's LAN-B MAC and the destination is HOST-B's MAC. The IPs are unchanged.`, fails: { symptom: `R1 can not deliver to HOST-B.`, evidence: `R1's ARP for HOST-B fails: HOST-B is down or configured in another subnet.` }, tone: "ip" },
+            { actor: "HOST-B", action: <>accepts it. To reply it runs the same test, finds {V4_IP["HOST-A"]} remote, and sends to its own gateway {GATEWAY["HOST-B"]}.</>, verify: `The reply goes from HOST-B to HOST-A, framed to HOST-B's own gateway.`, fails: { symptom: `The request arrives, but no reply reaches HOST-A.`, evidence: `HOST-B's mask or gateway is wrong. The reply is a separate decision, made by HOST-B with its own settings.` }, tone: "success" },
+          ]}
+          outcome={<>The mask decides local vs remote; remote traffic goes to the gateway; every router rebuilds the frame while the IP packet travels unchanged except TTL and checksum. With a <strong>wrong mask</strong> (/{V4_FAULT_PREFIX}) HOST-A misjudges HOST-B as local, ARPs for it, gets no answer, and sends nothing. Fix the mask, then verify with a ping and the ARP cache.</>}
+        />
+        <PresentationBridge>See every decision above animated, with the packet, the routing table and the incident, in the IPv4 presentation.</PresentationBridge>
+      </GuideSection>
+
+      <GuideSection id="v4-breaks" eyebrow="When it breaks" title={`When two hosts can not talk: reason decision by decision`} tone="danger">
+        <p className="text-sm text-pv-text-muted">{`An IPv4 packet moves because of a few decisions: local or remote, which next hop, which route, and the same again for the reply. Find the first decision that came out wrong.`}</p>
+        <TroubleshootingFlow
+          steps={[
+            { question: `Does the sender think the destination is local or remote?`, look: `AND both addresses with the sender's mask. If the answer is wrong, the mask is wrong.` },
+            { question: `Can the sender reach its next hop?`, look: `If the destination is local, the sender ARPs for it directly. If it is remote, the sender ARPs for its gateway. No ARP reply means a Layer 2 problem or a wrong gateway address.` },
+            { question: `Does the router have a route for the destination?`, look: `Look up the destination in R1's table and check the egress interface is up.` },
+            { question: `Does the reply make its decisions correctly?`, look: `Repeat the same checks from the other host, with its own mask and gateway.` },
+            { question: `How do you prove the fix?`, look: `Ping in both directions. A capture shows the IPs unchanged end to end and the MACs rebuilt at R1.` },
+          ]}
+        />
+        <Callout tone="cyan" title="The habit to build" icon="✓">
+          Walk the story in order and confirm each step with real evidence (a table, a capture, a command). The first step you cannot confirm is where the problem is. The boxes under each story step above say what to look at.
+        </Callout>
+      </GuideSection>
+
+      <PathDivider title="Reference">Every part of the story in detail. Read the parts you need.</PathDivider>
+
       <GuideSection id="v4-topology" eyebrow="Topology" title="Two /26 subnets and one router" tone="cyan">
         <DiagramFrame caption="Each LAN is its own subnet. R1 has one address in each.">
           <TopologyDiagram />
@@ -296,10 +335,26 @@ export function Ipv4LessonGuideContent() {
           mark="✓"
           items={[`HOST-A's AND gives ${networkOf(A, V4_PREFIX)} vs ${networkOf(B, V4_PREFIX)}, so the destination is remote`, `The frame goes to ${V4_MAC.R1L} (the gateway); the IPv4 destination is ${B}`, `R1 forwards with TTL ${INITIAL_TTL - 1}`, "HOST-B receives the packet"]}
         />
+        <Callout tone="warning" title="Accepted is not fixed" icon="!">
+          A device accepting a new setting only proves you typed something valid. Check what it now believes (its address, mask, routes, the decision it makes), then send traffic and confirm the reply comes back — in both directions.
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="v4-signatures" eyebrow="Troubleshooting" title="Five failures, five signatures" tone="danger">
+        <p>&quot;Can&apos;t reach it&quot; has many causes. Each leaves different evidence — all five can be reproduced in the IPv4 Lab.</p>
+        <CompareCards
+          items={[
+            { title: "Wrong mask (too wide)", tone: "danger", tag: "wrong decision", points: ["The host decides LOCAL for a remote address", "It ARPs for the destination itself; nobody answers (no Proxy ARP)", "“Destination Host Unreachable” from its own address"] },
+            { title: "Wrong gateway", tone: "warning", tag: "right decision, wrong door", points: ["The host decides REMOTE correctly", "It ARPs for a gateway address nobody owns", "Local destinations still work"] },
+            { title: "Missing gateway on the far host", tone: "warning", tag: "the way back", points: ["The request reaches the far host (its capture shows it)", "Its reply is remote and has nowhere to go", "The sender just times out"] },
+            { title: "Router interface down", tone: "danger", tag: "no connected route", points: ["The packet reaches R1", "R1 has no route: “Destination Net Unreachable” from R1", "R1's other interface still answers pings"] },
+            { title: "TTL runs out", tone: "cyan", tag: "hop limit", points: ["R1 receives TTL 1 and can't forward it", "It drops it and sends “Time exceeded” from its address", "Normal pings (TTL 64/128) never hit this"] },
+          ]}
+        />
       </GuideSection>
 
       <GuideSection id="v4-model" eyebrow="Mental model" title="Envelope and address label" tone="cyan">
-        <p>The IPv4 packet is a letter with the final address written on it. The Ethernet frame is the courier bag for one leg of the trip. At each router the bag is swapped for a new one, and the letter gets one tick on its hop counter (TTL). The host&apos;s mask is its map of the neighbourhood. If the map is wrong, the host tries to hand-deliver letters to addresses that aren&apos;t on its street.</p>
+        <p>The IPv4 packet is a letter with the final address written on it. The Ethernet frame is the courier bag for one leg of the trip. At each router the bag is swapped for a new one, and the letter gets one tick on its hop counter (TTL). The host&apos;s mask is its map of the neighborhood. If the map is wrong, the host tries to hand-deliver letters to addresses that aren&apos;t on its street.</p>
       </GuideSection>
 
       <GuideSection id="v4-glossary" eyebrow="Glossary" title="Terms used in this lesson" tone="violet">
@@ -322,7 +377,7 @@ export function Ipv4LessonGuideContent() {
       </GuideSection>
 
       <GuideSection id="v4-practice" eyebrow="Practice" title="Do it yourself" tone="cyan">
-        <p>The Deep Dive teaches every decision in detail with this network&apos;s values. The IPv4 Lab lets you make each decision yourself — local and remote traffic (with a lab-only HOST-C), live ARP, R1&apos;s forwarding with a before/after packet comparison, R1&apos;s Cisco and Junos CLI — and troubleshoot the wrong-mask incident from evidence.</p>
+        <p>The Deep Dive teaches every decision in detail with this network&apos;s values. The IPv4 Lab builds the same story in five short levels — address and prefix (drag the prefix and watch who becomes local), local or remote, through R1 (its forwarding pipeline, step by step), TTL and checksum, wrong settings — then opens the engineering workspace: every host and R1 in its own window, Linux, Windows, Cisco IOS and Junos terminals, captures, configuration you can change and verify, tickets and challenges.</p>
         <LessonLabBridge />
       </GuideSection>
     </div>

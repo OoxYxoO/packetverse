@@ -449,3 +449,111 @@ export function Misconceptions({ items }: { items: { myth: string; correction: R
     </div>
   );
 }
+
+/* ------------------------------------------------------------------------
+ * The protocol story — the opening of every process-first guide: what
+ * happens, in order, who does it, what changes in the network, and why.
+ * ---------------------------------------------------------------------- */
+
+export interface StoryStep {
+  /** Who acts (a device, a host, "the switch"…). */
+  actor: string;
+  /** What it does, in one or two sentences. */
+  action: ReactNode;
+  /** What is different in the network afterwards (a table entry, a state, a field). */
+  changes?: ReactNode;
+  /** Why this step exists. */
+  why?: ReactNode;
+  /** How you confirm this step happened (a table entry, a capture, a command). */
+  verify?: ReactNode;
+  /** What you see when the process breaks at this step, and where to look. */
+  fails?: { symptom: ReactNode; evidence: ReactNode };
+  tone?: GuideTone;
+}
+
+/** A numbered, actor-by-actor walk through the protocol from first event to finished outcome. */
+export function ProtocolStory({ steps, problem, outcome }: { steps: StoryStep[]; /** The problem that starts the story. */ problem?: ReactNode; /** How the story ends. */ outcome?: ReactNode }) {
+  return (
+    <div className="space-y-3">
+      {problem && (
+        <div className="rounded-xl border border-pv-danger/35 bg-pv-danger/[0.06] px-4 py-3">
+          <p className="mb-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-pv-danger">The problem</p>
+          <div className="text-sm text-pv-text">{problem}</div>
+        </div>
+      )}
+      <ol className="relative space-y-2.5 border-l border-white/10 pl-6">
+        {steps.map((s, i) => {
+          const c = GUIDE_TONE[s.tone ?? "cyan"];
+          return (
+            <li key={i} className="relative rounded-xl border border-white/10 bg-white/[0.015] px-3.5 py-2.5">
+              <span className="pv-mono absolute -left-[37px] top-2.5 flex h-6 w-6 items-center justify-center rounded-full border text-[10px] font-bold" style={{ borderColor: c, color: c, background: "var(--pv-bg-elevated, #0a0e18)" }}>
+                {i + 1}
+              </span>
+              <p className="text-sm text-pv-text">
+                <span className="mr-2 rounded-full px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-wide" style={{ background: tint(c, 18), color: c }}>
+                  {s.actor}
+                </span>
+                {s.action}
+              </p>
+              {s.changes && (
+                <p className="mt-1 text-[12.5px] text-pv-text-muted">
+                  <span className="font-semibold text-pv-success">Changes → </span>
+                  {s.changes}
+                </p>
+              )}
+              {s.why && (
+                <p className="mt-0.5 text-[12.5px] text-pv-text-muted">
+                  <span className="font-semibold text-pv-warning">Why → </span>
+                  {s.why}
+                </p>
+              )}
+              {(s.verify || s.fails) && (
+                <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
+                  {s.verify && (
+                    <details className="rounded-lg border border-pv-success/30 bg-pv-success/[0.04] px-2.5 py-1">
+                      <summary className="cursor-pointer text-[11.5px] font-semibold text-pv-success">✓ How you confirm it</summary>
+                      <div className="mt-1 text-[12px] text-pv-text-muted">{s.verify}</div>
+                    </details>
+                  )}
+                  {s.fails && (
+                    <details className="rounded-lg border border-pv-danger/30 bg-pv-danger/[0.04] px-2.5 py-1">
+                      <summary className="cursor-pointer text-[11.5px] font-semibold text-pv-danger">✕ If it fails here</summary>
+                      <div className="mt-1 space-y-0.5 text-[12px] text-pv-text-muted">
+                        <p>
+                          <b className="text-pv-text">You see:</b> {s.fails.symptom}
+                        </p>
+                        <p>
+                          <b className="text-pv-text">Evidence:</b> {s.fails.evidence}
+                        </p>
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      {outcome && (
+        <div className="rounded-xl border border-pv-success/35 bg-pv-success/[0.06] px-4 py-3">
+          <p className="mb-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-pv-success">The outcome</p>
+          <div className="text-sm text-pv-text">{outcome}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Separates the guide's main learning path from the reference material below it. */
+export function PathDivider({ title = "In detail", children }: { title?: string; children?: ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 pt-2" role="separator">
+      <span className="h-px flex-1 bg-white/10" />
+      <span className="text-center">
+        <span className="block text-[10px] font-bold uppercase tracking-[0.22em] text-pv-text-faint">{title}</span>
+        {children && <span className="block text-[11.5px] text-pv-text-muted">{children}</span>}
+      </span>
+      <span className="h-px flex-1 bg-white/10" />
+    </div>
+  );
+}

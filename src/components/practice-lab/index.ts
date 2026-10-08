@@ -22,6 +22,8 @@ export {
   type EngineerCheckFact,
   type PredictionOption,
   type CommandHelpItem,
+  StepPrimer,
+  StepWhy,
 } from "./TeachingBoard";
 export { LiveStateCard, type LiveStateRow } from "./LiveStateCard";
 export { LabEventLog, type LabLogEntry } from "./LabEventLog";

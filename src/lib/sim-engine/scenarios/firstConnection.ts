@@ -272,7 +272,8 @@ export function gatewayFramePacket(): PacketVisual {
   };
 }
 
-export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
+/** The ARP lesson's guided steps: from the mission to the first packet delivered to the Server (ARP, switching, routing). */
+export const arpLessonSteps: ScenarioStep<FirstConnectionState>[] = [
   {
     id: "mission",
     label: "Mission Briefing",
@@ -419,6 +420,25 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
       `IP source and destination identical end-to-end — no NAT on this path. The Router decremented the TTL ${IPV4_INITIAL_TTL} → ${IPV4_INITIAL_TTL - 1}.`,
     ],
   },
+];
+
+/**
+ * The TCP/UDP lesson's network when it starts: the path is ready — the Laptop knows the gateway's MAC, the switch
+ * knows both ends, R1 has routed the first packet to the Server — and no TCP connection exists yet.
+ */
+export function createTcpLessonState(): FirstConnectionState {
+  const s = createFirstConnectionState();
+  return {
+    ...s,
+    arpTable: { laptop: { [ADDR.gateway.ip]: ADDR.gateway.mac }, router: { [ADDR.laptop.ip]: ADDR.laptop.mac } },
+    macTable: { switch: { [ADDR.laptop.mac]: "port1", [ADDR.gateway.mac]: "port2" } },
+    routingTable: { router: s.routingTable.router.map((r) => ({ ...r, matched: r.ifaceId === "server" })) },
+    deliveredToServer: true,
+  };
+}
+
+/** The TCP/UDP lesson's guided steps: the three-way handshake on the ready path. */
+export const tcpLessonSteps: ScenarioStep<FirstConnectionState>[] = [
   {
     id: "tcp-intro",
     label: "TCP Handshake",
@@ -560,6 +580,9 @@ export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [
     id: "complete",
     label: "Session Established",
     narrative:
-      "TCP SESSION ESTABLISHED. From here, TLS negotiation and the HTTPS request/response would follow — that's a lesson of its own. You just watched, and drove, every hop: ARP, switched forwarding, routing, and the TCP handshake.",
+      "TCP SESSION ESTABLISHED. From here, TLS negotiation and the HTTPS request/response would follow — that's a lesson of its own. You just drove a whole TCP handshake across a routed path: SYN, SYN-ACK and ACK, both endpoints' states, every sequence and acknowledgment number.",
   },
 ];
+
+/** The whole network's step catalogue, in order (the device-trace helpers order step ids with it). */
+export const firstConnectionSteps: ScenarioStep<FirstConnectionState>[] = [...arpLessonSteps, ...tcpLessonSteps];

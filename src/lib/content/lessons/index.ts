@@ -28,7 +28,7 @@ export const lessons: Lesson[] = [
     difficulty: "beginner",
     prerequisites: ["ethernet-switching"],
     estimatedMinutes: 10,
-    simulationPath: "/demo/first-connection",
+    simulationPath: "/demo/arp-resolution",
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Your PC knows the gateway's IP address, but Ethernet frames are addressed with MAC addresses, not IPs." },
@@ -37,13 +37,13 @@ export const lessons: Lesson[] = [
   },
   {
     id: "tcp-three-way-handshake",
-    title: "TCP Three-Way Handshake",
+    title: "TCP & UDP",
     tagline: "SYN, SYN-ACK, ACK — and why the order matters.",
     category: "fundamentals",
     difficulty: "beginner",
     prerequisites: ["ipv4-basics"],
     estimatedMinutes: 12,
-    simulationPath: "/demo/first-connection",
+    simulationPath: "/demo/tcp-udp",
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "IP alone gives no guarantee packets arrive, arrive once, or arrive in order." },

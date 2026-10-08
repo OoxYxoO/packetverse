@@ -13,6 +13,7 @@ import { SubnetChamber } from "./SubnetChamber";
 import { V4_EDGES, V4_NODES, V4_REGIONS } from "./topology";
 import { Ipv4LabWorkspace } from "./ipv4-lab/Ipv4LabWorkspace";
 import { V4_LESSON_SECTIONS, Ipv4LessonGuideContent } from "./LessonGuideContent";
+import { Ipv4Presentation } from "./Ipv4Presentation";
 import { V4_DEEP_DIVE_SECTIONS, Ipv4DeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
@@ -114,10 +115,11 @@ const config: FundamentalsLessonConfig<Ipv4State> = {
   panels: (_s, stepId) => (stepId && CHAMBER_STEPS.includes(stepId) ? <SubnetChamber /> : null),
   sidePanel: (s) => <HostAPanel s={s} />,
   practiceLab: {
-    entry: { title: "IPv4 Lab", buttonLabel: "Practice IPv4", description: "Make the forwarding decision yourself: local vs remote, which next hop, which address ARP resolves, what R1 changes — then troubleshoot a wrong-mask incident with R1's CLI." },
+    entry: { title: "IPv4 Lab", buttonLabel: "Practice IPv4", description: "Five short levels (address and prefix, local or remote, through R1, TTL and checksum, wrong settings), then every host and R1 in its own window — Linux, Windows, Cisco and Junos terminals, captures, settings you change and verify — and tickets to solve from evidence." },
     contextNote: (stepId) => (stepId && ["predict-local", "and-math", "predict-l2-next-hop", "a-sends", "r1-forwards", "header-recap", "verify-delivered"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
     render: ({ open, onClose }) => <Ipv4LabWorkspace open={open} onClose={onClose} />,
   },
+  presentation: { topic: "IPv4", render: (p) => <Ipv4Presentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can subnet and follow a routed packet", message: "CIDR arithmetic, the AND test, gateway vs destination, TTL and checksum at the router — and a wrong mask found and fixed." },
 };
 

@@ -104,8 +104,14 @@ export function planLargestFirst(segs: { id: SegId; hosts: number }[]): Allocati
 }
 /** Free address space left in the parent, as address ranges (not as fake prefixes). */
 export function freeRanges(plan: Allocation[]): Range[] {
-  const used = plan.filter((a) => a.network && a.prefix !== undefined).map((a) => rangeOf(a.network!, a.prefix!)).sort((a, b) => a.first - b.first);
   const parent = rangeOf(PARENT.network, PARENT.prefix);
+  // Only the part of each block that lies inside the parent counts: a block outside it must not stretch the free space past the parent.
+  const used = plan
+    .filter((a) => a.network && a.prefix !== undefined)
+    .map((a) => rangeOf(a.network!, a.prefix!))
+    .map((r) => ({ first: Math.max(r.first, parent.first), last: Math.min(r.last, parent.last) }))
+    .filter((r) => r.first <= r.last)
+    .sort((a, b) => a.first - b.first);
   const free: Range[] = [];
   let cur = parent.first;
   for (const u of used) {
@@ -606,7 +612,7 @@ export const subnettingDesignSteps: ScenarioStep<SdState>[] = [
   {
     id: "fault-apply",
     label: "R1 refuses the change",
-    narrative: `Applying the revision on a lab copy of R1: setting ge-0/0/3 to ${numToIp(ipToNum(SD_FAULT_LAN_C.network) + 1)}/${SD_FAULT_LAN_C.prefix} — R1 refuses it with an overlapping-subnet error, as many routers do. Don't rely on that: a device check is a last line of defence, not the design review.`,
+    narrative: `Applying the revision on a lab copy of R1: setting ge-0/0/3 to ${numToIp(ipToNum(SD_FAULT_LAN_C.network) + 1)}/${SD_FAULT_LAN_C.prefix} — R1 refuses it with an overlapping-subnet error, as many routers do. Don't rely on that: a device check is a last line of defense, not the design review.`,
     run: (s) => {
       const check = checkCandidate(s.plan, "LAN-C", SD_FAULT_LAN_C.network, SD_FAULT_LAN_C.prefix);
       return { state: push({ ...idle(s), candidate: { ...check, seg: "LAN-C" }, note: { device: "R1", text: "R1: overlapping subnet — refused" } }, deployHop("fault-apply", s.plan, { seg: "LAN-C", check })), events: [ev("PACKET_DROPPED", "fault-apply", "configuration refused")] };

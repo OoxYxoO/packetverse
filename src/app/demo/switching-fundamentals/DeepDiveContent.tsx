@@ -8,10 +8,9 @@ import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShel
 import { executeCli } from "@/lib/cli/parser";
 import { ciscoMac } from "@/lib/cli/format";
 import type { CliVendor } from "@/lib/cli/types";
-import { BROADCAST_MAC, LOOP_WAVES_SHOWN, PRIMARY_PORT, SECONDARY_PORT, SWF_MAC, SWF_REPAIR_CORRECT, lookup, type SwfHost, type SwfSwitch } from "@/lib/sim-engine/scenarios/switchingFundamentals";
-import { createSwfLabState, swfCopiesPerHost, type SwfLabAction, type SwfLabState } from "@/lib/sim-engine/scenarios/switchingLab";
-import { switchingCli } from "./cliAdapter";
-import { swfLabDryRun, swfLocation } from "./switching-lab/SwitchingLabBoard";
+import { BROADCAST_MAC, PRIMARY_PORT, SECONDARY_PORT, SWF_MAC, type SwfHost, type SwfSwitch } from "@/lib/sim-engine/scenarios/switchingFundamentals";
+import { SN_WAVES, createSwitchNet, snApply, snCirculating, snHealthy, snLookup, snPortRole, type SnAction, type SnState } from "@/lib/sim-engine/scenarios/switchNet";
+import { snSwitchSets } from "./switching-lab/snCli";
 import { BroadcastDiagram, FirstFrameDiagram, LoopDiagram, RepairDiagram, ReplyDiagram, TopologyDiagram, TwoLookupsDiagram } from "./LessonGuideContent";
 import { HostNote, SwNote, TwoSwitches } from "./guideSvg";
 
@@ -30,7 +29,7 @@ const G = { foundation: "Foundation", learn: "Learning across switches", forward
 export const SWF_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "swd-why", label: "Why multiple switches", group: G.foundation },
   { id: "swd-independent", label: "Every bridge learns independently", group: G.foundation },
-  { id: "swd-nosync", label: "Tables are not synchronised", group: G.foundation },
+  { id: "swd-nosync", label: "Tables are not synchronized", group: G.foundation },
   { id: "swd-local", label: "Local vs inter-switch entries", group: G.foundation },
   { id: "swd-source", label: "Source learning on two switches", group: G.learn },
   { id: "swd-unknown", label: "Unknown-unicast propagation", group: G.learn },
@@ -57,7 +56,7 @@ export const SWF_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "swd-myths", label: "Common misconceptions", group: G.master },
   { id: "swd-quiz", label: "Knowledge check", group: G.master },
   { id: "swd-explain", label: "Can you explain it?", group: G.master },
-  { id: "swd-practice", label: "Practise in the Switching Lab", group: G.master },
+  { id: "swd-practice", label: "Practice in the Switching Lab", group: G.master },
 ];
 
 // ------------------------------------------------------------------ network facts (one source)
@@ -69,33 +68,46 @@ const B = SWF_MAC["HOST-B"];
 const Dm = SWF_MAC["HOST-D"];
 const HOSTS: SwfHost[] = ["HOST-A", "HOST-B", "HOST-C", "HOST-D"];
 
-// The Switching Lab's own model produces every state below (and so every table and CLI sample).
-const play = (s: SwfLabState, actions: SwfLabAction[]) => actions.reduce(swfLabDryRun, s);
-const send = (src: SwfHost, dst: SwfHost | "broadcast", arpFor?: SwfHost): SwfLabAction => ({ type: "send", src, dst, arpFor });
-const LAB_T0 = createSwfLabState();
+// The Switching Lab's own model (switchNet.ts) produces every state below — and so every table and CLI sample.
+const play = (s: SnState, actions: SnAction[]) => actions.reduce(snApply, s);
+const send = (src: SwfHost, dst: SwfHost | "broadcast", arpFor?: SwfHost): SnAction => ({ type: "traffic", sends: [dst === "broadcast" ? { from: src, to: "broadcast", arpFor } : { from: src, to: dst }] });
+const withSecond = (on: boolean): SnAction => {
+  const cfg = snHealthy();
+  if (on) {
+    cfg.sw.SW1.shut = [];
+    cfg.sw.SW2.shut = [];
+  }
+  return { type: "cfg", cfg, text: on ? `${SECONDARY_PORT} enabled on both switches` : `${SECONDARY_PORT} disabled on both switches` };
+};
+const LAB_T0 = createSwitchNet();
 const LAB_T1 = play(LAB_T0, [send("HOST-A", "HOST-B")]);
 const LAB_T2 = play(LAB_T1, [send("HOST-B", "HOST-A")]);
 const LAB_T3 = play(LAB_T2, [send("HOST-A", "HOST-B")]);
 const LAB_T4 = play(LAB_T3, [send("HOST-D", "HOST-A"), send("HOST-A", "HOST-D")]);
 const LAB_T5 = play(LAB_T4, [send("HOST-C", "HOST-D")]);
 const LAB_T6 = play(LAB_T5, [send("HOST-D", "broadcast", "HOST-C")]);
-const LAB_LOOP = play(LAB_T6, [{ type: "enable-secondary" }, send("HOST-A", "broadcast", "HOST-B")]);
+const LAB_LOOP = play(LAB_T6, [withSecond(true), send("HOST-A", "broadcast", "HOST-B")]);
 const LAB_SYMPTOM = play(LAB_LOOP, [send("HOST-D", "HOST-A")]);
-const LAB_REPAIRED = play(LAB_SYMPTOM, [{ type: "repair", choice: SWF_REPAIR_CORRECT }]);
+const LAB_REPAIRED = play(LAB_SYMPTOM, [withSecond(false)]);
 const LAB_VERIFIED = play(LAB_REPAIRED, [send("HOST-A", "broadcast", "HOST-B"), send("HOST-B", "HOST-A")]);
-const LOOP_COPIES = LAB_LOOP.tx ? swfCopiesPerHost(LAB_LOOP.tx) : undefined;
-const VERIFY_COPIES = (() => {
-  const s = play(LAB_REPAIRED, [send("HOST-A", "broadcast", "HOST-B")]);
-  return s.tx ? swfCopiesPerHost(s.tx) : undefined;
-})();
+const copiesOf = (s: SnState) => {
+  const r = s.last;
+  if (!r) return undefined;
+  const id = r.results[0]?.frame.id;
+  return Object.fromEntries(HOSTS.map((h) => [h, r.waves.flatMap((w) => w.rx).filter((x) => x.host === h && x.frame.id === id).reduce((n, x) => n + x.n, 0)])) as Record<SwfHost, number>;
+};
+const LOOP_COPIES = copiesOf(LAB_LOOP);
+const VERIFY_COPIES = copiesOf(play(LAB_REPAIRED, [send("HOST-A", "broadcast", "HOST-B")]));
+const LOOP_MOVES = LAB_LOOP.moves.filter((m) => m.run === LAB_LOOP.last?.id);
 
-function cli(state: SwfLabState, sw: SwfSwitch, vendor: CliVendor, command: string) {
-  const set = switchingCli(sw, vendor, state.net);
+function cli(state: SnState, sw: SwfSwitch, vendor: CliVendor, command: string) {
+  const api = { view: state, act: () => state, ios: { SW1: { kind: "exec" as const }, SW2: { kind: "exec" as const } }, setIos: () => undefined, junosEdit: { SW1: false, SW2: false }, setJunosEdit: () => undefined, cand: state.cfg.sw, setCand: () => undefined };
+  const set = snSwitchSets(api, sw)[vendor]!;
   const r = executeCli(set, command);
   return { prompt: set.prompt, command, output: r.kind === "ok" ? r.output : "" };
 }
 
-const portOf = (s: SwfLabState, sw: SwfSwitch, host: SwfHost) => lookup(s.net.fdb[sw], SWF_MAC[host])?.port;
+const portOf = (s: SnState, sw: SwfSwitch, host: SwfHost) => snLookup(s.cfg, s.fdb, sw, SWF_MAC[host])?.port;
 const Strong = ({ children }: { children: ReactNode }) => <b className="text-pv-text">{children}</b>;
 
 function CliPanel({ prompt, command, output, caption }: { prompt: string; command: string; output: string; caption?: string }) {
@@ -115,9 +127,9 @@ function CliPanel({ prompt, command, output, caption }: { prompt: string; comman
 }
 
 /** One switch's table at a lab state, with what each entry means from that switch's position. */
-const fdbRows = (s: SwfLabState, sw: SwfSwitch) => (s.net.fdb[sw].length ? s.net.fdb[sw].map((e) => [<Mono key="m">{e.mac}</Mono>, e.port, swfLocation(sw, e.port)]) : [["(empty)", "", ""]]);
+const fdbRows = (s: SnState, sw: SwfSwitch) => (s.fdb[sw].length ? s.fdb[sw].map((e) => [<Mono key="m">{e.mac}</Mono>, e.port, snPortRole(s.cfg, sw, e.port)]) : [["(empty)", "", ""]]);
 /** Both switches' answer for every host at a lab state. */
-const compareRows = (s: SwfLabState) => HOSTS.map((h) => [h, portOf(s, "SW1", h) ?? "no entry", portOf(s, "SW2", h) ?? "no entry"]);
+const compareRows = (s: SnState) => HOSTS.map((h) => [h, portOf(s, "SW1", h) ?? "no entry", portOf(s, "SW2", h) ?? "no entry"]);
 
 /** Local practice bridge: opens the Switching Lab when the guide is shown inside the lesson (renders nothing otherwise). */
 function LabBridge({ label, children }: { label: string; children: ReactNode }) {
@@ -311,7 +323,7 @@ function PreventionDiagram() {
 
 const QUIZ: KnowledgeQuestion[] = [
   { id: "q1", prompt: "HOST-A's first frame reaches SW2 on its link to SW1. Where does SW2 learn HOST-A?", options: [{ id: "a", label: `${P} — the port the frame arrived on` }, { id: "b", label: "ge-0/0/1 — copied from SW1" }, { id: "c", label: "Nowhere: only the first switch learns" }], correctId: "a", explanation: "Every bridge learns from frames on its OWN ports. From SW2's position, HOST-A is behind the link to SW1." },
-  { id: "q2", prompt: "SW1 knows HOST-D. Does that mean SW2 knows HOST-D?", options: [{ id: "a", label: "Yes — switches synchronise tables" }, { id: "b", label: "Only if SW2 has received a frame sourced by HOST-D" }, { id: "c", label: "Yes, after a few seconds" }], correctId: "b", explanation: "There is no table synchronisation. HOST-D's local traffic to HOST-A never crossed the link, so SW2 knew nothing until HOST-D's broadcast reached it." },
+  { id: "q2", prompt: "SW1 knows HOST-D. Does that mean SW2 knows HOST-D?", options: [{ id: "a", label: "Yes — switches synchronize tables" }, { id: "b", label: "Only if SW2 has received a frame sourced by HOST-D" }, { id: "c", label: "Yes, after a few seconds" }], correctId: "b", explanation: "There is no table synchronization. HOST-D's local traffic to HOST-A never crossed the link, so SW2 knew nothing until HOST-D's broadcast reached it." },
   { id: "q3", prompt: "HOST-C sends to HOST-D. SW2 floods it. What does SW1 do?", options: [{ id: "a", label: "Floods too — a flooded frame stays flooded" }, { id: "b", label: "Its own lookup: HOST-D known on ge-0/0/2 → forwards there only" }, { id: "c", label: "Drops it" }], correctId: "b", explanation: "Each switch decides from its own table. The copy SW1 receives is just a unicast frame to HOST-D's MAC." },
   { id: "q4", prompt: "HOST-A's frame crosses SW1 and SW2. What source MAC does HOST-B see?", options: [{ id: "a", label: "SW2's MAC" }, { id: "b", label: `HOST-A's MAC (${A})` }, { id: "c", label: "SW1's MAC" }], correctId: "b", explanation: "Bridges forward frames unchanged. Rewriting MACs is what a router does, hop by hop." },
   { id: "q5", prompt: `Both ${P} and ${S2} forward, with no loop prevention. HOST-A sends one broadcast. What happens?`, options: [{ id: "a", label: "Every host gets one copy" }, { id: "b", label: "Copies circulate between the switches and never expire" }, { id: "c", label: "The copies die after a few hops (TTL)" }], correctId: "b", explanation: "Each switch floods the broadcast out both inter-switch links; each copy returns on the other. Ethernet has no TTL, so nothing ends it." },
@@ -341,7 +353,7 @@ export function SwitchingDeepDiveContent() {
   const fixedStatus = cli(LAB_VERIFIED, "SW1", "juniper", "show interfaces terse");
   const fixedA1 = cli(LAB_VERIFIED, "SW1", "cisco", `show mac address-table address ${ciscoMac(A)}`);
   const fixedA2 = cli(LAB_VERIFIED, "SW2", "cisco", `show mac address-table address ${ciscoMac(A)}`);
-  const loopEv = LAB_LOOP.loopEvidence;
+  const loopLog = cli(LAB_LOOP, "SW2", "cisco", "show logging");
 
   return (
     <div className="space-y-12">
@@ -370,7 +382,7 @@ export function SwitchingDeepDiveContent() {
         </Callout>
       </GuideSection>
 
-      <GuideSection id="swd-nosync" eyebrow="Foundation" title="MAC tables are not synchronised" tone="violet">
+      <GuideSection id="swd-nosync" eyebrow="Foundation" title="MAC tables are not synchronized" tone="violet">
         <p>Switches never send each other their tables. Plain transparent bridging has no protocol for it: every entry on SW2 got there because a frame entered one of SW2&apos;s ports. The lab&apos;s own model, after HOST-A → HOST-B and HOST-B → HOST-A:</p>
         <div className="grid gap-3 sm:grid-cols-2">
           <FieldTable title="SW1 after T2" columns={["MAC", "Port", "From SW1's position"]} rows={fdbRows(LAB_T2, "SW1")} />
@@ -589,16 +601,17 @@ export function SwitchingDeepDiveContent() {
         <DiagramFrame caption="One MAC, several ports in a row — without the host ever moving.">
           <FlapDiagram />
         </DiagramFrame>
-        {loopEv && (
+        {LOOP_MOVES.length > 0 && (
           <FieldTable
-            title={`Moves the lab's model recorded during HOST-A's looping broadcast (${LOOP_WAVES_SHOWN} waves drawn)`}
+            title={`Moves the lab's model recorded during HOST-A's looping broadcast (first ${SN_WAVES} hops drawn)`}
             columns={["Switch", "MAC", "From", "To"]}
-            rows={loopEv.moves.map((m) => [m.sw, "HOST-A", m.from, m.to])}
+            rows={LOOP_MOVES.slice(0, 10).map((m) => [m.sw, "HOST-A", m.from, m.to])}
             accent="warning"
           />
         )}
+        <CliPanel {...loopLog} caption="SW2 logs it: the same MAC flapping between its two uplinks" />
         <p>
-          Flapping is a <Strong>symptom</Strong>. Source learning is doing exactly its job: a frame with HOST-A&apos;s source MAC arrived on a new port, so the entry moved. The question is <em>why</em> HOST-A&apos;s frames keep arriving on different ports. Many real switches log these moves as warnings (exact message and command differ by vendor and are not simulated here); in the lab you see them by running the table twice, and in the moved rows.
+          Flapping is a <Strong>symptom</Strong>. Source learning is doing exactly its job: a frame with HOST-A&apos;s source MAC arrived on a new port, so the entry moved. The question is <em>why</em> HOST-A&apos;s frames keep arriving on different ports — copies looping, or two devices sharing one MAC (the lab has a ticket for each). Cisco logs <Mono>%SW_MATM-4-MACFLAP_NOTIF</Mono>; on Junos, read <Mono>show ethernet-switching mac-learning-log</Mono>.
         </p>
       </GuideSection>
 
@@ -608,7 +621,7 @@ export function SwitchingDeepDiveContent() {
         </DiagramFrame>
         {LOOP_COPIES && (
           <p>
-            In the lab&apos;s model, HOST-A&apos;s one broadcast reached HOST-B {LOOP_COPIES["HOST-B"]}×, HOST-C {LOOP_COPIES["HOST-C"]}×, HOST-D {LOOP_COPIES["HOST-D"]}× and HOST-A itself {LOOP_COPIES["HOST-A"]}× in the first {LOOP_WAVES_SHOWN} waves — with {LAB_LOOP.circulating.length} copies still circulating when the drawing paused.
+            In the lab&apos;s model, HOST-A&apos;s one broadcast reached HOST-B {LOOP_COPIES["HOST-B"]}×, HOST-C {LOOP_COPIES["HOST-C"]}×, HOST-D {LOOP_COPIES["HOST-D"]}× and HOST-A itself {LOOP_COPIES["HOST-A"]}× in the first {SN_WAVES} hops — with {snCirculating(LAB_LOOP)} copies still circulating when the drawing paused.
           </p>
         )}
         <p>The evidence you will gather in the lab, produced by the lab&apos;s model at the moment of the incident:</p>
@@ -646,7 +659,7 @@ export function SwitchingDeepDiveContent() {
           ]}
         />
         <Callout tone="danger" title="About the lab's drawing">
-          PacketVerse draws {LOOP_WAVES_SHOWN} waves and then pauses, marking the remaining copies &quot;still circulating&quot; — for clarity only. In a real network those copies keep looping until a link is shut down or a loop-prevention protocol blocks one.
+          The lab draws {SN_WAVES} hops per run and keeps the remaining copies in flight: they continue at your next action, and the counters keep climbing. The pause is for clarity only — in a real network those copies keep looping, hundreds of thousands of laps per second, until a link is shut down or a loop-prevention protocol blocks one.
         </Callout>
       </GuideSection>
 
@@ -676,7 +689,7 @@ export function SwitchingDeepDiveContent() {
             { myth: "Flooding on SW2 means SW1 must also flood.", correction: "Each switch does its own lookup. SW2 flooded HOST-C → HOST-D; SW1 forwarded the same frame out ge-0/0/2 only." },
             { myth: "The frame gets a new source MAC when another switch forwards it.", correction: <>Bridges forward frames unchanged. HOST-B sees source <Mono>{A}</Mono> — that is why SW2 can learn HOST-A at all.</> },
             { myth: "Ethernet bridges decrement TTL.", correction: "There is no TTL in the Ethernet header, and switches don't touch the IPv4 TTL inside. Nothing counts down at Layer 2." },
-            { myth: "A loop naturally stops after a few passes.", correction: `It never stops by itself. The lab only stops DRAWING after ${LOOP_WAVES_SHOWN} waves.` },
+            { myth: "A loop naturally stops after a few passes.", correction: `It never stops by itself. The lab only stops DRAWING after ${SN_WAVES} hops — the copies stay in flight.` },
             { myth: "MAC flapping itself is the root cause.", correction: "Flapping is a symptom of looped copies carrying one source MAC into several ports. Fix the loop and the entry settles." },
             { myth: "STP is already operating in this lab.", correction: "No loop-prevention protocol runs here. That is why two forwarding links between SW1 and SW2 formed a loop." },
           ]}

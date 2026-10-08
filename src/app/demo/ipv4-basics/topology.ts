@@ -1,6 +1,5 @@
 import type { GraphEdge, GraphNode, GraphRegion } from "@/components/network/GraphTopologyViewer";
 import { V4_IP, V4_PREFIX, networkOf } from "@/lib/sim-engine/scenarios/ipv4Basics";
-import { V4_LAB_HOST_C } from "@/lib/sim-engine/scenarios/ipv4Lab";
 
 /**
  * The IPv4 Basics network, drawn once for the guided lesson and the IPv4 Lab. Host labels show addresses only — the
@@ -25,10 +24,3 @@ export const V4_REGIONS: GraphRegion[] = [
   { id: "net-a", label: `${networkOf(V4_IP.R1L, V4_PREFIX)}/${V4_PREFIX}`, x: 2, y: 14, width: 42, height: 76, tone: "cyan" },
   { id: "net-b", label: `${networkOf(V4_IP.R1R, V4_PREFIX)}/${V4_PREFIX}`, x: 56, y: 14, width: 42, height: 76, tone: "violet" },
 ];
-
-/** The IPv4 Lab's view: the same network plus the lab-only HOST-C on SW-A p3. */
-export const V4_LAB_NODES: GraphNode[] = [
-  ...V4_NODES.map((n) => (n.id === "HOST-A" ? { ...n, y: 34 } : n)),
-  { id: "HOST-C", label: "HOST-C", subLabel: `${last(V4_LAB_HOST_C.ip)} · lab only`, x: 8, y: 80, kind: "laptop" },
-];
-export const V4_LAB_EDGES: GraphEdge[] = [...V4_EDGES, { id: "c-swa", a: "HOST-C", b: "SW-A", label: V4_LAB_HOST_C.port }];

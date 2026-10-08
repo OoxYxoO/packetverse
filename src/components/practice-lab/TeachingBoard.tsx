@@ -148,6 +148,29 @@ export function EngineerCheck({ intro, facts, footnote = "Ticks itself when you 
   );
 }
 
+/** What the next step does, explained before the learner runs it: the idea first, then what to watch. */
+export function StepPrimer({ idea, watch }: { idea: ReactNode; watch: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-pv-cyan/35 bg-pv-cyan/[0.05] p-2.5">
+      <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.12em] text-pv-cyan-soft">Before you run it: what this step does</p>
+      <p className="text-[12.5px] leading-snug text-pv-text">{idea}</p>
+      <p className="mt-1 text-[12px] leading-snug text-pv-text-muted">
+        <span className="font-semibold text-pv-text">Watch for: </span>
+        {watch}
+      </p>
+    </div>
+  );
+}
+
+/** The explanation of a step's result when the learner skipped its optional check. */
+export function StepWhy({ question, children }: { question: ReactNode; children: ReactNode }) {
+  return (
+    <p className="rounded-lg border border-white/10 bg-white/[0.02] p-2 text-[12px] leading-snug text-pv-text-muted">
+      <span className="font-semibold text-pv-text">{question}</span> {children}
+    </p>
+  );
+}
+
 /** Correct / not-quite feedback after a prediction. */
 export function Verdict({ correct, children }: { correct: boolean; children: ReactNode }) {
   return (

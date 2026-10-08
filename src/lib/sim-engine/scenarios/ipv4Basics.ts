@@ -675,7 +675,7 @@ export const ipv4BasicsSteps: ScenarioStep<Ipv4State>[] = [
         lookupKey: V4_IP["HOST-B"],
         lookupResult: "miss — send ARP request",
         action: "ARP REQUEST",
-        reason: "HOST-A treats the destination as a neighbour on its own LAN, so it must learn that neighbour's MAC before it can send.",
+        reason: "HOST-A treats the destination as a neighbor on its own LAN, so it must learn that neighbor's MAC before it can send.",
         input: `send to ${V4_IP["HOST-B"]} (on-link)`,
         output: `ARP who-has ${V4_IP["HOST-B"]} to FF:FF:FF:FF:FF:FF`,
         nextHopId: "SW-A",

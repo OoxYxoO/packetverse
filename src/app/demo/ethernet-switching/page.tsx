@@ -13,6 +13,7 @@ import { ETH_REGIONS, ethEdges, ethNodes, hostBAtSw1 } from "./topology";
 import { ETH_LESSON_SECTIONS, EthernetLessonGuideContent } from "./LessonGuideContent";
 import { ETH_DEEP_DIVE_SECTIONS, EthernetDeepDiveContent } from "./DeepDiveContent";
 import { EthernetLabWorkspace } from "./ethernet-lab/EthernetLabWorkspace";
+import { EthernetPresentation } from "./EthernetPresentation";
 
 const GUIDE_TABS: LessonGuideTab[] = [
   { id: "lesson", label: "This Lesson", hint: "SW1 · HOST-A/B/C · learning, flooding, aging, a MAC move and a stale entry", sections: ETH_LESSON_SECTIONS, content: <EthernetLessonGuideContent /> },
@@ -113,10 +114,11 @@ const config: FundamentalsLessonConfig<EthState> = {
   },
   sidePanel: (s) => <FdbPanel s={s} />,
   practiceLab: {
-    entry: { title: "Ethernet Lab", buttonLabel: "Practice switching", description: "Send frames yourself on this same LAN and watch SW1 learn, flood, forward, age and go stale." },
+    entry: { title: "Ethernet Lab", buttonLabel: "Practice Ethernet", description: "Four short levels on this same LAN (one frame, inside the switch, broadcast and time, a moving host), then an engineering workspace: SW1 in Cisco or Junos, captures on every port, tickets and challenges." },
     contextNote: (stepId) => (stepId && ["a-sends", "predict-learn", "sw1-learns-a", "sw1-lookup-miss", "predict-flood", "flood-unknown", "fdb-aging", "move-intro", "stale-lost"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
     render: ({ open, onClose }) => <EthernetLabWorkspace open={open} onClose={onClose} />,
   },
+  presentation: { topic: "Ethernet switching", render: (p) => <EthernetPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read a switch's mind", message: "Source learning, flooding, known unicast, broadcast, aging, MAC moves and a stale-entry repair — all from one FDB." },
 };
 
