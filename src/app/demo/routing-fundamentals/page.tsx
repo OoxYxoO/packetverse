@@ -15,8 +15,8 @@ import { RoutingLabWorkspace } from "./routing-lab/RoutingLabWorkspace";
 import { RT_DEEP_DIVE_SECTIONS, RoutingDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "HOST-A → R1 → R2 → SERVER-A/B · connected, static, default · longest prefix · a /25 discard incident", sections: RT_LESSON_SECTIONS, content: <RoutingLessonGuideContent /> },
-  { id: "deep", label: "Routing Fundamentals Deep Dive", hint: "Routing tables and IPv4 forwarding decisions in general", sections: RT_DEEP_DIVE_SECTIONS, content: <RoutingDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "HOST-A · R1 · R2 · R3 · servers · connected, static, default, longest prefix, next hop, the way back, a /25 discard", sections: RT_LESSON_SECTIONS, content: <RoutingLessonGuideContent /> },
+  { id: "deep", label: "Routing Fundamentals Deep Dive", hint: "The full static-routing course on this network · tables, longest match, next hops, return path, drops, five tickets", sections: RT_DEEP_DIVE_SECTIONS, content: <RoutingDeepDiveContent /> },
 ];
 
 const config: FundamentalsLessonConfig<RtState> = {

@@ -1,28 +1,29 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DNode, DPill, DRegion, DiagramFrame, DiagramSvg, FieldTable, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DNode, DPill, DRegion, DiagramFrame, DiagramSvg, FailureSignatures, FieldTable, FlowSteps, GuideSection, Misconceptions, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { ExplainIt, KnowledgeQuiz, PracticeBridge, type KnowledgeQuestion } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { CliPair, CliPanel, FailureWalk, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import type { CliVendor } from "@/lib/cli/types";
+import { bgApply, bgClone, bgTicket, bgTicketState, createBgNet, type BgNet, type BgRouter, type BgTicketId } from "@/lib/sim-engine/scenarios/bgpNet";
+import { bgRouterSets, type BgCliApi } from "./bgp-lab/bgCli";
+import { DecisionLadder, NextHopDiagram, PathsDiagram, SessionFlow, Topology } from "./LessonGuideContent";
 
-export const BGP_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "bd-what", label: "Path-vector routing" },
-  { id: "bd-as", label: "Autonomous systems" },
-  { id: "bd-ebgp", label: "eBGP vs iBGP" },
-  { id: "bd-tcp", label: "Transport: TCP/179" },
-  { id: "bd-fsm", label: "Session state machine" },
-  { id: "bd-msgs", label: "Message types" },
-  { id: "bd-update", label: "Inside an UPDATE" },
-  { id: "bd-attrs", label: "Path attributes" },
-  { id: "bd-bestpath", label: "Best-path selection" },
-  { id: "bd-nexthop", label: "NEXT_HOP resolution" },
-  { id: "bd-loops", label: "Loop prevention" },
-  { id: "bd-advert", label: "Advertisement rules" },
-  { id: "bd-policy", label: "Policy & filtering" },
-  { id: "bd-traffic", label: "Steering traffic" },
-  { id: "bd-planes", label: "Control vs forwarding" },
-  { id: "bd-trouble", label: "Troubleshooting" },
-  { id: "bd-verify", label: "Verification commands" },
-  { id: "bd-not", label: "What BGP does NOT do" },
-  { id: "bd-glossary", label: "Glossary" },
-  { id: "bd-model", label: "Mental model" },
-];
+/**
+ * BGP DEEP DIVE — the complete study course, taught on the lesson's own AS65001 with two ISPs. Every CLI sample is
+ * produced by running the BGP Lab's model and its real Cisco/Junos command sets.
+ * Progression: Foundation → Sessions → Routes → Choosing a path → Policy → Operations → Troubleshooting → Beyond → Master it.
+ */
+
+// Real CLI output, run by the lab's own command sets against the lab's model: the guide shows exactly what the lab shows.
+function cliApi(s: BgNet): BgCliApi {
+  const exec = { kind: "exec" } as const;
+  return { view: s, act: () => s, ios: { R1: exec, R2: exec }, setIos: () => undefined, junosEdit: { R1: false, R2: false }, setJunosEdit: () => undefined, cand: { R1: bgClone(s.cfg.r.R1), R2: bgClone(s.cfg.r.R2) }, setCand: () => undefined };
+}
+const cli = (s: BgNet, r: BgRouter, vendor: CliVendor, command: string) => runGuideCli(bgRouterSets(cliApi(s), r)[vendor]!, command);
+/** A ticket's network after its test ran: the state the student investigates. */
+const ticketState = (id: BgTicketId) => bgTicket(id).repro.reduce((acc, a) => bgApply(acc, a), bgTicketState(id, 1));
+const WARM = createBgNet();
 
 function AsGraph() {
   return (
@@ -128,7 +129,7 @@ function BestPathDiagram() {
   );
 }
 
-function NextHopDiagram() {
+function ResolveDiagram() {
   return (
     <DiagramSvg h={170} label="A BGP route's next hop is resolved recursively through the IGP to a connected interface">
       <DPill x={120} y={40} text="BGP: 203.0.113.0/24 → NH 192.0.2.2" color={D.bgp} w={220} />
@@ -177,25 +178,300 @@ function PlanesDiagram() {
   );
 }
 
+/** What healthy BGP looks like, read from the routers — the state every later section refers to. */
+function NormalState() {
+  return (
+    <div className="space-y-5">
+      <p>
+        Before anything breaks, learn what healthy BGP looks like on the routers. This is the lab&apos;s network, converged: R1 peers with ISP-A (AS65010), R2 with ISP-B (AS65020), R1 and R2 with each other over iBGP. Both ISPs reach AS65030, which owns 203.0.113.0/24 (SRV is 203.0.113.10). The design: ISP-A is the primary. Its routes get LOCAL_PREF 200 on R1, R2 prepends our AS twice toward ISP-B so the internet prefers to come back through ISP-A, and each router announces only our own two prefixes (192.0.2.128/26 behind R1, 192.0.2.192/26 behind R2).
+      </p>
+      <div className="space-y-2">
+        <h4 className="text-sm font-bold text-pv-text">1 · Is every session up?</h4>
+        <CliPair cisco={cli(WARM, "R1", "cisco", "show ip bgp summary")} junos={cli(WARM, "R2", "juniper", "show bgp summary")} ciscoCaption="R1 · Cisco IOS" junosCaption="R2 · Junos" />
+        <p className="text-sm text-pv-text-muted">
+          A number in <Mono>State/PfxRcd</Mono> (Cisco) or <Mono>Establ</Mono> with active/received counts (Junos) means the session is up and routes arrived. A word there instead (<Mono>Active</Mono>, <Mono>Idle</Mono>) means it is not up, however healthy the link is.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <h4 className="text-sm font-bold text-pv-text">2 · Which paths does each router have, and which one won?</h4>
+        <CliPanel run={cli(WARM, "R1", "cisco", "show ip bgp 203.0.113.0")} />
+        <CliPanel run={cli(WARM, "R2", "juniper", "show route 203.0.113.0/24 detail")} />
+        <p className="text-sm text-pv-text-muted">
+          R1 has one path: its own, from ISP-A, with localpref 200, marked best. R2 has two. Its own path from ISP-B has localpref 100, and R1&apos;s ISP-A path arrives over iBGP with localpref 200 and next hop 10.0.12.1 (next-hop-self on R1). Junos says exactly why the ISP-B path lost: <Mono>Inactive reason: Local Preference</Mono>. R1 doesn&apos;t receive R2&apos;s ISP-B path, because a router passes on only its best path, and R2&apos;s best was learned over iBGP.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <h4 className="text-sm font-bold text-pv-text">3 · What does the routing table use?</h4>
+        <CliPair cisco={cli(WARM, "R1", "cisco", "show ip route 203.0.113.10")} junos={cli(WARM, "R2", "juniper", "show route 203.0.113.10")} ciscoCaption="R1 · Cisco IOS" junosCaption="R2 · Junos" />
+        <p className="text-sm text-pv-text-muted">
+          BGP never forwards a packet: it offers its best path to the routing table. On R1 the route is eBGP (distance 20) via ISP-A. On R2 it is iBGP via R1, with its own ISP-B path listed as inactive underneath (Junos gives every BGP route preference 170).
+        </p>
+      </div>
+      <div className="space-y-2">
+        <h4 className="text-sm font-bold text-pv-text">4 · What do we announce, and how does the internet see us?</h4>
+        <CliPanel run={cli(WARM, "R2", "juniper", "show route advertising-protocol bgp 198.51.100.2")} />
+        <CliPanel run={cli(WARM, "R5", "cisco", "show ip bgp 192.0.2.128")} note={<>The looking glass of AS65030 (R5): read-only, but it shows the one thing you can&apos;t see from inside, how others reach you.</>} />
+        <p className="text-sm text-pv-text-muted">
+          R2 announces only our two prefixes to ISP-B, with our AS three times (two prepends). AS65030 hears our prefix both ways and picks the shorter AS_PATH, through ISP-A (AS65010). The way back is decided by <strong>other</strong> networks: all we can do is make one path look worse.
+        </p>
+      </div>
+      <Callout tone="success" title="And the traffic proves it" icon="✓">
+        A traceroute from H1 and one from H2 to SRV both leave through R1 and ISP-A. A traceroute from SRV back to H1 comes in through ISP-A. Cut ISP-A&apos;s link and trace again: within moments everything goes R2 → ISP-B, because the backup session was already up.
+      </Callout>
+    </div>
+  );
+}
+
+/** The five faults the lab can break, each walked from normal state to proof. */
+function FaultWalks() {
+  const nhs = ticketState("nhs");
+  const ras = ticketState("remoteas");
+  const lp = ticketState("localpref");
+  const pre = ticketState("prepend");
+  const leak = ticketState("leak");
+  const rasNb = cli(ras, "R2", "juniper", "show bgp neighbor 198.51.100.2");
+  const preRun = cli(pre, "R1", "cisco", "show running-config");
+  return (
+    <div className="space-y-4">
+      <p>These are the five faults of the lab&apos;s tickets. Each one starts from the healthy evidence above and changes one thing. Read the evidence first and compare it with the healthy output, because the difference is the clue. Walk the chain every time: session → path → choice → announcement → routing table. Then see how the investigation questions lead to the cause, how to repair it on both vendors, and what proves the repair.</p>
+      <FailureWalk
+        title="1 · next-hop-self missing on the iBGP session"
+        normal={<>R1 relays its ISP-A path to R2 with next hop 10.0.12.1 (itself), which R2 reaches directly.</>}
+        change={<>A clean-up removes <Mono>next-hop-self</Mono> from R1&apos;s iBGP session. iBGP passes the next hop on unchanged, so R2 now receives ISP-A&apos;s own address, 192.0.2.2, which it has no route to.</>}
+        evidence={
+          <>
+            <p>H2&apos;s traffic leaves through ISP-B while H1 is fine, and every session is up. R2 still holds the ISP-A path with localpref 200, but can&apos;t use it:</p>
+            <CliPanel run={cli(nhs, "R2", "cisco", "show ip bgp 203.0.113.0")} />
+            <DiagramFrame caption="By default iBGP doesn't change NEXT_HOP, so R2 receives ISP-A's own interface address as the next hop.">
+              <NextHopDiagram />
+            </DiagramFrame>
+          </>
+        }
+        next={<>A path that has every right to win but doesn&apos;t: check that it is usable. Cisco marks it <Mono>(inaccessible)</Mono> and leaves out <Mono>valid</Mono>, and Junos says <Mono>Next hop type: Unusable</Mono>. Fix it on the router that <em>sends</em> the path. Advertising the external link subnet into the IGP would also work.</>}
+        fix={<>On R1, toward R2: Cisco <Mono>router bgp 65001</Mono>, <Mono>neighbor 10.0.12.2 next-hop-self</Mono> · Junos <Mono>set protocols bgp group INTERNAL export NHS</Mono>, then <Mono>commit</Mono>.</>}
+        proof={<>R2&apos;s ISP-A path shows next hop 10.0.12.1, valid, best, and H2&apos;s traceroute leaves through R1.</>}
+      />
+      <FailureWalk
+        title="2 · The backup session never came up"
+        normal={<>R2&apos;s session to ISP-B is Established, so if ISP-A fails, R2&apos;s ISP-B path takes over.</>}
+        change={<>R2 is configured to expect AS 65200 from ISP-B, whose real AS is 65020. ISP-B&apos;s OPEN announces 65020, so R2 refuses it with a NOTIFICATION and the session never establishes.</>}
+        evidence={
+          <>
+            <p>Nobody notices while ISP-A works. When ISP-A&apos;s link goes down, the whole office loses the internet. The session to ISP-B says <Mono>Active</Mono> and has never been up, and the log names the reason. The bytes are the AS that ISP-B really sent: 0xFDFC = 65020.</p>
+            <CliPanel run={cli(ras, "R2", "cisco", "show ip bgp summary")} />
+            <CliPanel run={cli(ras, "R2", "cisco", "show logging")} />
+            <CliPanel run={{ ...rasNb, output: pickLines(rasNb.output, /Peer:|State:|Last Error|Bad Peer AS/) }} />
+          </>
+        }
+        next={<>A session in Active or Idle with the link up: compare the configured remote AS with the AS the peer really announces (the NOTIFICATION, or Junos <Mono>Bad Peer AS</Mono>). Check every session, the backup too, before you need it.</>}
+        fix={<>On R2, the real AS: Cisco <Mono>router bgp 65001</Mono>, <Mono>neighbor 198.51.100.2 remote-as 65020</Mono> · Junos <Mono>set protocols bgp group ISP-B neighbor 198.51.100.2 peer-as 65020</Mono>, then <Mono>commit</Mono>.</>}
+        proof={<>The session is Established with a prefix count. Cut ISP-A again: H1 reaches SRV via R2 and ISP-B.</>}
+      />
+      <FailureWalk
+        title="3 · The LOCAL_PREF policy is missing"
+        normal={<>R1 gives routes from ISP-A localpref 200, so R1 and R2 both prefer ISP-A.</>}
+        change={<>The import policy on R1&apos;s ISP-A session is removed (Cisco <Mono>route-map LP200 in</Mono> · Junos <Mono>import LP200</Mono>). Every path now has the default localpref 100.</>}
+        evidence={
+          <>
+            <p>H2&apos;s traffic goes out through ISP-B although all sessions are up and R2 has a valid ISP-A path. With localpref equal and both AS_PATHs two ASes long, the decision falls through to <em>eBGP over iBGP</em>: each router simply uses its own ISP.</p>
+            <CliPanel run={cli(lp, "R2", "juniper", "show route 203.0.113.0/24 detail")} note={<>Inactive reason: Interior &gt; Exterior &gt; Exterior via Interior. In plain words, an external path beats one learned over iBGP.</>} />
+          </>
+        }
+        next={<>Everything up but the wrong exit: compare the competing paths&apos; attributes in decision order (LOCAL_PREF, then AS_PATH length, then eBGP over iBGP). The step that decided tells you which policy is missing.</>}
+        fix={<>On R1, the import policy back on the ISP-A session: Cisco <Mono>router bgp 65001</Mono>, <Mono>neighbor 192.0.2.2 route-map LP200 in</Mono> · Junos <Mono>set protocols bgp group ISP-A import LP200</Mono>, then <Mono>commit</Mono>.</>}
+        proof={<>R2&apos;s inactive reason becomes <Mono>Local Preference</Mono>, and H2&apos;s traceroute leaves through R1.</>}
+      />
+      <FailureWalk
+        title="4 · Prepending on the wrong router"
+        normal={<>R2 prepends our AS twice toward ISP-B, so AS65030 prefers to reach us through ISP-A.</>}
+        change={<>A change &quot;to make ISP-B the backup&quot; moves the prepend: R1 now prepends toward ISP-A and R2 doesn&apos;t prepend at all. That is the opposite of the intent.</>}
+        evidence={
+          <>
+            <p>Outbound traffic still uses ISP-A, but replies arrive through ISP-B (metered). Our own routers look fine. The evidence is in what we announce, and in how the internet sees it:</p>
+            <CliPanel run={cli(pre, "R1", "cisco", "show ip bgp neighbors 192.0.2.2 advertised-routes")} />
+            <CliPanel run={cli(pre, "R5", "cisco", "show ip bgp 192.0.2.128")} note={<>AS65030 now sees the ISP-A path as longer and comes back through ISP-B.</>} />
+            <CliPanel run={{ ...preRun, output: pickLines(preRun.output, /neighbor 192\.0\.2\.2/) }} />
+          </>
+        }
+        next={<>The way back is wrong but the way out is right: look at what you announce to each ISP (<Mono>advertised-routes</Mono> · <Mono>advertising-protocol</Mono>) and at a looking glass. Prepend makes a path look worse: it belongs toward the <em>backup</em>.</>}
+        fix={<>No prepend toward ISP-A, prepend back toward ISP-B. Cisco: <Mono>no neighbor 192.0.2.2 route-map PREPEND out</Mono> on R1, <Mono>neighbor 198.51.100.2 route-map PREPEND out</Mono> on R2 (under <Mono>router bgp 65001</Mono>) · Junos: <Mono>delete protocols bgp group ISP-A export PREPEND</Mono> on R1, <Mono>set protocols bgp group ISP-B export PREPEND</Mono> on R2, then <Mono>commit</Mono>.</>}
+        proof={<>The looking glass prefers 65010 65001 again, and SRV&apos;s traceroute comes in through ISP-A.</>}
+      />
+      <FailureWalk
+        title="5 · A route leak to an ISP"
+        normal={<>Each router announces only our own prefixes to its ISP (prefix-list <Mono>OWN</Mono> · policy <Mono>OWN-ONLY</Mono>).</>}
+        change={<>R2&apos;s outbound filter toward ISP-B is removed. R2 now passes on everything it uses, including 203.0.113.0/24 learned from ISP-A, so ISP-B is offered a path to AS65030 through us.</>}
+        evidence={
+          <>
+            <p>ISP-B&apos;s NOC calls: we announce a prefix that isn&apos;t ours, with ISP-A&apos;s AS in the path. R2&apos;s announcements to ISP-B show it:</p>
+            <CliPanel run={cli(leak, "R2", "cisco", "show ip bgp neighbors 198.51.100.2 advertised-routes")} />
+          </>
+        }
+        next={<>Anything in an ISP&apos;s advertised-routes that isn&apos;t one of our prefixes is a leak, and another ISP&apos;s AS in its AS_PATH confirms it. Check the outbound filter on every eBGP session. An enterprise must never become a transit path between its ISPs.</>}
+        fix={<>On R2, the outbound filter back: Cisco <Mono>router bgp 65001</Mono>, <Mono>neighbor 198.51.100.2 prefix-list OWN out</Mono> · Junos <Mono>set protocols bgp group ISP-B export OWN-ONLY</Mono>, then <Mono>commit</Mono>.</>}
+        proof={<>advertised-routes lists only 192.0.2.128/26 and 192.0.2.192/26.</>}
+      />
+    </div>
+  );
+}
+
+function LabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the BGP Lab" onPractice={openLab}>
+      Same AS numbers and addresses, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
+
+const G = { foundation: "Foundation", session: "Sessions", routes: "Routes", choose: "Choosing a path", policy: "Policy", ops: "Operations", trouble: "Troubleshooting", beyond: "Beyond this lesson", master: "Master it" };
+
+export const BGP_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
+  { id: "bd-why", label: "Why BGP exists", group: G.foundation },
+  { id: "bd-network", label: "The network you will study", group: G.foundation },
+  { id: "bd-as", label: "ASes, eBGP and iBGP", group: G.foundation },
+  { id: "bd-session", label: "A session over TCP 179", group: G.session },
+  { id: "bd-msgs", label: "The message types", group: G.session },
+  { id: "bd-update", label: "UPDATEs and the AS_PATH", group: G.routes },
+  { id: "bd-attrs", label: "Path attributes", group: G.routes },
+  { id: "bd-nexthop", label: "NEXT_HOP must resolve", group: G.routes },
+  { id: "bd-loops", label: "Loop prevention and advertising", group: G.routes },
+  { id: "bd-bestpath", label: "Best-path selection", group: G.choose },
+  { id: "bd-rib", label: "From BGP to forwarding", group: G.choose },
+  { id: "bd-policy", label: "Inbound and outbound policy", group: G.policy },
+  { id: "bd-steer", label: "The way out, the way back", group: G.policy },
+  { id: "bd-state", label: "The state each router keeps", group: G.ops },
+  { id: "bd-verify", label: "How to verify: walk the chain", group: G.ops },
+  { id: "bd-normal", label: "What healthy looks like", group: G.ops },
+  { id: "bd-signatures", label: "Failure signatures", group: G.trouble },
+  { id: "bd-stuck", label: "Symptom → usual cause", group: G.trouble },
+  { id: "bd-workflow", label: "Investigation workflow", group: G.trouble },
+  { id: "bd-faults", label: "Five faults, evidence to proof", group: G.trouble },
+  { id: "bd-prove", label: "Prove the repair", group: G.trouble },
+  { id: "bd-scale", label: "Larger BGP networks", group: G.beyond },
+  { id: "bd-myths", label: "Common misconceptions", group: G.master },
+  { id: "bd-quiz", label: "Knowledge check", group: G.master },
+  { id: "bd-explain", label: "Can you explain it?", group: G.master },
+  { id: "bd-practice", label: "Practice in the BGP Lab", group: G.master },
+];
+
+const QUIZ: KnowledgeQuestion[] = [
+  {
+    id: "q-active",
+    prompt: "show ip bgp summary lists R2's neighbor 198.51.100.2 in state Active. What does that mean?",
+    options: [
+      { id: "a", label: "The session is up and exchanging routes" },
+      { id: "b", label: "The session is not up; BGP keeps trying to connect" },
+      { id: "c", label: "The neighbor is the active (primary) ISP" },
+      { id: "d", label: "The neighbor is sending updates" },
+    ],
+    correctId: "b",
+    explanation: "Despite its name, Active means the session is not Established. Only Established sessions exchange routes, with a prefix count instead of a state in the summary.",
+  },
+  {
+    id: "q-aspath",
+    prompt: "AS65030 announces 203.0.113.0/24. What AS_PATH does R1 receive from ISP-A (AS65010)?",
+    options: [
+      { id: "a", label: "65030" },
+      { id: "b", label: "65010 65030" },
+      { id: "c", label: "65001 65010 65030" },
+      { id: "d", label: "An empty path" },
+    ],
+    correctId: "b",
+    explanation: "Every eBGP hop prepends its own AS. AS65030 sends 65030, ISP-A adds 65010 in front. R1 adds 65001 only when it announces the route to another AS.",
+  },
+  {
+    id: "q-lp",
+    prompt: "R1 gives ISP-A's path LOCAL_PREF 200 and shares it over iBGP. Which exit does R2 use?",
+    options: [
+      { id: "a", label: "Its own ISP-B path, because eBGP beats iBGP" },
+      { id: "b", label: "ISP-A via R1, because LOCAL_PREF 200 beats 100 before anything else is compared" },
+      { id: "c", label: "Both, as multipath" },
+      { id: "d", label: "The path with the lower MED" },
+    ],
+    correctId: "b",
+    explanation: "LOCAL_PREF is compared first and travels inside the AS. 200 beats R2's own path at 100, so the eBGP-over-iBGP rule is never reached.",
+  },
+  {
+    id: "q-nh",
+    prompt: "R2 sees the ISP-A path with NEXT_HOP 192.0.2.2 marked inaccessible. What fixes it?",
+    options: [
+      { id: "a", label: "Raising LOCAL_PREF on R2" },
+      { id: "b", label: "next-hop-self on R1 toward R2" },
+      { id: "c", label: "Prepending toward ISP-A" },
+      { id: "d", label: "Restarting the iBGP session" },
+    ],
+    correctId: "b",
+    explanation: "iBGP passes the next hop unchanged, and R2 has no route to ISP-A's link. With next-hop-self, R1 advertises itself (10.0.12.1), which R2 reaches directly.",
+  },
+  {
+    id: "q-prepend",
+    prompt: "Which tool influences how the internet reaches AS65001?",
+    options: [
+      { id: "a", label: "LOCAL_PREF on R1" },
+      { id: "b", label: "AS-path prepending on what R2 announces to ISP-B" },
+      { id: "c", label: "next-hop-self" },
+      { id: "d", label: "The router ID" },
+    ],
+    correctId: "b",
+    explanation: "LOCAL_PREF never leaves our AS and only chooses our exit. Prepending makes our path through ISP-B look longer to others, a hint they usually follow.",
+  },
+  {
+    id: "q-leak",
+    prompt: "R2 announces 203.0.113.0/24 (learned via ISP-A) to ISP-B. What is that called, and what prevents it?",
+    options: [
+      { id: "a", label: "Failover; LOCAL_PREF prevents it" },
+      { id: "b", label: "A route leak; an outbound filter that allows only our own prefixes" },
+      { id: "c", label: "Prepending; MED prevents it" },
+      { id: "d", label: "Normal transit; nothing needs to prevent it" },
+    ],
+    correctId: "b",
+    explanation: "An enterprise is a stub. Passing one provider's routes to another offers transit through our office. Prefix-list OWN out (Junos export OWN-ONLY) announces only what is ours.",
+  },
+];
+
 export function BgpDeepDiveContent() {
   return (
     <>
-      <GuideSection id="bd-what" eyebrow="Fundamentals" title="BGP is a path-vector protocol" tone="bgp">
+      <GuideSection id="bd-why" eyebrow="Foundation" title="Why BGP exists" tone="bgp">
         <p>
-          <b className="text-pv-text">BGP (Border Gateway Protocol, BGP-4)</b> exchanges reachability between <b className="text-pv-text">autonomous systems</b>. Each route carries the <b className="text-pv-text">path</b> of ASes it crossed (AS_PATH), not just a metric, so every AS can apply its own policy and detect loops.
+          OSPF works because every router in one organization trusts one map of the whole network. The internet is tens of thousands of independent organizations. None will publish its inside to the others, none will let a stranger&apos;s costs decide where its traffic goes, and each has its own business rules. <b className="text-pv-text">BGP</b> (Border Gateway Protocol, BGP-4) exchanges reachability <em>between</em> them, and lets each one decide by policy which of several paths to use.
         </p>
+        <FlowSteps
+          steps={[
+            { title: "No shared map", body: "We can't see inside ISP-A or ISP-B, and they won't flood their topology to us.", tone: "danger" },
+            { title: "Several ways out, and back", body: "Two ISPs both reach AS65030. Something must decide which one we use, and we can only influence how others reach us.", tone: "warning" },
+            { title: "Policy, not just distance", body: "The cheapest-looking path isn't always the one the business wants. Contracts and costs decide.", tone: "violet" },
+          ]}
+        />
+        <p>BGP is a <b className="text-pv-text">path-vector</b> protocol: each route carries the list of autonomous systems it crossed (the AS_PATH), not just a metric, so every AS can apply its own policy and detect loops.</p>
         <DiagramFrame caption="The AS_PATH grows as a route crosses AS boundaries.">
           <AsGraph />
         </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="bd-as" eyebrow="Identity" title="Autonomous systems and AS numbers" tone="bgp">
-        <p>
-          An AS is a network under one administration with one routing policy. AS numbers are 16-bit or 32-bit (4-byte). Private ranges such as <Mono>64512–65534</Mono> (16-bit) are for internal use, like the <Mono>650xx</Mono> numbers used in these lessons.
-        </p>
+      <GuideSection id="bd-network" eyebrow="Foundation" title="The network you will study" tone="cyan">
+        <p>A company, AS65001, buys internet access from ISP-A (AS65010) on R1 and ISP-B (AS65020) on R2. SRV (203.0.113.10) sits in AS65030. The design: ISP-A is the primary for traffic leaving and coming back, ISP-B is the backup, and the company never carries traffic between the two ISPs.</p>
+        <DiagramFrame caption="R1 is dual-homed through ISP-A, R2 through ISP-B. R1↔R2 is the enterprise's internal (iBGP) session.">
+          <Topology />
+        </DiagramFrame>
+        <FieldTable
+          title="Sessions"
+          accent="bgp"
+          columns={["Session", "Type", "Addresses"]}
+          rows={[
+            ["R1 ↔ R3 (ISP-A)", "eBGP", <Mono key="1">192.0.2.1 ↔ 192.0.2.2</Mono>],
+            ["R2 ↔ R4 (ISP-B)", "eBGP", <Mono key="2">198.51.100.1 ↔ 198.51.100.2</Mono>],
+            ["R1 ↔ R2", "iBGP (AS65001)", <Mono key="3">10.0.12.1 ↔ 10.0.12.2</Mono>],
+          ]}
+        />
+        <Callout tone="cyan" title="What is simulated" icon="i">
+          TCP/179, the session states, eBGP and iBGP, OPEN/KEEPALIVE/UPDATE/NOTIFICATION, NEXT_HOP, AS_PATH, LOCAL_PREF, a simplified best-path order, AS-path prepending and outbound filters. Route reflectors, communities, MP-BGP and RPKI are explained at the end, not simulated.
+        </Callout>
       </GuideSection>
 
-      <GuideSection id="bd-ebgp" eyebrow="Session types" title="eBGP vs iBGP" tone="violet">
+      <GuideSection id="bd-as" eyebrow="Foundation" title="Autonomous systems, eBGP and iBGP" tone="violet">
+        <p>An AS is a network under one administration with one routing policy. AS numbers are 16-bit or 32-bit (4-byte); private ranges such as <Mono>64512–65534</Mono> are for internal use, like the <Mono>650xx</Mono> numbers here. BGP between different ASes is eBGP; BGP inside one AS, so that all its border routers know what the others learned, is iBGP.</p>
         <CompareCards
           items={[
             { title: "eBGP", tone: "bgp", tag: "between ASes", points: ["Peers in different ASes, usually directly connected", "Own AS is prepended to AS_PATH", "NEXT_HOP set to the sender's address", "Loop check: reject routes that contain your own AS"] },
@@ -204,17 +480,19 @@ export function BgpDeepDiveContent() {
         />
       </GuideSection>
 
-      <GuideSection id="bd-tcp" eyebrow="Transport" title="TCP port 179" tone="tcp">
-        <p>BGP runs over TCP port 179, relying on TCP for reliable, ordered delivery, so BGP itself has no retransmission logic. Sessions are explicitly configured per neighbor; BGP has no automatic neighbor discovery.</p>
-      </GuideSection>
-
-      <GuideSection id="bd-fsm" eyebrow="State machine" title="The session state machine" tone="bgp">
-        <DiagramFrame caption="Stuck in Active or Connect means TCP isn't coming up; stuck at OpenSent/OpenConfirm points at OPEN parameters.">
+      <GuideSection id="bd-session" eyebrow="Sessions" title="A session over TCP 179" tone="tcp">
+        <p>
+          BGP routers don&apos;t discover each other: each is told who its neighbors are (Cisco <Mono>neighbor 192.0.2.2 remote-as 65010</Mono> · Junos <Mono>set protocols bgp group ISP-A neighbor 192.0.2.2 peer-as 65010</Mono>). BGP has no transport of its own: the two open a TCP connection to port 179, then exchange OPEN messages carrying their AS number, Hold Time and BGP Identifier. Each checks the peer&apos;s AS against the one it was configured to expect. A KEEPALIVE from each side brings the session to <b className="text-pv-text">Established</b>.
+        </p>
+        <DiagramFrame caption="OPEN carries identity (AS number and BGP Identifier) plus the Hold Time; the first KEEPALIVE confirms it.">
+          <SessionFlow />
+        </DiagramFrame>
+        <DiagramFrame caption="Stuck in Active or Connect means TCP isn't coming up; a NOTIFICATION after OPEN points at OPEN parameters.">
           <FsmDiagram />
         </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="bd-msgs" eyebrow="On the wire" title="The four core message types" tone="bgp">
+      <GuideSection id="bd-msgs" eyebrow="Sessions" title="The message types" tone="bgp">
         <FieldTable
           title="BGP messages"
           accent="bgp"
@@ -223,19 +501,25 @@ export function BgpDeepDiveContent() {
             ["OPEN", "Start a session: version, AS number, Hold Time, BGP Identifier, capabilities (e.g. 4-byte ASN, MP-BGP)"],
             ["KEEPALIVE", "Confirm the OPEN and keep the session alive within the Hold Time"],
             ["UPDATE", "Advertise new routes and/or withdraw old ones"],
-            ["NOTIFICATION", "Report an error and close the session"],
+            ["NOTIFICATION", "Report an error and close the session (e.g. a wrong peer AS)"],
+            ["ROUTE-REFRESH", "Ask a peer to resend its routes after a policy change"],
           ]}
         />
-        <p>A fifth type, ROUTE-REFRESH, asks a peer to resend its routes after a policy change.</p>
       </GuideSection>
 
-      <GuideSection id="bd-update" eyebrow="On the wire" title="Inside an UPDATE" tone="bgp">
+      <GuideSection id="bd-update" eyebrow="Routes" title="UPDATEs and the AS_PATH" tone="bgp">
+        <p>
+          Over an Established session, routers announce prefixes with their attributes. AS65030 announces 203.0.113.0/24; ISP-A passes it on as AS_PATH <Mono>65010 65030</Mono>. Every eBGP hop adds its own AS. Inside our AS, iBGP passes routes unchanged: no AS is added, and LOCAL_PREF travels with them.
+        </p>
         <DiagramFrame caption="Withdrawals and advertisements can travel in the same message.">
           <UpdateDiagram />
         </DiagramFrame>
+        <DiagramFrame caption="The guided lesson's version: ISP-B's path transits AS65100, so it is longer. In the lab, ISP-B connects straight to AS65030, both paths are two ASes long, and policy has to decide.">
+          <PathsDiagram />
+        </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="bd-attrs" eyebrow="Attributes" title="Key path attributes" tone="violet">
+      <GuideSection id="bd-attrs" eyebrow="Routes" title="Path attributes" tone="violet">
         <FieldTable
           title="Common attributes"
           accent="violet"
@@ -254,24 +538,18 @@ export function BgpDeepDiveContent() {
         </Callout>
       </GuideSection>
 
-      <GuideSection id="bd-bestpath" eyebrow="Decision" title="Best-path selection" tone="success">
-        <p>A router may learn many paths for one prefix but installs and advertises only one best path by default. The order below is a common vendor (Cisco-style) sequence. Exact steps differ between implementations, so treat it as typical, not universal.</p>
-        <DiagramFrame caption="The first step that separates the candidates decides; later steps are never consulted.">
-          <BestPathDiagram />
+      <GuideSection id="bd-nexthop" eyebrow="Routes" title="NEXT_HOP must resolve" tone="ip">
+        <p>A path is only usable if its NEXT_HOP is reachable through the routing table, often recursively: the BGP next hop through an IGP route, that route through a connected interface.</p>
+        <DiagramFrame caption="Recursive resolution: BGP route → next hop → IGP route → connected interface.">
+          <ResolveDiagram />
         </DiagramFrame>
-        <Callout tone="cyan" title="In the enterprise lesson" icon="i">
-          The lesson uses a simplified subset: LOCAL_PREF → AS_PATH length → MED → eBGP over iBGP → lowest Router ID.
-        </Callout>
-      </GuideSection>
-
-      <GuideSection id="bd-nexthop" eyebrow="Usability" title="NEXT_HOP must resolve" tone="ip">
-        <p>A route is only eligible if its NEXT_HOP is reachable via the routing table. Resolution is often <b className="text-pv-text">recursive</b>: the BGP next hop is reached through an IGP route, which is reached through a connected interface.</p>
-        <DiagramFrame caption="This is why iBGP designs use next-hop-self or advertise external link subnets into the IGP.">
+        <p>That is the trap in this network: iBGP passes ISP-A&apos;s next hop (192.0.2.2) unchanged to R2, which has no route to ISP-A&apos;s link. The fix is <b className="text-pv-text">next-hop-self</b> on R1 toward R2 (Cisco <Mono>neighbor 10.0.12.2 next-hop-self</Mono> · Junos an export policy that sets <Mono>next-hop self</Mono>, here <Mono>NHS</Mono>).</p>
+        <DiagramFrame caption="Without next-hop-self, R2 sees the route but can't use it.">
           <NextHopDiagram />
         </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="bd-loops" eyebrow="Safety" title="Loop prevention" tone="danger">
+      <GuideSection id="bd-loops" eyebrow="Routes" title="Loop prevention and what gets advertised" tone="danger">
         <FlowSteps
           steps={[
             { title: "Between ASes: AS_PATH", body: "A router rejects any route whose AS_PATH already contains its own AS number.", tone: "bgp" },
@@ -282,9 +560,6 @@ export function BgpDeepDiveContent() {
         <DiagramFrame caption="The iBGP rule that makes a full mesh (or reflection) necessary.">
           <SplitHorizonDiagram />
         </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="bd-advert" eyebrow="Propagation" title="What gets advertised" tone="bgp">
         <ChecklistCard
           tone="cyan"
           mark="•"
@@ -293,84 +568,189 @@ export function BgpDeepDiveContent() {
         />
       </GuideSection>
 
-      <GuideSection id="bd-policy" eyebrow="Control" title="Policy and prefix filtering" tone="violet">
-        <p>
-          BGP is a policy protocol. Inbound policy decides what you accept and with which attributes (for example setting LOCAL_PREF); outbound policy decides what you announce (for example only your own prefixes, never a full table from one ISP to another). Prefix lists, AS-path filters, communities and route-maps/policy-statements are the usual tools. RPKI origin validation adds a check that the originating AS is authorized.
-        </p>
+      <GuideSection id="bd-bestpath" eyebrow="Choosing a path" title="Best-path selection" tone="success">
+        <p>A router may hold several paths to 203.0.113.0/24. It ignores those whose next hop it can&apos;t reach, then compares the rest step by step: the first difference decides, and later steps are never consulted. Only the best path enters the routing table and is passed on.</p>
+        <DiagramFrame caption="The lesson's simplified order.">
+          <DecisionLadder />
+        </DiagramFrame>
+        <p>Real implementations have more steps. A common (Cisco-style) sequence:</p>
+        <DiagramFrame caption="The first step that separates the candidates decides.">
+          <BestPathDiagram />
+        </DiagramFrame>
+        <p>MED is only compared between paths from the <em>same</em> neighboring AS. ISP-A and ISP-B are different ASes, so MED plays no part in this network.</p>
       </GuideSection>
 
-      <GuideSection id="bd-traffic" eyebrow="Traffic engineering" title="Steering traffic in and out" tone="violet">
-        <CompareCards
-          items={[
-            { title: "Outbound (you choose your exit)", tone: "violet", tag: "strong", points: ["LOCAL_PREF across your AS", "Weight on a single router (vendor)"] },
-            { title: "Inbound (others choose)", tone: "warning", tag: "influence only", points: ["AS-path prepending on your announcements", "MED toward one neighbor AS", "More-specific prefixes, communities agreed with the ISP"] },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="bd-planes" eyebrow="Architecture" title="Control plane vs forwarding" tone="ip">
+      <GuideSection id="bd-rib" eyebrow="Choosing a path" title="From BGP to forwarding" tone="ip">
+        <p>BGP offers its best paths to the routing table with administrative distance 20 (eBGP) or 200 (iBGP) on Cisco, preference 170 for both on Junos. The routing table installs the winner in the forwarding table; BGP never touches packets.</p>
         <DiagramFrame caption="Only the FIB touches packets.">
           <PlanesDiagram />
         </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="bd-trouble" eyebrow="Troubleshooting" title="Common problems" tone="danger">
+      <GuideSection id="bd-policy" eyebrow="Policy" title="Inbound and outbound policy" tone="violet">
+        <p>BGP is a policy protocol. Inbound policy decides what you accept and with which attributes; outbound policy decides what you announce. This network uses three policies:</p>
+        <FlowSteps
+          steps={[
+            { title: "LOCAL_PREF 200 on what R1 learns from ISP-A", body: <>Cisco <Mono>neighbor 192.0.2.2 route-map LP200 in</Mono> · Junos <Mono>set protocols bgp group ISP-A import LP200</Mono>. Makes ISP-A the exit for the whole AS.</>, tone: "cyan" },
+            { title: "Prepend our AS twice toward ISP-B", body: <>Cisco <Mono>neighbor 198.51.100.2 route-map PREPEND out</Mono> · Junos <Mono>set protocols bgp group ISP-B export PREPEND</Mono>. Makes the way in through ISP-B look longer.</>, tone: "violet" },
+            { title: "Announce only our own prefixes", body: <>Cisco <Mono>neighbor 198.51.100.2 prefix-list OWN out</Mono> (and toward ISP-A) · Junos <Mono>export OWN-ONLY</Mono>. Only 192.0.2.128/26 and 192.0.2.192/26 leave our AS.</>, tone: "warning" },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Prefix lists, AS-path filters, communities and route-maps / policy statements are the usual tools. RPKI origin validation adds a check that the originating AS is authorized to announce a prefix.</p>
+      </GuideSection>
+
+      <GuideSection id="bd-steer" eyebrow="Policy" title="The way out, the way back, and failover" tone="warning">
+        <p><strong>The way out is our choice.</strong> R1&apos;s LOCAL_PREF 200 is shared over iBGP, so R2 also prefers ISP-A (200 beats its own ISP-B path at 100, before anything else is compared). Without that policy both paths would tie on LOCAL_PREF and AS_PATH length, and each router would fall through to eBGP over iBGP and use its own ISP.</p>
+        <p><strong>The way back is other networks&apos; choice.</strong> LOCAL_PREF never leaves our AS. AS65030 sees <Mono>65010 65001</Mono> through ISP-A and <Mono>65020 65001 65001 65001</Mono> through ISP-B, and prefers ISP-A. Prepending is a hint, not a guarantee.</p>
+        <p><strong>Failover.</strong> When ISP-A&apos;s link goes down, R1 loses the session and withdraws its path. R2&apos;s ISP-B path becomes best, R2 tells R1, and traffic leaves via R2. That works only if the backup session was Established all along.</p>
+        <CompareCards
+          items={[
+            { title: "Outbound (you choose your exit)", tone: "violet", tag: "strong", points: ["LOCAL_PREF across your AS", "Weight on a single router (Cisco)"] },
+            { title: "Inbound (others choose)", tone: "warning", tag: "influence only", points: ["AS-path prepending on your announcements", "MED toward one neighbor AS", "More-specific prefixes, communities agreed with the ISP"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="bd-state" eyebrow="Operations" title="The state each router keeps" tone="cyan">
+        <FlowSteps
+          steps={[
+            { title: "Its sessions", body: "Each neighbor, its AS, the session state (Established, Active, Idle) and how many prefixes it sent.", tone: "violet" },
+            { title: "Every path it received", body: "Per prefix: AS_PATH, NEXT_HOP, LOCAL_PREF, whether it is usable, and which one is best (and why the others lost).", tone: "warning" },
+            { title: "What it announces", body: "Per neighbor: the prefixes it sends, with the AS_PATH the neighbor will see.", tone: "cyan" },
+            { title: "The routing table", body: "The best path for each prefix, offered to forwarding.", tone: "success" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="bd-verify" eyebrow="Operations" title="How to verify: session, path, announcement, table" tone="success">
+        <FlowSteps
+          steps={[
+            { title: "Is every session Established?", body: <>Cisco <Mono>show ip bgp summary</Mono> · Junos <Mono>show bgp summary</Mono>; for one peer, <Mono>show ip bgp neighbors 198.51.100.2</Mono> · <Mono>show bgp neighbor 198.51.100.2</Mono> (Last Error).</>, tone: "violet" },
+            { title: "Which paths, and why did the best win?", body: <>Cisco <Mono>show ip bgp 203.0.113.0</Mono> · Junos <Mono>show route 203.0.113.0/24 detail</Mono> (Inactive reason).</>, tone: "warning" },
+            { title: "What do we announce, and how does the internet see us?", body: <>Cisco <Mono>show ip bgp neighbors 192.0.2.2 advertised-routes</Mono> · Junos <Mono>show route advertising-protocol bgp 198.51.100.2</Mono>; the looking glass on R5: <Mono>show ip bgp 192.0.2.128</Mono>.</>, tone: "cyan" },
+            { title: "What does the routing table use?", body: <>Cisco <Mono>show ip route 203.0.113.10</Mono> · Junos <Mono>show route 203.0.113.10</Mono>.</>, tone: "success" },
+          ]}
+        />
+        <p>Then prove it with traffic: traceroutes from inside (the way out) and from SRV (the way back), then cut ISP-A and trace again. Cisco logs session changes and refusals (<Mono>show logging</Mono>).</p>
+      </GuideSection>
+
+      <GuideSection id="bd-normal" eyebrow="Operations" title="What healthy BGP looks like on the routers" tone="success">
+        <NormalState />
+      </GuideSection>
+
+      <GuideSection id="bd-signatures" eyebrow="Troubleshooting" title="Failure signatures: sessions, paths and policies" tone="danger">
+        <p>BGP faults reach you as &quot;the wrong ISP is used&quot;, &quot;the internet comes back the wrong way&quot;, &quot;failover didn&apos;t work&quot;, or a call from an ISP:</p>
+        <FailureSignatures
+          items={[
+            { tag: "remote-as", title: "A wrong remote AS", tone: "danger", points: ["Summary: Active, never a prefix count", "Log: %BGP-3-NOTIFICATION … peer in wrong AS · Junos: Bad Peer AS", "Often invisible until the other ISP fails"] },
+            { tag: "next-hop", title: "A next hop that can't be reached", tone: "warning", points: ["Session Established, path received", "show ip bgp: (inaccessible) · Junos: Next hop type Unusable", "Fix: next-hop-self toward the iBGP peer"] },
+            { tag: "policy", title: "A policy missing or on the wrong neighbor", tone: "violet", points: ["Everything up, traffic uses the wrong ISP", "LOCAL_PREF equal (out) or prepend toward the primary (in)", "Compare the paths' attributes, not the sessions"] },
+            { tag: "leak", title: "A route leak", tone: "ip", points: ["advertised-routes to an ISP lists a prefix that isn't ours", "AS_PATH shows the other ISP's AS behind ours", "Fix: prefix-list OWN out / export OWN-ONLY"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="bd-stuck" eyebrow="Troubleshooting" title="Symptom → usual cause" tone="danger">
         <FieldTable
-          title="Symptom → usual cause"
+          title="Where it breaks"
           accent="danger"
           columns={["Symptom", "Usual cause"]}
           rows={[
             ["Stuck in Active/Connect", "No TCP: wrong neighbor IP, no route to it, ACL/firewall on 179, wrong update-source"],
-            ["NOTIFICATION after OPEN", "Wrong remote AS, bad BGP ID, unsupported capability or auth mismatch"],
+            ["NOTIFICATION after OPEN", "Wrong remote AS, bad BGP ID, unsupported capability or authentication mismatch"],
             ["Established, 0 prefixes", "Inbound filter, nothing advertised, or wrong address family"],
-            ["Route in BGP table but not in RIB", "NEXT_HOP unreachable, or a better route from another protocol"],
-            ["Unexpected exit path", "LOCAL_PREF/weight policy, or tie-breakers you didn't expect"],
+            ["Path in BGP but not in the routing table", "NEXT_HOP unreachable, or a better route from another protocol"],
+            ["Unexpected exit path", "LOCAL_PREF or weight policy, or tie-breakers you didn't expect"],
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="bd-verify" eyebrow="Operations" title="Verification commands" tone="cyan">
-        <FieldTable
-          title="Common checks (Cisco IOS · Junos)"
-          accent="cyan"
-          columns={["Question", "Cisco IOS", "Junos"]}
-          rows={[
-            ["Session states and prefix counts", <Mono key="1">show ip bgp summary</Mono>, <Mono key="2">show bgp summary</Mono>],
-            ["All paths for a prefix, with the best marked", <Mono key="3">show ip bgp 203.0.113.0</Mono>, <Mono key="4">show route 203.0.113.0/24 detail</Mono>],
-            ["What a neighbor sent me", <Mono key="5">show ip bgp neighbors X received-routes</Mono>, <Mono key="6">show route receive-protocol bgp X</Mono>],
-            ["What I send a neighbor", <Mono key="7">show ip bgp neighbors X advertised-routes</Mono>, <Mono key="8">show route advertising-protocol bgp X</Mono>],
+      <GuideSection id="bd-workflow" eyebrow="Troubleshooting" title="Investigation workflow: walk the chain" tone="danger">
+        <TroubleshootingFlow
+          steps={[
+            { question: "No reply at all, or the wrong ISP, leaving or coming back?", look: "ping for reachability; traceroute from inside (the way out) and from the server side (the way back)." },
+            { question: "Is every session Established?", look: "show ip bgp summary / show bgp summary. Active means not up: check remote-as against the neighbor's real AS (show logging: peer in wrong AS), shutdown, the link." },
+            { question: "Does the router have the paths, and are they usable?", look: "show ip bgp <prefix> / show route <prefix> detail: (inaccessible) or Unusable next hop means next-hop-self is missing on the iBGP peer." },
+            { question: "Which attribute decided?", look: "Compare LOCAL_PREF first, then AS_PATH length, then eBGP/iBGP. Junos names it: Inactive reason." },
+            { question: "What do we announce, and to whom?", look: "advertised-routes / advertising-protocol: only our prefixes to each ISP, prepending only toward the backup." },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="bd-not" eyebrow="Clear the myths" title="What BGP does NOT do" tone="danger">
+      <GuideSection id="bd-faults" eyebrow="Troubleshooting" title="Five faults, from evidence to proof" tone="danger">
+        <FaultWalks />
+      </GuideSection>
+
+      <GuideSection id="bd-prove" eyebrow="Troubleshooting" title="Prove the repair with fresh traffic" tone="success">
         <ChecklistCard
-          tone="danger"
-          mark="✕"
-          title="Not BGP's job"
-          items={["It doesn't discover neighbors automatically.", "It doesn't compute shortest paths by link cost. It's policy-first.", "It doesn't forward packets itself.", "It doesn't replace the IGP. It relies on it to reach next hops inside the AS.", "It doesn't guarantee how other ASes route toward you."]}
+          tone="success"
+          title="The proof, every time"
+          mark="✓"
+          items={[
+            "Repeat the exact test that failed, and see it succeed",
+            "Every session on a working link is Established",
+            "The best path on R1 and R2 is the designed one (via ISP-A), for the designed reason (LOCAL_PREF)",
+            "We announce only our two prefixes, prepended only toward ISP-B; the looking glass prefers ISP-A",
+            "Traceroutes out and back go through ISP-A; cut ISP-A and the traffic fails over to ISP-B",
+          ]}
         />
+        <p>The lab&apos;s tickets check exactly this: a ticket only closes when the routers&apos; state is right <em>and</em> a fresh run of the user&apos;s test succeeds.</p>
       </GuideSection>
 
-      <GuideSection id="bd-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
-        <Glossary
-          items={[
-            { term: "NLRI", def: "Network Layer Reachability Information: the prefixes in an UPDATE." },
-            { term: "AS_PATH", def: "Ordered list of ASes a route has crossed." },
-            { term: "LOCAL_PREF", def: "AS-internal preference for choosing an exit; higher wins." },
-            { term: "MED", def: "Multi-Exit Discriminator: a hint to one neighbor AS; lower wins." },
-            { term: "next-hop-self", def: "Rewrite NEXT_HOP to yourself when advertising to iBGP peers." },
-            { term: "Hold Time", def: "How long without KEEPALIVE/UPDATE before the session is declared dead." },
-            { term: "Prepending", def: "Repeating an AS number to make a path look longer." },
-            { term: "RIB / FIB", def: "Routing table / forwarding table." },
+      <GuideSection id="bd-scale" eyebrow="Beyond this lesson" title="Larger BGP networks" tone="violet">
+        <FlowSteps
+          steps={[
+            { title: "Route reflectors", body: "iBGP split horizon needs a full mesh between all BGP routers of an AS. A route reflector re-advertises iBGP routes to its clients instead (the Route Reflector lesson).", tone: "violet" },
+            { title: "Communities", body: "Tags attached to routes, such as \"do not announce to peers\" or \"lower my LOCAL_PREF\", that an ISP's policy acts on.", tone: "cyan" },
+            { title: "RPKI origin validation", body: "Signed records saying which AS may originate a prefix; routers can reject announcements from the wrong origin.", tone: "success" },
+            { title: "MP-BGP", body: "The same protocol carrying other address families: IPv6, VPN routes, EVPN.", tone: "warning" },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="bd-model" eyebrow="In one breath" title="Mental model" tone="violet">
-        <div className="rounded-2xl border border-pv-bgp/30 bg-gradient-to-br from-pv-bgp/10 to-pv-violet/5 p-5 text-sm leading-relaxed text-pv-text">
-          BGP is <b>diplomacy between networks</b>: configured peers talk over TCP, trade offers (UPDATEs) stamped with the route&apos;s travel history (AS_PATH), and each network picks one favorite per destination by walking an ordered list of preferences that its <b>own policy</b> can tilt. It chooses routes but never forwards packets.
-        </div>
+      <GuideSection id="bd-myths" eyebrow="Master it" title="Common misconceptions" tone="warning">
+        <Misconceptions
+          items={[
+            { myth: "Active means the session is working.", correction: "Active means BGP is trying to connect. Only Established exchanges routes." },
+            { myth: "BGP discovers its neighbors.", correction: "Every neighbor is configured, with the AS it must have. A wrong remote-as keeps the session down." },
+            { myth: "BGP picks the shortest path by link cost.", correction: "It is policy-first: LOCAL_PREF, then AS_PATH length, then more tie-breakers. No link costs are involved." },
+            { myth: "LOCAL_PREF tells the internet how to reach us.", correction: "LOCAL_PREF never leaves our AS; it chooses our exit. The way in is influenced with prepending, MED or communities." },
+            { myth: "If a router has the path, it can use it.", correction: "Only if its NEXT_HOP is reachable. Over iBGP that usually needs next-hop-self." },
+            { myth: "BGP forwards packets.", correction: "BGP chooses paths. The routing table and forwarding table move packets." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="bd-quiz" eyebrow="Master it" title="Knowledge check" tone="success">
+        <KnowledgeQuiz questions={QUIZ} />
+      </GuideSection>
+
+      <GuideSection id="bd-explain" eyebrow="Master it" title="Can you explain it?" tone="success">
+        <ExplainIt
+          items={[
+            { q: "Why does R2 use ISP-A although it has its own eBGP path to ISP-B?", a: "R1 sets LOCAL_PREF 200 on ISP-A's path and shares it over iBGP. LOCAL_PREF is compared first, and 200 beats R2's own path at 100, so the eBGP-over-iBGP rule is never reached." },
+            { q: "Why can a wrong remote-as on R2 stay unnoticed for weeks?", a: "Traffic leaves through ISP-A anyway, so the down backup session changes nothing visible. It only shows when ISP-A fails and there is no path left." },
+            { q: "Why does prepending on R1 instead of R2 bring traffic in the wrong way?", a: "Prepending makes the path through the ISP it is applied to look longer. Applied toward ISP-A, the primary looks worse, and the internet comes back through ISP-B." },
+            { q: "Why is an outbound filter needed on an enterprise with two ISPs?", a: "Without it, each router announces its best paths, including routes learned from the other ISP, to its ISP. That offers transit between two providers through the office: a route leak." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="bd-practice" eyebrow="Practice" title="Practice in the BGP Lab" tone="cyan">
+        <ChecklistCard
+          tone="cyan"
+          title="In the lab you will"
+          mark="→"
+          items={[
+            "Read an UPDATE and follow its AS_PATH",
+            "Make ISP-B the primary without cutting anything, and bring traffic in through ISP-B",
+            "Lose ISP-A without losing the internet",
+            "Cause and stop a route leak, and break a session on purpose and read why",
+            "Solve five tickets from evidence, on Cisco IOS or Junos, and prove each repair",
+          ]}
+        />
+        <PresentationBridge>See OPENs, UPDATEs growing their AS_PATH, LOCAL_PREF picking the exit and prepending steering the way back in the BGP presentation.</PresentationBridge>
+        <LabBridge />
       </GuideSection>
     </>
   );

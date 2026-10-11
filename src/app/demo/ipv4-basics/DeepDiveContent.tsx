@@ -9,8 +9,9 @@ import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShel
 import { executeCli } from "@/lib/cli/parser";
 import type { CliVendor } from "@/lib/cli/types";
 import { INITIAL_TTL, V4_FAULT_PREFIX, V4_IP, V4_MAC, V4_PREFIX, blockSize, hostRange, maskOf, networkOf } from "@/lib/sim-engine/scenarios/ipv4Basics";
-import { V4_HOSTS, createV4Net, hex4, v4Apply, v4IfName, v4MacOwner, type V4Frame, type V4NetState } from "@/lib/sim-engine/scenarios/ipv4Net";
-import { v4R1Sets, type V4CliApi } from "./ipv4-lab/v4Cli";
+import { V4_HOSTS, createV4Net, hex4, v4Apply, v4IfName, v4MacOwner, v4RunAll, type V4Frame, type V4H, type V4NetState } from "@/lib/sim-engine/scenarios/ipv4Net";
+import { FailureWalk } from "@/components/lesson/GuideCli";
+import { v4HostSet, v4R1Sets, type V4CliApi } from "./ipv4-lab/v4Cli";
 
 /**
  * IPv4 DEEP DIVE — the complete IPv4 Basics lesson, taught on THIS network: HOST-A 192.168.10.10/26 and the lab-only
@@ -19,7 +20,7 @@ import { v4R1Sets, type V4CliApi } from "./ipv4-lab/v4Cli";
  * Later lessons' topics (subnet design, route selection, ICMP, NAT, IPv6…) stay in "Beyond this lesson".
  */
 
-const G = { foundation: "Foundation", decision: "The forwarding decision", header: "The IPv4 header", forward: "End to end", ops: "Operations", master: "Master it", beyond: "Beyond this lesson" };
+const G = { foundation: "Foundation", decision: "The forwarding decision", header: "The IPv4 header", forward: "End to end", ops: "Operations", trouble: "Troubleshooting", beyond: "Beyond this lesson", master: "Master it" };
 
 export const V4_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "v4d-why", label: "Why IPv4 exists", group: G.foundation },
@@ -28,6 +29,7 @@ export const V4_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "v4d-bits", label: "Network and host bits", group: G.foundation },
   { id: "v4d-prefix", label: "Prefix length and mask", group: G.foundation },
   { id: "v4d-cidr", label: "CIDR notation", group: G.foundation },
+  { id: "v4d-special", label: "Special addresses", group: G.foundation },
   { id: "v4d-decision", label: "Local or remote?", group: G.decision },
   { id: "v4d-and", label: "The AND comparison", group: G.decision },
   { id: "v4d-local", label: "Local delivery", group: G.decision },
@@ -44,20 +46,22 @@ export const V4_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "v4d-changes", label: "What a router changes", group: G.header },
   { id: "v4d-keeps", label: "What a router keeps", group: G.header },
   { id: "v4d-connected", label: "Connected networks", group: G.forward },
+  { id: "v4d-hosttable", label: "The host's routing table", group: G.forward },
   { id: "v4d-hosttree", label: "The host's decision tree", group: G.forward },
   { id: "v4d-router", label: "R1's connected lookup", group: G.forward },
   { id: "v4d-walk-local", label: "Walkthrough: same subnet", group: G.forward },
   { id: "v4d-walk-remote", label: "Walkthrough: remote subnet", group: G.forward },
   { id: "v4d-diff", label: "Before and after R1", group: G.forward },
   { id: "v4d-verify", label: "Operational verification", group: G.ops },
-  { id: "v4d-workflow", label: "Troubleshooting workflow", group: G.ops },
-  { id: "v4d-incident", label: "The wrong-mask incident", group: G.ops },
-  { id: "v4d-signatures", label: "Failure signatures", group: G.ops },
+  { id: "v4d-signatures", label: "Failure signatures", group: G.trouble },
+  { id: "v4d-workflow", label: "Troubleshooting workflow", group: G.trouble },
+  { id: "v4d-faults", label: "The four faults, step by step", group: G.trouble },
+  { id: "v4d-prove", label: "Proving a repair", group: G.trouble },
+  { id: "v4d-beyond", label: "Subnet design, routing, ICMP, NAT, IPv6…", group: G.beyond },
   { id: "v4d-myths", label: "Common misconceptions", group: G.master },
   { id: "v4d-quiz", label: "Knowledge check", group: G.master },
   { id: "v4d-explain", label: "Can you explain it?", group: G.master },
   { id: "v4d-practice", label: "Practice in the IPv4 Lab", group: G.master },
-  { id: "v4d-beyond", label: "Subnet design, routing, ICMP, NAT, IPv6…", group: G.beyond },
 ];
 
 // ------------------------------------------------------------------ one source of truth: the IPv4 Lab model
@@ -121,6 +125,20 @@ function cli(state: V4NetState, vendor: CliVendor, command: string) {
   const r = executeCli(set, command);
   return { prompt: set.prompt, command, output: r.kind === "ok" ? r.output : "" };
 }
+// The lab's other tickets, each reproduced as reported (HOST-A pings HOST-B once).
+const ticketRun = (id: "gateway" | "return" | "r1down") => v4RunAll(createV4Net(), [{ type: "ticket", id }, { type: "ping", src: "hosta", dst: B, count: 1 }]);
+const F_GATEWAY = ticketRun("gateway");
+const F_RETURN = ticketRun("return");
+const F_DOWN = ticketRun("r1down");
+/** A host's own terminal (Linux or Windows) against a lab state; a ping typed there runs on a copy of that state. */
+function hostCli(state: V4NetState, h: V4H, command: string) {
+  const api: V4CliApi = { view: state, act: (a) => v4Apply(state, a), cisco: { kind: "exec" }, setCisco: () => undefined, junosEdit: false, setJunosEdit: () => undefined, cand: state.r1, setCand: () => undefined, hist: [{ r1: state.r1, at: 0, by: "root" }], commit: () => undefined };
+  const set = v4HostSet(api, h);
+  const r = executeCli(set, command);
+  return { prompt: set.prompt, command, output: r.kind === "ok" ? r.output : "" };
+}
+const PING_LINES = /PING|bytes from|From|transmitted/;
+const only = (r: { prompt: string; command: string; output: string }, match: RegExp) => ({ ...r, output: r.output.split("\n").filter((l) => match.test(l)).join("\n") });
 function CliPanel({ prompt, command, output, caption }: { prompt: string; command: string; output: string; caption?: string }) {
   return (
     <figure className="min-w-0">
@@ -291,11 +309,12 @@ function TtlDiagram() {
 const QUIZ: KnowledgeQuestion[] = [
   { id: "q1", prompt: `HOST-A is ${A}/${V4_PREFIX}. Is ${C} local?`, options: [{ id: "a", label: "Yes — both AND to 192.168.10.0" }, { id: "b", label: "No — different last octet" }], correctId: "a", explanation: `${A} AND ${MASK} = ${networkOf(A, V4_PREFIX)}; ${C} AND ${MASK} = ${networkOf(C, V4_PREFIX)}.` },
   { id: "q2", prompt: `HOST-A sends to ${B}. Which address does it ARP for?`, options: [{ id: "a", label: GA }, { id: "b", label: B }, { id: "c", label: GB }], correctId: "a", explanation: "Remote destination → next hop is the default gateway; ARP resolves only the next hop." },
-  { id: "q3", prompt: `In HOST-A's frame to ${B}, what is the IPv4 destination?`, options: [{ id: "a", label: B }, { id: "b", label: GA }], correctId: "a", explanation: "The IPv4 header always carries the final destination; only the Ethernet destination is the gateway." },
+  { id: "q3", prompt: `HOST-A's pings to ${B} time out with no error, and HOST-B's capture shows every request arriving. Where do you look first?`, options: [{ id: "a", label: "HOST-B's own gateway and mask: the reply is HOST-B's decision" }, { id: "b", label: "HOST-A's mask" }, { id: "c", label: "R1's route to LAN B" }], correctId: "a", explanation: "The requests made it, so HOST-A's decision and R1's route are fine. A silent loss after delivery is the way back: HOST-B decides how to reach HOST-A with its own settings." },
   { id: "q4", prompt: "Which fields does R1 change when it forwards the packet?", options: [{ id: "a", label: "Both MACs, TTL and the header checksum" }, { id: "b", label: "The source IPv4 address" }, { id: "c", label: "Nothing" }], correctId: "a", explanation: "A new Ethernet header for the next link; TTL − 1; the checksum is recomputed because the header changed." },
   { id: "q5", prompt: `What TTL does HOST-B receive?`, options: [{ id: "a", label: String(INITIAL_TTL - 1) }, { id: "b", label: String(INITIAL_TTL) }, { id: "c", label: "It depends on the time taken" }], correctId: "a", explanation: "One router hop: 64 − 1. TTL counts hops, not seconds." },
   { id: "q6", prompt: `HOST-A's mask is wrongly /${V4_FAULT_PREFIX}. What does it do when sending to ${B}?`, options: [{ id: "a", label: `Decides LOCAL and ARPs for ${B} directly` }, { id: "b", label: "Sends to its gateway as usual" }, { id: "c", label: "Asks R1 for a route" }], correctId: "a", explanation: `Under /${V4_FAULT_PREFIX} both addresses AND to 192.168.10.0, so HOST-A never selects the gateway; its ARP for ${B} gets no answer.` },
   { id: "q7", prompt: "HOST-A's gateway is wrong but its mask is right. What changes compared with a wrong mask?", options: [{ id: "a", label: "It still decides REMOTE; only the next hop is unusable" }, { id: "b", label: "Nothing — same symptom, same cause" }], correctId: "a", explanation: "Wrong mask → wrong class (LOCAL). Wrong gateway → right class, wrong next hop." },
+  { id: "q8", prompt: `HOST-A's ping to ${B} returns "From ${GA} Destination Net Unreachable". What does that tell you?`, options: [{ id: "a", label: "HOST-A sent the packet correctly; R1 has no route for it" }, { id: "b", label: "HOST-A's mask is wrong" }, { id: "c", label: "HOST-B is switched off" }], correctId: "a", explanation: "The error comes from R1's address, so the packet reached R1. R1 refused it because no route in its table contains 192.168.10.70: here, its LAN B interface is down." },
 ];
 
 // ------------------------------------------------------------------ content
@@ -353,6 +372,22 @@ export function Ipv4DeepDiveContent() {
         <p>
           <Mono>{A}/{V4_PREFIX}</Mono> is CIDR notation: address plus prefix length. Old “class” rules tied network size to the first octet; they have not decided anything since CIDR. A <Mono>192.168.x.x</Mono> address is not automatically a /24 — here it is a /26.
         </p>
+      </GuideSection>
+
+      <GuideSection id="v4d-special" eyebrow="Foundation" title="Addresses with a special meaning" tone="violet">
+        <p>Not every IPv4 address can be given to a host. A few ranges have a fixed meaning everywhere, and you will meet them in every capture and every routing table:</p>
+        <FieldTable
+          title="Reserved addresses you should recognize"
+          columns={["Address or range", "Meaning", "Where you see it"]}
+          rows={[
+            [<Mono key="1">127.0.0.0/8</Mono>, "Loopback: the host itself, never on the wire", "ip addr shows 127.0.0.1 on lo"],
+            [<Mono key="2">10.0.0.0/8 · 172.16.0.0/12 · 192.168.0.0/16</Mono>, "Private (RFC 1918): reusable inside any organization, not routed on the internet", "This lesson's 192.168.10.x"],
+            [<Mono key="3">169.254.0.0/16</Mono>, "Link-local: a host gave itself an address because nobody (DHCP) gave it one", "A Windows PC that says it is connected but reaches nothing"],
+            [<Mono key="4">255.255.255.255</Mono>, "Limited broadcast: every host on this LAN, never forwarded by a router", "DHCP discovery (DHCP & DNS lesson)"],
+            [<Mono key="5">0.0.0.0</Mono>, "No address yet, or (as 0.0.0.0/0) every destination: the default route", "route print: 0.0.0.0 0.0.0.0 → the gateway"],
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Each subnet also reserves its first address (the network address) and its last (its broadcast address). Which those are for any prefix, and how to plan around them, is the Subnetting lesson.</p>
       </GuideSection>
 
       {/* ------------------------------------------------------------ The decision */}
@@ -419,7 +454,7 @@ export function Ipv4DeepDiveContent() {
         <p>ARP never decides local vs remote; it only resolves the MAC of the next hop IPv4 already chose. That is why HOST-A never ARPs for {B}: it is not on HOST-A&apos;s LAN, so no one there could answer.</p>
       </GuideSection>
 
-      {/* ------------------------------------------------------------ Header */}
+      {/* ------------------------------------------------------------ The header */}
       <GuideSection id="v4d-header" eyebrow="The header" title="IPv4 header anatomy" tone="ip">
         <DiagramFrame caption="20 bytes without options (IHL = 5).">
           <HeaderDiagram />
@@ -486,6 +521,17 @@ export function Ipv4DeepDiveContent() {
         </p>
       </GuideSection>
 
+      <GuideSection id="v4d-hosttable" eyebrow="End to end" title="The host's own routing table" tone="cyan">
+        <p>
+          The local-or-remote decision is not a separate mechanism: it is a lookup in the host&apos;s own routing table, which the operating system builds from the address, the mask and the gateway. A connected route for the host&apos;s own network (on-link: deliver directly) and a default route for everything else (through the gateway). The same lesson network, seen from a Linux and a Windows host:
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <CliPanel {...hostCli(LAB_ROUTED, "hosta", "ip route")} caption="HOST-A · Linux" />
+          <CliPanel {...hostCli(LAB_ROUTED, "hostc", "route print")} caption="HOST-C · Windows" />
+        </div>
+        <p>Change the mask and the connected route changes with it; remove the gateway and the default route disappears. That is why faults 1, 2 and 3 below each show up in this table, on the host concerned.</p>
+      </GuideSection>
+
       <GuideSection id="v4d-hosttree" eyebrow="End to end" title="The host's decision tree" tone="warning">
         <FlowSteps
           steps={[
@@ -541,7 +587,22 @@ export function Ipv4DeepDiveContent() {
 
       {/* ------------------------------------------------------------ Operations */}
       <GuideSection id="v4d-verify" eyebrow="Operations" title="Operational verification" tone="cyan">
-        <p>Hosts show their address, mask, gateway and ARP cache; R1 — the managed router — answers on its CLI. Outputs below are R1 after the remote walkthrough:</p>
+        <p>Every decision in this lesson leaves evidence on one device. Ask the host first, because the host makes the first decision, then ask R1:</p>
+        <FieldTable
+          title="Who to ask, and what it proves"
+          columns={["Question", "Linux host", "Windows host", "R1 Cisco / Junos"]}
+          rows={[
+            ["Address, mask, gateway", <Mono key="1">ip addr · ip route</Mono>, <Mono key="2">ipconfig</Mono>, <Mono key="3">show ip interface brief / show interfaces terse</Mono>],
+            ["Local or via which gateway?", <Mono key="4">ip route get &lt;ip&gt;</Mono>, <Mono key="5">route print</Mono>, <Mono key="6">show ip route / show route</Mono>],
+            ["Did the next hop answer?", <Mono key="7">ip neigh</Mono>, <Mono key="8">arp -a</Mono>, <Mono key="9">show ip arp / show arp</Mono>],
+          ]}
+        />
+        <p>HOST-A after its pings to HOST-C and HOST-B: HOST-B is reached through the gateway, and both next hops answered ARP:</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <CliPanel {...hostCli(LAB_ROUTED, "hosta", `ip route get ${B}`)} caption="HOST-A: the path to HOST-B" />
+          <CliPanel {...hostCli(LAB_ROUTED, "hosta", "ip neigh")} caption="HOST-A: its next hops" />
+        </div>
+        <p>R1, the managed router, answers on its CLI:</p>
         <div className="grid gap-3 sm:grid-cols-2">
           <CliPanel {...brief} caption="Cisco: interfaces and addresses" />
           <CliPanel {...arp} caption="Cisco: R1's ARP cache" />
@@ -552,44 +613,129 @@ export function Ipv4DeepDiveContent() {
         </div>
       </GuideSection>
 
-      <GuideSection id="v4d-workflow" eyebrow="Operations" title="Troubleshooting workflow" tone="danger">
-        <TroubleshootingFlow
-          steps={[
-            { question: "Symptom — which destinations fail, which work?", look: "HOST-A reaches HOST-C but not HOST-B." },
-            { question: "Observation — what did the host decide?", look: "Start from the forwarding decision, not from the router." },
-            { question: "Evidence — what did the host do next?", look: "Which address did it ARP for? Did the ARP complete? Did R1 receive an IPv4 packet? What is configured?" },
-            { question: "Hypothesis — one cause for all of it", look: "Route? Gateway? Mask? Destination down? Switch?" },
-            { question: "Test — prove it with the host's own arithmetic", look: "Repeat the AND with the configured mask." },
-            { question: "Repair and verify", look: "Fix the cause; prove it with traffic: decision, next hop, ARP target, R1, TTL, delivery." },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="v4d-incident" eyebrow="Operations" title="The wrong-mask incident" tone="danger">
-        <FieldTable
-          title={`HOST-A → HOST-B with HOST-A at /${V4_FAULT_PREFIX} (from the lab's model)`}
-          columns={["Evidence", "Value"]}
-          rows={[
-            ["Decision", `${wrong.srcIp} AND ${wrong.mask} = ${wrong.srcNet}; ${wrong.dst} AND ${wrong.mask} = ${wrong.dstNet} → ${wrong.local ? "LOCAL" : "REMOTE"}`],
-            ["Next hop", `${wrong.nextHop} — the destination itself`],
-            ["ARP", `who has ${runOf(LAB_INCIDENT)!.decisions[0]?.nextHop}? → ${LAB_INCIDENT.caches.hosta.some((e) => e.state === "failed") ? "no reply, INCOMPLETE" : "answered"}`],
-            ["IPv4 packets sent", LAB_INCIDENT.captures.some((c) => c.dev === "hosta" && c.dir === "out" && c.frame.type === "IPv4") ? "yes" : "none"],
-            ["R1", `connected 192.168.10.64/26 present; routed count unchanged (${LAB_INCIDENT.counters.forwarded})`],
-          ]}
-        />
-        <Callout tone="danger" title="Root cause">
-          HOST-A&apos;s mask makes {B} look local, so it never selects its gateway. HOST-B is on another LAN; R1 answers ARP only for its own addresses (no Proxy ARP), so the ARP never completes. Proxy ARP on R1 would make the traffic flow — and hide the misconfigured host. The fix is HOST-A&apos;s prefix: /{V4_PREFIX}.
-        </Callout>
-        <LabBridge label="Troubleshoot it in the IPv4 Lab">Reproduce the ticket, gather the evidence (including R1&apos;s CLI), prove the cause with the AND, repair and verify with traffic.</LabBridge>
-      </GuideSection>
-
-      <GuideSection id="v4d-signatures" eyebrow="Operations" title="Failure signatures" tone="danger">
+      {/* ------------------------------------------------------------ Troubleshooting */}
+      <GuideSection id="v4d-signatures" eyebrow="Troubleshooting" title="Failure signatures" tone="danger">
         <FailureSignatures
           items={[
             { tag: "A", title: "Host ARPs for a remote address", tone: "danger", points: ["Decision says LOCAL for an off-subnet destination", "ARP never completes; no IPv4 packet at the router", "→ wrong mask (too short)"] },
             { tag: "B", title: "Host ARPs for its gateway, no answer", tone: "warning", points: ["Decision is REMOTE (correct)", "Next hop never answers ARP", "→ wrong or unreachable default gateway"] },
-            { tag: "C", title: "Local destinations work, remote ones don't", tone: "warning", points: ["Check the decision for a remote destination first"] },
-            { tag: "D", title: "Packet reaches the router, goes no further", tone: "violet", points: ["The host side is fine", "→ the router's routes (Routing Fundamentals)"] },
+            { tag: "C", title: "Requests arrive, replies never come", tone: "warning", points: ["No error anywhere: the ping just times out", "The destination's capture shows the requests", "→ the destination's own mask or gateway (the way back)"] },
+            { tag: "D", title: "The router answers Net Unreachable", tone: "violet", points: ["The error comes from the router's address", "The router has no route containing the destination", "→ a router interface down or misaddressed"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="v4d-workflow" eyebrow="Troubleshooting" title="Troubleshooting workflow" tone="danger">
+        <p>An IPv4 packet moves because of a short chain of decisions. Walk them in order, and stop at the first one that came out wrong:</p>
+        <TroubleshootingFlow
+          steps={[
+            { question: "Which destinations fail, and which work?", look: "Local fine and remote broken points at the host's first decision; everything broken points lower (link, address)." },
+            { question: "Who reports the error?", look: "From the host's own address: it never sent the packet. From the router: the router refused it. No error at all: something was lost on the way, often the reply." },
+            { question: "What did the host decide?", look: <>Repeat the AND with the <em>configured</em> mask (<Mono>ip addr</Mono>) and read the path (<Mono>ip route get</Mono>).</> },
+            { question: "Did its next hop answer?", look: <><Mono>ip neigh</Mono> / <Mono>arp -a</Mono>: FAILED means nobody owns the address it asked for.</> },
+            { question: "Does the router have a connected route for the destination?", look: <><Mono>show ip route</Mono> / <Mono>show route</Mono>, and the interface status.</> },
+            { question: "Can the reply come back?", look: "The destination makes its own decision with its own mask and gateway. Check them as carefully as the sender's." },
+            { question: "Repair and verify", look: "Fix one cause, then prove it with traffic: the path, the ARP entry, the TTL of the reply." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="v4d-faults" eyebrow="Troubleshooting" title="The four faults of the lab, step by step" tone="danger">
+        <p>Each fault below is one of the IPv4 Lab&apos;s tickets, reproduced by the lab&apos;s own model; every output is what that device prints at that moment. All four report the same thing, &quot;HOST-A can&apos;t reach HOST-B&quot;, and each leaves different evidence.</p>
+        <FailureWalk
+          title={`1 · HOST-A's mask is /${V4_FAULT_PREFIX}`}
+          normal={<>With /{V4_PREFIX}, {B} ANDs to {right.dstNet}, not {right.srcNet}: remote, through the gateway.</>}
+          change={<>HOST-A&apos;s mask becomes {wrong.mask}. Now {wrong.srcIp} and {wrong.dst} both AND to {wrong.srcNet}: HOST-B looks local.</>}
+          evidence={
+            <>
+              <p>The error comes from HOST-A itself, and HOST-A asked LAN A for HOST-B. R1 never received an IPv4 packet (forwarded: {LAB_INCIDENT.counters.forwarded}):</p>
+              <CliPanel {...only(hostCli(LAB_INCIDENT, "hosta", `ping -c 1 ${B}`), PING_LINES)} />
+              <CliPanel {...hostCli(LAB_INCIDENT, "hosta", "ip neigh")} />
+            </>
+          }
+          next={<><Mono>ip route get {B}</Mono> without <Mono>via</Mono> means the host thinks the destination is on its own LAN. Compare its mask with the LAN&apos;s real one.</>}
+          fix={<>Set HOST-A&apos;s mask back to /{V4_PREFIX} ({MASK}).</>}
+          proof={<>The path shows <Mono>via {GA}</Mono> again, and HOST-B answers with ttl=63. (Proxy ARP on R1 would also make the ping work, and hide the broken host: R1 answers ARP only for its own addresses.)</>}
+        />
+        <FailureWalk
+          title="2 · HOST-A's gateway is an address nobody owns"
+          normal={<>HOST-A&apos;s default gateway is {GA}, R1&apos;s address on LAN A.</>}
+          change={<>The gateway is typed as <Mono>192.168.10.2</Mono>: inside LAN A, so it looks valid, but no device has it.</>}
+          evidence={
+            <>
+              <p>The decision is right (remote), the next hop is wrong. HOST-A asks for .2, nobody answers, and HOST-A reports the failure itself:</p>
+              <CliPanel {...only(hostCli(F_GATEWAY, "hosta", "ip route"), /default/)} />
+              <CliPanel {...hostCli(F_GATEWAY, "hosta", "ip neigh")} />
+            </>
+          }
+          next={<>Same symptom as fault 1, different evidence: a <Mono>via</Mono> in the path (the decision was right), and a FAILED entry for the gateway, not for the destination.</>}
+          fix={<>Set HOST-A&apos;s default gateway to {GA}.</>}
+          proof={<><Mono>ip neigh</Mono> shows {GA} REACHABLE with R1&apos;s MAC, and HOST-B answers with ttl=63.</>}
+        />
+        <FailureWalk
+          tone="warning"
+          title="3 · HOST-B has no way back"
+          normal={<>HOST-B&apos;s default gateway is {GB}: its replies to LAN A go to R1.</>}
+          change={<>HOST-B loses its default gateway. It can still reach its own LAN, and nothing else.</>}
+          evidence={
+            <>
+              <p>No error at all: HOST-A&apos;s pings simply time out. The requests do arrive, and R1 resolved both hosts while carrying them. But HOST-B&apos;s routing table has no way to {A}:</p>
+              <CliPanel {...only(hostCli(F_RETURN, "hosta", `ping -c 2 ${B}`), PING_LINES)} />
+              <CliPanel {...hostCli(F_RETURN, "hostb", "ip route")} />
+            </>
+          }
+          next={<>A silent timeout, with the request seen at the destination, is a return-path problem. The reply is a separate decision, made by HOST-B with its own settings.</>}
+          fix={<>Give HOST-B its default gateway {GB} again.</>}
+          proof={<>HOST-A&apos;s next ping answers with ttl=63, and HOST-B&apos;s <Mono>ip route</Mono> shows <Mono>default via {GB}</Mono>.</>}
+        />
+        <FailureWalk
+          title="4 · R1's LAN B interface is down"
+          normal={<>Both R1 interfaces are up, so both LANs are connected routes.</>}
+          change={<>R1&apos;s ge-0/0/1 (Gi0/1) is shut down. Its connected route to 192.168.10.64/26 disappears with it.</>}
+          evidence={
+            <>
+              <p>HOST-A and HOST-C both get an error, and this time it comes from R1&apos;s address: R1 received the packet and has no route for it:</p>
+              <CliPanel {...only(hostCli(F_DOWN, "hosta", `ping -c 1 ${B}`), PING_LINES)} />
+              <CliPanel {...cli(F_DOWN, "cisco", "show ip interface brief")} />
+              <CliPanel {...only(cli(F_DOWN, "cisco", "show ip route"), /^[CL] /)} />
+            </>
+          }
+          next={<>Destination Net Unreachable from the router: look at the router&apos;s table. <Mono>administratively down</Mono> (Cisco) or Admin <Mono>down</Mono> (Junos) means a configuration change, not a cable.</>}
+          fix={<>Cisco <Mono>interface GigabitEthernet0/1</Mono>, <Mono>no shutdown</Mono> · Junos <Mono>delete interfaces ge-0/0/1 disable</Mono>, <Mono>commit</Mono>.</>}
+          proof={<><Mono>show ip route</Mono> lists <Mono>C 192.168.10.64/26</Mono> again, and HOST-A&apos;s ping answers with ttl=63.</>}
+        />
+        <LabBridge label="Troubleshoot them in the IPv4 Lab">The four tickets, reported as users report them. Reproduce, gather this evidence, repair, and prove it with traffic.</LabBridge>
+      </GuideSection>
+
+      <GuideSection id="v4d-prove" eyebrow="Troubleshooting" title="Proving an IPv4 repair" tone="success">
+        <p>A setting that looks right proves nothing until a fresh packet follows the path it should. Four checks, in the order the packet meets them:</p>
+        <ChecklistCard
+          tone="success"
+          title="The proof"
+          mark="✓"
+          items={[
+            "The sender's path is right: ip route get shows via the gateway for a remote host, no via for a local one",
+            "The next hop answered: a REACHABLE (complete) entry with the right MAC",
+            "The reply arrives with the expected TTL: 63 from a Linux host one router away, 128 from Windows on the same LAN",
+            "The other direction works too: a ping from the destination back to the sender",
+          ]}
+        />
+      </GuideSection>
+
+      {/* ------------------------------------------------------------ Beyond */}
+      <GuideSection id="v4d-beyond" eyebrow="Beyond this lesson" title="Not covered here — on purpose" tone="violet">
+        <FieldTable
+          title="Later lessons and topics"
+          columns={["Topic", "Where / in short"]}
+          rows={[
+            ["Subnet design (VLSM)", "Subnetting Design Lab: sizing and placing many networks."],
+            ["Route selection, static and default routes", "Routing Fundamentals: longest-prefix match across several routes."],
+            ["Ping, traceroute, TTL-expired reports", "ICMP & Network Diagnostics."],
+            ["Fragmentation", "Identification/Flags/Offset exist; this lesson never fragments (DF set)."],
+            ["NAT", "Rewrites addresses — the one case where a router changes them."],
+            ["Proxy ARP", "A router answering ARP for others; a workaround, not a fix for wrong masks."],
+            ["/31, /32, aggregation", "Special prefixes and route summarisation — later lessons."],
+            ["IPv6", "128-bit addresses; neighbor discovery instead of ARP."],
           ]}
         />
       </GuideSection>
@@ -622,32 +768,16 @@ export function Ipv4DeepDiveContent() {
           items={[
             { q: `Why does HOST-A ARP for ${GA} when it sends to ${B}?`, a: `Its own /${V4_PREFIX} makes ${B} remote, so the next hop is the default gateway ${GA}; ARP resolves only the next hop's MAC.` },
             { q: "What does R1 change, and why?", a: "Both MACs (a new frame for the next link), TTL − 1 (hop limit) and the header checksum (the header changed). The IPv4 addresses stay, because the destination is still HOST-B." },
+            { q: "Why does one failure report its error from HOST-A's own address, and another from 192.168.10.1?", a: "The address in the error is the device that gave up. From HOST-A: it never sent the packet (it couldn't resolve its next hop). From R1: the packet arrived at R1, and R1 had no route for it." },
+            { q: "How can a ping fail even though every request reaches HOST-B?", a: "The reply is a new packet, sent by HOST-B after its own local-or-remote decision. If HOST-B has no gateway (or a wrong mask), the reply has nowhere to go, and HOST-A just times out." },
             { q: "Why does a wrong mask break remote traffic but not local traffic?", a: `A too-short mask makes remote addresses look local, so the host ARPs for them directly and never uses its gateway. Truly local destinations like ${C} are local under both masks.` },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="v4d-practice" eyebrow="Practice" title="Practice in the IPv4 Lab" tone="cyan">
-        <ChecklistCard tone="cyan" title="In the lab you will" mark="→" items={["Make HOST-A's local/remote decision for HOST-C and HOST-B", "Watch live ARP resolve the destination (local) or the gateway (remote)", "Compare the packet before and after R1, field by field", "Check R1's routes and ARP cache on Cisco and Junos", "Troubleshoot the wrong-mask incident and verify the fix", "In free play: change HOST-A's prefix, try a wrong gateway"]} />
-        <LabBridge label="Open the IPv4 Lab">Same network plus a lab-only HOST-C. Nothing you do there changes your lesson progress.</LabBridge>
-      </GuideSection>
-
-      {/* ------------------------------------------------------------ Beyond */}
-      <GuideSection id="v4d-beyond" eyebrow="Beyond this lesson" title="Not covered here — on purpose" tone="violet">
-        <FieldTable
-          title="Later lessons and topics"
-          columns={["Topic", "Where / in short"]}
-          rows={[
-            ["Subnet design (VLSM)", "Subnetting Design Lab: sizing and placing many networks."],
-            ["Route selection, static and default routes", "Routing Fundamentals: longest-prefix match across several routes."],
-            ["Ping, traceroute, TTL-expired reports", "ICMP & Network Diagnostics."],
-            ["Fragmentation", "Identification/Flags/Offset exist; this lesson never fragments (DF set)."],
-            ["NAT", "Rewrites addresses — the one case where a router changes them."],
-            ["Proxy ARP", "A router answering ARP for others; a workaround, not a fix for wrong masks."],
-            ["/31, /32, aggregation", "Special prefixes and route summarisation — later lessons."],
-            ["IPv6", "128-bit addresses; neighbor discovery instead of ARP."],
-          ]}
-        />
+      <GuideSection id="v4d-practice" eyebrow="Master it" title="Practice in the IPv4 Lab" tone="cyan">
+        <ChecklistCard tone="cyan" title="In the lab you will" mark="→" items={["Make HOST-A's local/remote decision for HOST-C and HOST-B", "Watch live ARP resolve the destination (local) or the gateway (remote)", "Compare the packet before and after R1, field by field", "Check R1's routes and ARP cache on Cisco and Junos", "Take the four tickets of this page and verify each fix with traffic", "In free play: change HOST-A's prefix, try a wrong gateway"]} />
+        <LabBridge label="Open the IPv4 Lab">Same network, your own copy. Nothing you do there changes your lesson progress.</LabBridge>
       </GuideSection>
     </div>
   );

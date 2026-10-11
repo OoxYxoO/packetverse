@@ -1,30 +1,56 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, FailureSignatures, Glossary, GuideSection, Misconceptions, Mono, ProtocolStory, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, FieldTable, FlowSteps, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { PresentationBridge } from "@/components/presentation/LessonPresentation";
 import { DTable } from "@/components/lesson/FundamentalsGuideSvg";
 import { PracticeBridge } from "@/components/lesson/GuideInteractive";
 import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import type { CliVendor } from "@/lib/cli/types";
 import { ipToNum, numToIp } from "@/lib/sim-engine/scenarios/fundamentalsPackets";
-import { CORRECT_PLAN, PARENT, SD_ADDR, SEGMENTS, blockSize, dA, dB, dC, dT, describe, freeRanges, maskOf, prefixFor } from "@/lib/sim-engine/scenarios/subnettingDesign";
+import { CORRECT_PLAN, PARENT, SEGMENTS, blockSize, dA, dB, dC, dT, describe, freeRanges, maskOf, prefixFor } from "@/lib/sim-engine/scenarios/subnettingDesign";
+import { createSsState, ssApply, ssRun, type SsAction, type SsState } from "@/lib/sim-engine/scenarios/subnetStudio";
+import { ssHostSet, ssR1Sets, type SsCiscoMode, type SsCliApi } from "./subnetting-lab/ssCli";
 
+/**
+ * SUBNETTING LESSON GUIDE — the lesson's story on its own network (10.44.0.0/24 for LAN-A, LAN-B, LAN-C and the R1–R2
+ * transit link): sizing, boundaries, FLSM vs VLSM, the plan, free space, applying it, then the overlap incident.
+ * Every device output comes from the Subnet Explorer's Engineer model (subnetStudio.ts) and its terminals.
+ */
 export const SD_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "sd-mission", label: "The mission" },
-  { id: "sd-story", label: "The whole story" },
-  { id: "sd-process", label: "The design process" },
-  { id: "sd-requirements", label: "Requirements" },
-  { id: "sd-powers", label: "Powers of two" },
-  { id: "sd-boundaries", label: "Block boundaries" },
-  { id: "sd-flsm", label: "FLSM vs VLSM" },
-  { id: "sd-map", label: "The address map" },
+  { id: "sd-mission", label: "What this lesson teaches" },
+  { id: "sd-network", label: "The network of this lesson" },
+  { id: "sd-ideas", label: "Three ideas you need" },
+  { id: "sd-walk", label: "What you will watch" },
+  { id: "sd-requirements", label: "From host counts to blocks" },
+  { id: "sd-powers", label: "Host bits and powers of two" },
+  { id: "sd-boundaries", label: "Where a block may start" },
+  { id: "sd-flsm", label: "FLSM or VLSM" },
+  { id: "sd-map", label: "Largest first: the plan" },
   { id: "sd-free", label: "Free space" },
-  { id: "sd-overlap", label: "Misalignment & overlap" },
-  { id: "sd-verify", label: "Verification" },
-  { id: "sd-lab", label: "Subnet a real network" },
-  { id: "sd-breaks", label: "When it breaks" },
+  { id: "sd-apply", label: "From plan to devices" },
+  { id: "sd-verify", label: "What working looks like" },
+  { id: "sd-incident", label: "The incident" },
+  { id: "sd-investigate", label: "Compare real blocks" },
+  { id: "sd-repair", label: "Repair and prove it" },
+  { id: "sd-other", label: "Other ways a plan breaks" },
   { id: "sd-model", label: "Mental model" },
   { id: "sd-glossary", label: "Glossary" },
   { id: "sd-recap", label: "Recap" },
+  { id: "sd-practice", label: "Practice it" },
 ];
+
+/** The Subnet Explorer's own terminals, run against an Engineer state (a ping typed there runs on a copy). */
+function lessonCli(s: SsState, dev: string, vendor: CliVendor, command: string, cisco: SsCiscoMode = { kind: "exec" }) {
+  const api: SsCliApi = { view: s, act: (a) => ssApply(s, a), cisco, setCisco: () => undefined, junosEdit: false, setJunosEdit: () => undefined, cand: s.net.r1, setCand: () => undefined, hist: [{ r1: s.net.r1, at: 0, by: "root" }], commit: () => undefined };
+  return runGuideCli(dev === "r1" ? ssR1Sets(api)[vendor] : ssHostSet(api, dev), command);
+}
+/** Write a plan row by row in the Engineer's Design board, then apply it to every device. */
+const plan = (rows: [string, number, string][]) => ssRun(createSsState("branch"), ...rows.flatMap(([id, prefix, network]): SsAction[] => [{ type: "size", id, prefix }, { type: "place", id, network }]), { type: "apply" });
+const GOOD = plan(CORRECT_PLAN.map((a) => [a.id, a.prefix!, a.network!]));
+/** The incident: LAN-C written at 10.44.0.160/27. */
+const BROKEN = plan(CORRECT_PLAN.map((a) => [a.id, a.prefix!, a.id === "LAN-C" ? "10.44.0.160" : a.network!]));
+const hostIp = (s: SsState, id: string) => s.net.hosts[id]?.ip ?? "";
+const HOST_A = hostIp(GOOD, "LAN-A");
 
 const oct = (ip: string) => ipToNum(ip) % 256;
 const SEG_COLOR: Record<string, string> = { "LAN-A": D.cyan, "LAN-B": D.violet, "LAN-C": D.success, TRANSIT: D.warning };
@@ -207,10 +233,10 @@ function VerifyDiagram() {
   return (
     <DiagramSvg h={240} label={`R1 connected prefixes: ge-0/0/1 ${dA.network}/${dA.prefix}, ge-0/0/2 ${dB.network}/${dB.prefix}, ge-0/0/3 ${dC.network}/${dC.prefix}, ge-0/0/0 ${dT.network}/${dT.prefix} to R2; ICMP Echo tests between all LANs and the transit link`}>
       <DNode x={320} y={120} label="R1" sub="connected only" accent={D.ip} w={110} />
-      <DNode x={80} y={40} label="HOST-A" sub={`${SD_ADDR["HOST-A"]}/${dA.prefix}`} accent={SEG_COLOR["LAN-A"]} w={130} />
-      <DNode x={80} y={200} label="HOST-B" sub={`${SD_ADDR["HOST-B"]}/${dB.prefix}`} accent={SEG_COLOR["LAN-B"]} w={130} />
-      <DNode x={560} y={200} label="HOST-C" sub={`${SD_ADDR["HOST-C"]}/${dC.prefix}`} accent={SEG_COLOR["LAN-C"]} w={130} />
-      <DNode x={560} y={40} label="R2" sub={`${SD_ADDR["R2:TRANSIT"]}/${dT.prefix}`} accent={SEG_COLOR.TRANSIT} w={130} />
+      <DNode x={80} y={40} label="HOST-A" sub={`${hostIp(GOOD, "LAN-A")}/${dA.prefix}`} accent={SEG_COLOR["LAN-A"]} w={130} />
+      <DNode x={80} y={200} label="HOST-B" sub={`${hostIp(GOOD, "LAN-B")}/${dB.prefix}`} accent={SEG_COLOR["LAN-B"]} w={130} />
+      <DNode x={560} y={200} label="HOST-C" sub={`${hostIp(GOOD, "LAN-C")}/${dC.prefix}`} accent={SEG_COLOR["LAN-C"]} w={130} />
+      <DNode x={560} y={40} label="R2" sub={`${hostIp(GOOD, "TRANSIT")}/${dT.prefix}`} accent={SEG_COLOR.TRANSIT} w={130} />
       <DLink x1={145} y1={50} x2={265} y2={108} color={SEG_COLOR["LAN-A"]} label={`.${oct(dA.network)}/${dA.prefix}`} />
       <DLink x1={145} y1={190} x2={265} y2={132} color={SEG_COLOR["LAN-B"]} label={`.${oct(dB.network)}/${dB.prefix}`} labelDy={16} />
       <DLink x1={375} y1={132} x2={495} y2={190} color={SEG_COLOR["LAN-C"]} label={`.${oct(dC.network)}/${dC.prefix}`} labelDy={16} />
@@ -220,280 +246,290 @@ function VerifyDiagram() {
   );
 }
 
-const PROCESS: { step: string; do: string; prove: string; mistake: string }[] = [
-  { step: "Start with requirements", do: `List every network and how many addresses it needs, router included: ${SEGMENTS.map((x) => `${x.id} ${x.hosts}`).join(", ")}.`, prove: "Every device, router port and growth margin is counted once.", mistake: "Forgetting the router (or counting it twice) shifts a network into the wrong size." },
-  { step: "Understand the parent", do: `${PARENT.network}/${PARENT.prefix}: ${blockSize(PARENT.prefix)} addresses, ${PARENT.network}–10.44.0.255.`, prove: "The blocks together never exceed the parent's size.", mistake: "Planning past the parent: addresses you don't own." },
-  { step: "Calculate the capacity", do: "For each network: the smallest h with 2^h − 2 ≥ needed.", prove: "100 → h = 7 (126 usable), because h = 6 gives only 62.", mistake: "Using 2^h instead of 2^h − 2: a /27 for 31 devices." },
-  { step: "Choose a prefix", do: "prefix = 32 − h: /25, /26, /27, /30.", prove: "The block (2^h) is the smallest power of two that holds needed + 2.", mistake: "Rounding up too far: still valid, but wasted space." },
-  { step: "Find valid boundaries", do: "A block of size B may only start at a multiple of B.", prove: "start mod B = 0 (all host bits 0).", mistake: "Starting a /26 at .160: devices compute .128 instead." },
-  { step: "Place the subnet", do: "Put it on the first free boundary (largest first is convenient).", prove: "Its real block (address AND mask) is exactly what you wrote.", mistake: "A start that looks like the next one but isn't a boundary." },
-  { step: "Calculate its range", do: "Network (host bits 0), first usable, last usable, broadcast (host bits 1).", prove: "broadcast = start + B − 1; the next subnet starts at broadcast + 1.", mistake: "Giving a device the network or broadcast address." },
-  { step: "Place the next subnet", do: "Same steps, the next requirement, the next free boundary of ITS size.", prove: "Smaller boundaries always line up with bigger ones.", mistake: "Reusing the previous block's step for a different prefix." },
-  { step: "Check for overlap", do: "Compare every pair of REAL blocks.", prove: "No address belongs to two networks. Touching (adjacent) is fine.", mistake: "Comparing written starts instead of real blocks hides overlap." },
-  { step: "Check remaining space", do: "List the free ranges and the aligned blocks they hold.", prove: "A future network fits only where an aligned block of its size is completely free.", mistake: "28 free is not a /27; even 56 scattered free addresses may hold no /27." },
-  { step: "Verify the whole plan", do: "Big enough · aligned · inside the parent · no overlap · ranges right.", prove: "Each rule passes for a reason you can state, row by row.", mistake: "Trusting a tidy-looking spreadsheet." },
-  { step: "Apply it", do: "The router interface gets a usable address of each block; hosts get the same mask and that router address as gateway.", prove: "The router's connected subnets are exactly the plan's blocks.", mistake: "A host mask or gateway that doesn't match the block." },
-  { step: "Test it", do: "Ping between every pair of networks, in both directions.", prove: "Every request AND every reply arrives.", mistake: "Stopping at: the router accepted the address." },
-];
-
-function DesignProcess() {
-  return (
-    <ol className="space-y-1.5">
-      {PROCESS.map((p, i) => (
-        <li key={p.step} className="rounded-lg border border-white/10 px-3 py-2">
-          <p className="text-xs font-semibold text-pv-text">
-            <span className="pv-mono mr-1.5 text-pv-cyan-soft">{String(i + 1).padStart(2, "0")}</span>
-            {p.step}
-          </p>
-          <div className="mt-0.5 grid gap-x-3 gap-y-0.5 text-[11.5px] leading-snug sm:grid-cols-3">
-            <p className="text-pv-text-muted">
-              <b className="text-pv-text">Do:</b> {p.do}
-            </p>
-            <p className="text-pv-text-muted">
-              <b className="text-pv-success">Prove it:</b> {p.prove}
-            </p>
-            <p className="text-pv-text-muted">
-              <b className="text-pv-danger">Mistake:</b> {p.mistake}
-            </p>
-          </div>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
 export function SubnettingLessonGuideContent() {
+  const connOk = lessonCli(GOOD, "r1", "cisco", "show ip route connected");
+  const pingOk = lessonCli(GOOD, "LAN-C", "cisco", `ping -c 2 ${HOST_A}`);
+  const refused = lessonCli(BROKEN, "r1", "cisco", `ip address ${numToIp(ipToNum("10.44.0.160") + 1)} ${maskOf(27)}`, { kind: "if", id: "LAN-C" });
+  const briefBad = lessonCli(BROKEN, "r1", "cisco", "show ip interface brief");
+  const pingBad = lessonCli(BROKEN, "LAN-C", "cisco", `ping -c 2 ${HOST_A}`);
+  const pingBtoC = lessonCli(BROKEN, "LAN-B", "cisco", `ping -n 2 ${hostIp(BROKEN, "LAN-C")}`);
+  const pingLines = /PING|Pinging|bytes from|Reply|From|transmitted/;
+  const c = describe(dC.network!, dC.prefix!);
   return (
     <div className="space-y-12">
-      <GuideSection id="sd-mission" eyebrow="This lesson" title="Design, don't just calculate" tone="violet">
+      <GuideSection id="sd-mission" eyebrow="This lesson" title="What this lesson teaches" tone="violet">
         <p>
-          Calculating one subnet is a skill; designing an address plan is the job. You start from what each network needs, turn it into block sizes, place the blocks on valid boundaries inside <Mono>{PARENT.network}/{PARENT.prefix}</Mono>, verify every rule, apply the plan to the devices and prove it with packets.
+          A branch office has one address block, <Mono>{PARENT.network}/{PARENT.prefix}</Mono>: 256 addresses. It needs four networks out of it: three LANs of different sizes behind the router R1, and a small link from R1 to R2. Every network needs its own range, and no two ranges may share an address.
         </p>
-        <Callout tone="violet" title="The four rules of a valid plan">
-          Big enough · on a block boundary · inside the parent · overlapping nothing.
-        </Callout>
-      </GuideSection>
-
-      <GuideSection id="sd-story" eyebrow="How it works" title="Designing the plan, decision by decision" tone="cyan">
-        <ProtocolStory
-          problem={<>One block, {PARENT.network}/{PARENT.prefix} (256 addresses), has to serve four networks of different sizes. Every network needs its own subnet, the subnets must not overlap, and each must start on a valid boundary, or devices will compute a different network than the one you planned.</>}
-          steps={[
-            { actor: "You", action: <>list the requirements: {SEGMENTS.map((s) => `${s.id} ${s.hosts}`).join(", ")} addresses (each count already includes the router interface).</>, tone: "cyan" },
-            { actor: "You", action: <>size each one: the smallest block with 2^h − 2 ≥ hosts. {SEGMENTS.map((s) => `${s.id} → /${prefixFor(s.hosts).prefix}`).join(", ")}.</>, why: "network and broadcast addresses are reserved in every ordinary subnet", tone: "violet" },
-            { actor: "You", action: "sort largest first and place each block at the first free address that is a multiple of its block size.", why: "big blocks have the fewest legal starting points; smaller ones fit into the gaps after them", tone: "warning" },
-            { actor: "Result", action: <>{CORRECT_PLAN.map((a) => `${a.id} ${a.network}/${a.prefix}`).join(" · ")}.</>, changes: "each subnet has a network address (host bits 0), a usable range and a broadcast address (host bits 1)", tone: "success" },
-            { actor: "Every device", action: "computes its own network with address AND mask. A block written at a misaligned start is silently a different block, and can overlap a neighbor.", why: "devices never read your spreadsheet, only their own address and mask", tone: "ip" },
-            { actor: "You", action: "verify: every block aligned, big enough, inside the parent, and no address in two subnets. Then configure the interfaces and hosts.", tone: "success" },
+        <p>
+          This lesson shows how to <strong>subnet</strong> that block: you size each network from its host count, place each block on a valid boundary, compare equal-size and right-size plans, read the free space, and apply the plan to the devices. Then one network is written on top of another, and you find out why it fails, fix it, and prove it.
+        </p>
+        <ChecklistCard
+          tone="violet"
+          title="By the end of this lesson you can"
+          mark="→"
+          items={[
+            "turn a host count into a prefix, a mask and a block size",
+            "say where a block of any size may start, and find its network and broadcast addresses",
+            "explain why equal-size subnets can't serve this office, and right-size them instead",
+            "describe the free space as the blocks that still fit",
+            "find and repair the overlapping plan of this lesson, and prove it with packets",
           ]}
-          outcome={<>A valid plan comes from three rules: right size (2^h − 2), right boundary (a multiple of the block size), and no overlap. The incident in this lesson shows the third: <Mono>10.44.0.160/27</Mono> is aligned and big enough, but it sits inside LAN-B. The Subnet Explorer lets you build, break and repair plans like this one.</>}
         />
-        <PresentationBridge>New to subnetting? The visual presentation rebuilds it from zero: bits, prefixes, masks, block sizes, FLSM and VLSM.</PresentationBridge>
       </GuideSection>
 
-      <GuideSection id="sd-process" eyebrow="The process" title="Designing an address plan, step by step" tone="violet">
-        <p>Follow it in order. Each step has a check that proves it, and a typical mistake that shows what goes wrong when it is skipped.</p>
-        <DesignProcess />
-        <Callout tone="cyan" title="Every step has a reason">
-          The prefix is the smallest that fits because 2^h − 2 must cover the hosts. The start is a multiple of the block because a block begins where its host bits are all 0. The plan is valid because no rule fails, not because it matches an answer key.
-        </Callout>
+      <GuideSection id="sd-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="One router, three LANs and a transit link, all addressed out of 10.44.0.0/24. R1 needs only its connected routes.">
+          <VerifyDiagram />
+        </DiagramFrame>
+        <FieldTable
+          title="What each network needs"
+          columns={["Network", "Addresses needed", "Who is on it", "R1 interface"]}
+          rows={[
+            ["LAN-A (staff)", String(SEGMENTS[0].hosts), "HOST-A and the staff PCs", "Gi0/1 · ge-0/0/1"],
+            ["LAN-B (engineering)", String(SEGMENTS[1].hosts), "HOST-B and the lab machines", "Gi0/2 · ge-0/0/2"],
+            ["LAN-C (servers)", String(SEGMENTS[2].hosts), "HOST-C and the servers", "Gi0/3 · ge-0/0/3"],
+            ["Transit to R2", String(SEGMENTS[3].hosts), "R1 and R2 only", "Gi0/0 · ge-0/0/0"],
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">
+          Each count already includes R1&apos;s own address on that network. When the plan is applied, R1 takes the first usable address of each block and the hosts follow (the Subnet Explorer numbers them from the block&apos;s start + 10). How a host decides local or remote with its mask was the IPv4 lesson; here we decide what the masks should be.
+        </p>
       </GuideSection>
 
-      <GuideSection id="sd-requirements" eyebrow="Requirements" title="From host counts to block sizes" tone="cyan">
+      <GuideSection id="sd-ideas" eyebrow="This lesson" title="Three ideas you need" tone="cyan">
+        <FlowSteps
+          steps={[
+            { title: "Blocks come in powers of two", body: "A prefix leaves h host bits, so its block holds 2^h addresses; an ordinary LAN can use 2^h − 2 of them. Pick the smallest block that fits.", tone: "violet" },
+            { title: "A block starts on a multiple of its size", body: "A /27 (32 addresses) starts at .0, .32, .64 … Any other start is just an address inside one of those blocks.", tone: "warning" },
+            { title: "Real blocks must never overlap", body: "Every device computes its block from its own address and mask. Two blocks sharing even one address put two networks on the same addresses.", tone: "danger" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="sd-walk" eyebrow="This lesson" title="What you will watch, step by step" tone="warning">
+        <FlowSteps
+          steps={[
+            { title: "Size", body: "100, 50, 25 and 2 addresses become /25, /26, /27 and /30.", tone: "violet" },
+            { title: "Align", body: "Each block may only start on a multiple of its own size.", tone: "warning" },
+            { title: "Choose a method", body: "Equal-size subnets can't serve this office; right-size ones can.", tone: "cyan" },
+            { title: "Pack", body: "Largest first, each block at its first free boundary.", tone: "success" },
+            { title: "Apply and test", body: "R1 and the hosts take addresses from the plan; pings prove it.", tone: "ip" },
+            { title: "The incident", body: "LAN-C is written on top of LAN-B. You find out why it fails and fix it.", tone: "danger" },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">The sections below walk through each step on this network, in the same order.</p>
+      </GuideSection>
+
+      <GuideSection id="sd-requirements" eyebrow="Size" title="From host counts to block sizes" tone="cyan">
+        <p>Start from what each network needs, never from a favorite prefix. Each network gets the smallest block that holds it:</p>
         <DiagramFrame caption="Each network gets the smallest block that fits. Some addresses are always left over, because blocks come in powers of two.">
           <RequirementsDiagram />
         </DiagramFrame>
-        <p>Each count already includes R1&apos;s own interface on that LAN — don&apos;t add one again. The transit link&apos;s 2 are exactly R1 and R2.</p>
       </GuideSection>
 
-      <GuideSection id="sd-powers" eyebrow="Arithmetic" title="Powers of two and host bits" tone="violet">
-        <DiagramFrame caption="Ordinary LAN subnets reserve the network (all zeros) and broadcast (all ones) addresses. /31 and /32 work differently — see the Deep Dive.">
+      <GuideSection id="sd-powers" eyebrow="Size" title="Host bits and powers of two" tone="violet">
+        <p>
+          The prefix says how many bits are the network; the rest are host bits. h host bits give 2^h addresses. In an ordinary LAN the first address (host bits all 0) names the network and the last (all 1) is its broadcast, so 2^h − 2 are usable:
+        </p>
+        <DiagramFrame caption="Each extra host bit doubles the block. /31 and /32 are special cases, covered in the Deep Dive.">
           <PowersDiagram />
         </DiagramFrame>
         <p>
-          host bits = 32 − prefix · addresses = 2^host bits · ordinary usable = 2^host bits − 2 · subnets from borrowed bits = 2^borrowed.
+          100 needs 7 host bits (126 usable): <Mono>/25 · {maskOf(25)}</Mono>. 50 needs 6 (62): <Mono>/26 · {maskOf(26)}</Mono>. 25 needs 5 (30): <Mono>/27 · {maskOf(27)}</Mono>. The link needs 2: <Mono>/30 · {maskOf(30)}</Mono>.
         </p>
-        <p>
-          100 hosts → 7 host bits → <Mono>/25 ({maskOf(25)})</Mono>. 50 → <Mono>/26 ({maskOf(26)})</Mono>. 25 → <Mono>/27 ({maskOf(27)})</Mono>. 2 → <Mono>/30 ({maskOf(30)})</Mono>, the conventional choice here (the Deep Dive covers /31).
-        </p>
-        <Callout tone="warning" title="Why −2, and when it doesn't apply" icon="!">
-          In an ordinary LAN subnet the first address (host bits all 0) names the network and the last (host bits all 1) is the broadcast, so devices get 2^h − 2. A /31 point-to-point link (RFC 3021) uses both of its 2 addresses, and a /32 is a single address: special cases, not ordinary LANs.
-        </Callout>
       </GuideSection>
 
-      <GuideSection id="sd-boundaries" eyebrow="Alignment" title="Where a block may start" tone="warning">
+      <GuideSection id="sd-boundaries" eyebrow="Align" title="Where a block may start" tone="warning">
+        <p>A block begins where its host bits are all zero, so its network address is always a multiple of its block size:</p>
         <DiagramFrame caption="A /27 network address is a multiple of 32.">
           <BoundaryDiagram />
         </DiagramFrame>
         <p>
-          An address can be <i>inside</i> a subnet without being its network address: <Mono>10.44.0.200</Mono> belongs to <Mono>10.44.0.192/27</Mono>. Writing 10.44.0.200/27 as a network doesn&apos;t create a subnet that starts at .200 — every device ANDs it with the mask and gets .192.
+          An address can be <em>inside</em> a block without starting one: <Mono>10.44.0.200</Mono> belongs to <Mono>10.44.0.192/27</Mono>. Writing &quot;10.44.0.200/27&quot; doesn&apos;t create a subnet at .200; every device ANDs it with the mask and gets .192. The block runs from its network address to its broadcast address, one less than the next boundary.
         </p>
       </GuideSection>
 
-      <GuideSection id="sd-flsm" eyebrow="FLSM vs VLSM" title="One size for all, or the right size for each" tone="cyan">
+      <GuideSection id="sd-flsm" eyebrow="Method" title="FLSM or VLSM: one size, or the right size" tone="cyan">
         <CompareCards
           items={[
-            { title: "FLSM — fixed length", tone: "warning", tag: "equal blocks", points: ["Every subnet gets the same prefix: borrow s bits → 2^s equal subnets", "/26: four blocks of 62 — LAN-A (100) doesn't fit", "/25: fits LAN-A, but only two subnets for four networks"] },
-            { title: "VLSM — variable length", tone: "success", tag: "right-sized", points: ["Each network gets the smallest prefix that holds it", "/25 + /26 + /27 + /30 = 228 of 256", "Blocks of different sizes sit side by side when each starts on its own boundary"] },
+            { title: "FLSM: fixed length", tone: "warning", tag: "equal blocks", points: ["Every subnet gets the same prefix: s borrowed bits give 2^s equal subnets", "/26: four blocks of 62. LAN-A (100) doesn't fit", "/25: LAN-A fits, but there are only two subnets for four networks"] },
+            { title: "VLSM: variable length", tone: "success", tag: "right-sized", points: ["Each network gets the smallest prefix that holds it", "/25 + /26 + /27 + /30 = 228 of 256 addresses", "Blocks of different sizes sit side by side, each on its own boundary"] },
           ]}
         />
-        <p>Largest first is the convenient order: the biggest blocks have the fewest legal starts, and once they are placed the smaller blocks fill in behind them without holes. Another order can still produce a valid plan — the rules decide, not the order — but it can leave gaps that only small blocks can use.</p>
+        <p>No equal split can serve one network of 100 and three more, so this office needs VLSM. FLSM is still the right tool when every network really is the same size.</p>
       </GuideSection>
 
-      <GuideSection id="sd-map" eyebrow="VLSM" title="Largest first, packed on boundaries" tone="success">
+      <GuideSection id="sd-map" eyebrow="Pack" title="Largest first: the plan" tone="success">
+        <p>Sort the blocks from largest to smallest and place each at the first free address that is a multiple of its size. The big blocks have the fewest legal starts, so they go first; the small ones fill in behind them without holes.</p>
         <DiagramFrame caption="The finished plan inside 10.44.0.0/24. The hatched area is free address space.">
           <AddressMapDiagram />
         </DiagramFrame>
-        <ChecklistCard
-          tone="cyan"
+        <FieldTable
           title="The plan"
-          mark="→"
-          items={CORRECT_PLAN.map((a) => {
+          columns={["Network", "Block", "Usable range", "Broadcast", "Usable"]}
+          rows={CORRECT_PLAN.map((a) => {
             const d = describe(a.network!, a.prefix!);
-            return (
-              <>
-                {a.id}: <Mono>{d.network}/{d.prefix}</Mono>. Hosts {d.firstHost}–{d.lastHost}, broadcast {d.broadcast}, {d.usable} usable.
-              </>
-            );
+            return [a.id, <Mono key="n">{`${d.network}/${d.prefix}`}</Mono>, `${d.firstHost} – ${d.lastHost}`, d.broadcast, String(d.usable)];
           })}
         />
+        <p className="text-sm text-pv-text-muted">Largest first is the convenient order, not the only valid one: any plan where every block is big enough, aligned, inside the parent and overlapping nothing is correct.</p>
       </GuideSection>
 
-
-
-      <GuideSection id="sd-free" eyebrow="Free space" title="Free addresses are not the same as a free block" tone="warning">
+      <GuideSection id="sd-free" eyebrow="Free space" title="Free addresses are not a free block" tone="warning">
         <p>
-          After this plan <Mono>.228–.255</Mono> is free: 28 addresses. They hold <Mono>.228/30 + .232/29 + .240/28</Mono>, so a 14-host network (a /28) still fits at .240, but a /27 never can: 28 &lt; 32.
+          After this plan <Mono>.228–.255</Mono> is free: 28 addresses. As aligned blocks that is <Mono>.228/30 + .232/29 + .240/28</Mono>, so a 14-host network (a /28) still fits at .240, but a /27 never can: it needs 32 addresses starting on a multiple of 32.
         </p>
         <p>
-          Having enough addresses isn&apos;t enough either. If two small /30 links sit in the middle of the free space, 56 free addresses can contain <i>no</i> free /27 at all, because every /27 boundary is blocked. A new network needs an <b>aligned</b> block of its size that is completely free.
+          The count of free addresses is never the answer on its own. A new network needs an <strong>aligned</strong> block of its size that is completely free; small blocks scattered across the free space can leave plenty of addresses and no room.
         </p>
-        <Callout tone="warning" title="How to check" icon="!">
-          For a new requirement: find its prefix, list the multiples of its block size inside the free ranges, and keep only those whose whole block is free. None left? Move the small blocks together (or plan them at the end) to open an aligned gap.
-        </Callout>
       </GuideSection>
 
-      <GuideSection id="sd-overlap" eyebrow="Troubleshooting" title="Misalignment and overlap" tone="danger">
+      <GuideSection id="sd-apply" eyebrow="Apply" title="From plan to devices" tone="ip">
         <p>
-          The classic incident: a spreadsheet lists LAN-C <Mono>10.44.0.128/27</Mono> and LAN-B <Mono>10.44.0.160/26</Mono>. On paper they sit side by side. But .160 isn&apos;t a /26 boundary (/26 blocks start at .0 .64 .128 .192): every LAN-B device computes 160 AND 192 = <b>128</b>, so LAN-B really is <Mono>.128–.191</Mono>, on top of LAN-C.
+          A plan only exists on paper until the devices carry it. Each R1 interface takes an address in its block with the block&apos;s mask, and each host takes another, the same mask, and R1&apos;s address as its gateway. From then on every device computes its network from its own address and mask, and R1 builds a connected route from each interface.
         </p>
-        <CompareCards
-          items={[
-            { title: "Root cause", tone: "danger", tag: "the one wrong number", points: ["Invalid subnet boundary: .160 written for a /26", "160 mod 64 = 32, not 0"] },
-            { title: "Consequences", tone: "warning", tag: "what you observe", points: ["Overlap: LAN-B's real block contains all of LAN-C", "R1 refuses the second interface (overlaps with …)", "A LAN-B host decides LAN-C hosts are LOCAL and ARPs on the wrong wire"] },
+        <p>
+          Notice what the devices never see: the spreadsheet. They don&apos;t know which network was meant to sit where; they only know addresses and masks. Keep that in mind: it is the key to the incident.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="sd-verify" eyebrow="Verification" title="What working looks like" tone="success">
+        <p>A plan is checked twice: on paper, by the four rules, and on the devices, with packets. The commands are only the way to ask; what matters is what each answer proves.</p>
+        <FieldTable
+          title="Read the plan on paper and on the network"
+          columns={["Question", "On paper", "On the devices", "What the answer proves"]}
+          rows={[
+            ["Big enough?", "2^h − 2 ≥ hosts, row by row", "—", "Every device has an address in its block"],
+            ["Aligned and inside the parent?", "start mod block size = 0", <Mono key="1">show ip interface brief / show interfaces terse</Mono>, "R1's addresses sit in the planned blocks"],
+            ["No overlap?", "compare real blocks", <Mono key="2">show ip route connected / show route</Mono>, "One connected route per network, none inside another"],
+            ["Hosts match the plan?", "same mask, gateway = R1", <Mono key="3">ip addr · ipconfig</Mono>, "Each host computes the planned network"],
+            ["Does it carry traffic?", "—", <Mono key="4">ping</Mono>, "Every network reaches every other, both ways"],
           ]}
         />
-        <p>Fixing a consequence (moving an interface, adding a route) doesn&apos;t fix the plan. Fix the boundary, re-check overlap, re-apply, re-test.</p>
-        <p className="pt-2 text-sm font-semibold text-pv-text">An aligned block can still be wrong</p>
-        <DiagramFrame caption="10.44.0.160/27 passes the boundary and size checks, but fails the overlap check.">
+        <p>With the plan applied, R1 has one connected route per network, exactly the four planned blocks:</p>
+        <CliPanel run={{ ...connOk, output: pickLines(connOk.output, /^C /) }} caption="R1 · Cisco IOS · healthy" />
+        <p>And a host on LAN-C reaches LAN-A through R1 (ttl 63: one router):</p>
+        <CliPanel run={{ ...pingOk, output: pickLines(pingOk.output, pingLines) }} caption="HOST-C · Linux · healthy" />
+      </GuideSection>
+
+      <GuideSection id="sd-incident" eyebrow="Incident" title="The incident: LAN-C on top of LAN-B" tone="danger">
+        <p>A colleague&apos;s plan is deployed with LAN-C at <Mono>10.44.0.160/27</Mono>. It looks fine on paper: .160 is a multiple of 32, and a /27 holds 30 hosts. After the change, the servers on LAN-C reach nobody, and LAN-B can&apos;t reach them either.</p>
+        <DiagramFrame caption="10.44.0.160/27 passes the boundary and size checks, and fails the overlap check: it lies entirely inside LAN-B's .128–.191.">
           <OverlapDiagram />
         </DiagramFrame>
         <CompareCards
           items={[
-            { title: "Why the candidates fail", tone: "danger", tag: "wrong", points: [".160/27: overlaps LAN-B", ".200/27: not a /27 boundary", ".192/28: 14 hosts < 25"] },
-            { title: "Why .192/27 works", tone: "success", tag: "right", points: ["192 = 6 × 32 (aligned)", "30 usable ≥ 25", "Between LAN-B (.191) and transit (.224)"] },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="sd-verify" eyebrow="Verification" title="A plan is proven with packets" tone="success">
-        <DiagramFrame caption="R1 needs only connected routes. Each prefix in the plan carries real ICMP Echo traffic.">
-          <VerifyDiagram />
-        </DiagramFrame>
-        <ChecklistCard
-          tone="success"
-          title="Before you call a plan finished"
-          mark="?"
-          items={["Does every requirement fit? (2^h − 2 ≥ hosts, row by row)", "Is every network start aligned? (start mod block = 0)", "Is every block inside the parent?", "Do any two real blocks overlap? (adjacent is fine)", "Are the network and broadcast addresses right for each block?", "Is each gateway inside its own subnet, and is it the router's address there?", "How much space remains, and as which aligned blocks?", "Could the remaining space hold the next requirement?"]}
-        />
-        <Callout tone="cyan" title="Accepted is not proven">
-          A router accepting an address only proves it didn&apos;t overlap another interface. Compare the router&apos;s connected subnets with the plan, check each host&apos;s mask and gateway, then ping every pair of networks in both directions.
-        </Callout>
-      </GuideSection>
-
-      <GuideSection id="sd-lab" eyebrow="Hands-on" title="Subnet a real network" tone="cyan">
-        <p>
-          A plan is finished when the network proves it. In the lab&apos;s <b>Branch network lab</b> you get a topology — R1, four switched LANs (Staff 100, Lab 50, Servers 20, Management 6, each count with R1 included) with their PCs and servers, and a WAN link to the ISP — and one parent block, <Mono>172.20.8.0/24</Mono>.
-        </p>
-        <TroubleshootingFlow
-          steps={[
-            { question: "Read the requirements", look: "Each LAN in the topology shows how many addresses it needs; the link needs 2." },
-            { question: "Calculate and design", look: "Smallest block per LAN, placed on its own boundary inside the /24. Any valid plan is accepted." },
-            { question: "Assign the blocks to the topology", look: "Each LAN in the topology now carries its block, in the same color as the address board." },
-            { question: "Configure R1", look: "One usable address of each block per interface, with the block's mask (Configure tab, Cisco IOS or Junos)." },
-            { question: "Configure every device", look: "An unused usable address of its LAN's block, the same mask, R1's address on that LAN as gateway (settings, ip addr/ip route, netsh)." },
-            { question: "Test, and watch the packets", look: "Test all paths: every device to every other. Each ping plays on the topology: ARP, the gateway, R1's new frame, the reply." },
-            { question: "Investigate a failure", look: "Which device decided what (its own AND), which ARP went unanswered, which route R1 lacked." },
-            { question: "Fix the plan or the configuration, test again", look: "Until every path is answered by the right device after your last change." },
+            { title: "What should happen", tone: "success", tag: "normal", points: ["LAN-C gets its own block, next to LAN-B", "R1 accepts an address in it on Gi0/3", "LAN-C's hosts reach the other LANs through R1"] },
+            { title: "What happens", tone: "danger", tag: "incident", points: ["R1 refuses the address on Gi0/3: it overlaps Gi0/2", "LAN-C's gateway doesn't exist, so LAN-C reaches nobody", "LAN-B's hosts think LAN-C's addresses are local"] },
           ]}
         />
         <CompareCards
           items={[
-            { title: "Is the plan valid?", tone: "violet", tag: "the math", points: ["Every block big enough, aligned, inside the parent, no overlap", "Checked in Design → Verify"] },
-            { title: "Did I apply it correctly?", tone: "cyan", tag: "the devices", points: ["Every interface and host inside its block, same mask, right gateway, no duplicates", "Checked in Build & test — then proven with traffic"] },
+            { title: "Why it fails", tone: "danger", tag: "cause", points: [".160–.191 is inside LAN-B's block .128–.191", "Two networks can't share addresses: R1 can't tell them apart", "Every device computes the overlap from its own mask"] },
+            { title: "What it can't be", tone: "warning", tag: "red herrings", points: ["A boundary error: 160 = 5 × 32, aligned", "A block too small: /27 holds 30 ≥ 25", "A cable or a host fault: the plan itself is wrong"] },
           ]}
         />
-        <Callout tone="warning" title="A valid plan can still be configured wrongly" icon="!">
-          And a configuration the devices accept can still violate the plan: R1 accepted <Mono>/26</Mono> on the Staff interface in one ticket, and half of Staff lost its way back.
-        </Callout>
       </GuideSection>
 
-      <GuideSection id="sd-breaks" eyebrow="When it breaks" title="Troubleshooting addressing from evidence" tone="danger">
-        <p>When a host can&apos;t reach another network, derive the mistake instead of guessing. Each question uses evidence you can read from the devices and the plan.</p>
+      <GuideSection id="sd-investigate" eyebrow="Investigation" title="Compare real blocks, not written starts" tone="danger">
         <TroubleshootingFlow
           steps={[
-            { question: "What exactly fails?", look: "Which source, which destination, both directions? Does the host still reach its own gateway?" },
-            { question: "Check the host's IP and mask", look: "ipconfig / ip addr: the address, the mask, the gateway." },
-            { question: "Which network does the host believe it is in?", look: "Its address AND its OWN mask. Compare with the plan's block for that LAN." },
-            { question: "Which network is the destination in?", look: "The destination AND the source's mask: through the source's eyes." },
-            { question: "Local or remote?", look: "Same result → it ARPs for the destination directly. Different → it must use a gateway inside its own subnet." },
-            { question: "Do these subnets actually overlap?", look: "Compare REAL blocks, not written starts." },
-            { question: "Is each network address aligned?", look: "start mod block size = 0? If not, the real block is somewhere else." },
-            { question: "What does the mask really mean?", look: "/24 vs /27 is 256 vs 32 addresses: a wider mask makes far-away hosts look local." },
-            { question: "Root cause", look: "The one wrong number. Overlap, a refused interface and a wrong local decision are usually its consequences." },
-            { question: "Redesign or correct, then verify", look: "Fix the plan (or the device), re-apply, re-run every rule and every ping." },
+            { question: "Did R1 accept every interface?", look: "show ip interface brief: Gi0/3 is unassigned. Configuring it gives the reason: overlaps with Gi0/2." },
+            { question: "What can LAN-C reach?", look: "Nothing, not even its gateway: the gateway address was never configured." },
+            { question: "Which real blocks collide?", look: `LAN-B ${dB.network}/${dB.prefix} runs .128–.191. LAN-C .160/27 runs .160–.191: all of it inside LAN-B.` },
           ]}
         />
-        <FailureSignatures
+        <CliPanel run={refused} caption="R1 · applying LAN-C's address on Gi0/3" />
+        <CliPanel run={{ ...briefBad, output: pickLines(briefBad.output, /Interface|0\/[23]/) }} caption="R1 · Gi0/3 has no address" />
+        <CliPanel run={{ ...pingBad, output: pickLines(pingBad.output, pingLines) }} caption="HOST-C · it can't even reach its gateway" />
+        <CliPanel run={{ ...pingBtoC, output: pickLines(pingBtoC.output, pingLines) }} caption="HOST-B · LAN-C's server looks local to it" note="HOST-B's /26 contains the server's address, so it ARPs for it on LAN-B, where it isn't." />
+      </GuideSection>
+
+      <GuideSection id="sd-repair" eyebrow="Repair" title="Repair the plan, re-apply, re-test" tone="success">
+        <p>
+          The fault is in the plan, so fix the plan, not a device. The next free /27 boundary after LAN-B is <Mono>{c.network}</Mono>: aligned (192 = 6 × 32), big enough (30 ≥ 25), and between LAN-B&apos;s broadcast (.191) and the transit link (.224). Rewrite LAN-C as <Mono>{c.network}/{c.prefix}</Mono> and apply it again:
+        </p>
+        <CompareCards
           items={[
-            { tag: "1", title: "Misaligned network", tone: "danger", points: ["Written start isn't a multiple of the block", "The real block lands on a neighbor: overlap", "The router refuses the second interface"] },
-            { tag: "2", title: "Wrong host mask", tone: "warning", points: ["Reaches its gateway, not other LANs", "Decides remote hosts are LOCAL", "Replies to it fail the same way"] },
-            { tag: "3", title: "Gateway outside the subnet", tone: "warning", points: ["Local traffic works", "Nothing remote: the gateway isn't on its network", "Linux refuses the default route"] },
-            { tag: "4", title: "Fragmented free space", tone: "cyan", points: ["Plenty of addresses free", "No aligned block of the needed size", "Small blocks sit on every boundary"] },
-            { tag: "5", title: "Block too small", tone: "danger", points: ["The LAN has more devices than 2^h − 2", "Later devices get addresses past the block", "They see their own gateway as foreign"] },
-            { tag: "6", title: "Duplicate address", tone: "warning", points: ["Two devices answer the same ARP", "Replies come from the wrong device", "The last ARP reply wins"] },
-            { tag: "7", title: "Router interface mask wrong", tone: "warning", points: ["R1's connected route is narrower than the block", "Hosts outside it reach R1, but R1 has no route back", "Part of the LAN works, part doesn't"] },
+            { title: "Cisco IOS · R1", tone: "cyan", tag: "Gi0/3", points: ["interface GigabitEthernet0/3", `ip address ${c.firstHost} ${maskOf(c.prefix)}`] },
+            { title: "Junos · R1", tone: "violet", tag: "candidate → commit", points: [`set interfaces ge-0/0/3 unit 0 family inet address ${c.firstHost}/${c.prefix}`, "commit"] },
           ]}
         />
-        <Misconceptions
+        <p className="text-sm text-pv-text-muted">LAN-C&apos;s hosts move into the new block too, with gateway {c.firstHost}.</p>
+        <ChecklistCard
+          tone="success"
+          title="The proof"
+          mark="✓"
           items={[
-            { myth: "Largest first is the only correct way.", correction: "It's the convenient way. Any plan where every rule holds is valid." },
-            { myth: "28 free addresses means a /27 still fits.", correction: "A /27 needs 32 addresses starting on a multiple of 32, all free." },
-            { myth: "10.44.0.200/27 is a new subnet at .200.", correction: "It's a host inside 10.44.0.192/27." },
-            { myth: "10.44.0.0/24 is a Class C network.", correction: "Classes are history (its first octet is even old Class A space). It's simply a /24." },
+            `R1 accepts ${c.firstHost}/${c.prefix} on Gi0/3, and show ip route connected lists ${c.network}/${c.prefix}`,
+            "No connected route lies inside another",
+            "A fresh ping from HOST-C to HOST-A answers with ttl 63",
+            "HOST-B reaches HOST-C through R1, no longer as a local host",
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="sd-other" eyebrow="Troubleshooting" title="Other ways an address plan breaks" tone="warning">
+        <p>An overlap is one way for a plan to fail. The Subnet Explorer&apos;s tickets add others, each with its own evidence. The Deep Dive walks through them with real output from R1 and the hosts.</p>
+        <CompareCards
+          items={[
+            { title: "A misaligned start", tone: "danger", tag: "a different block than written", points: ["LAN-B written as .160/26: 160 is not a multiple of 64", "Devices compute .128–.191, which swallows LAN-C", "Same symptoms as an overlap, different cause"] },
+            { title: "A host with the wrong mask", tone: "warning", tag: "one host can't leave", points: ["The plan is right, one device isn't", "Too wide a mask makes other LANs look local", "It reaches its gateway, nothing beyond"] },
+            { title: "A block too small", tone: "danger", tag: "late devices cut off", points: ["The LAN grew past 2^h − 2", "Devices numbered on land past the broadcast", "They can't even reach their neighbors"] },
+            { title: "Fragmented free space", tone: "cyan", tag: "addresses but no room", points: ["Plenty of free addresses", "Small blocks sit on every boundary", "No aligned block of the needed size is free"] },
           ]}
         />
       </GuideSection>
 
       <GuideSection id="sd-model" eyebrow="Mental model" title="Packing boxes on a shelf" tone="cyan">
-        <p>The /24 is a shelf 256 units long. Each network is a box whose size is a power of two, and a box may only sit at a position that is a multiple of its own size. Put the biggest boxes down first and the smaller ones fill in behind them, with no gaps — the convenient order, though other orders can also fit if you track the gaps they leave. The space left at the end is still shelf, not a box.</p>
+        <p>
+          The /24 is a shelf 256 units long. Each network is a box whose size is a power of two, and a box may only stand at a position that is a multiple of its own size. Put the biggest boxes down first and the small ones fill in behind them. Two boxes can never stand in the same place, however neatly the labels are written, and the gaps left at the end are only useful if a box of the right size fits exactly.
+        </p>
       </GuideSection>
 
       <GuideSection id="sd-glossary" eyebrow="Glossary" title="Terms used in this lesson" tone="violet">
         <Glossary
           items={[
-            { term: "VLSM", def: "Variable-Length Subnet Masking: each subnet gets its own prefix length." },
             { term: "Host bits", def: "32 minus the prefix length. 2^h addresses per block." },
-            { term: "Block size", def: "Addresses in one subnet. Network addresses are multiples of it." },
-            { term: "Ordinary usable hosts", def: "Block size − 2 (network and broadcast), for ordinary LAN subnets /30 and shorter. /31 (RFC 3021) and /32 differ." },
+            { term: "Block size", def: "The addresses in one subnet. Network addresses are multiples of it." },
+            { term: "Network / broadcast address", def: "The first (host bits 0) and last (host bits 1) address of a block. Not given to devices in an ordinary LAN." },
+            { term: "FLSM", def: "Fixed-Length Subnet Masking: every subnet the same size." },
+            { term: "VLSM", def: "Variable-Length Subnet Masking: each subnet gets its own prefix length." },
             { term: "Overlap", def: "Two subnets sharing any address. Always invalid." },
-            { term: "Free space", def: "Unallocated addresses. Not automatically a single valid prefix." },
+            { term: "Free space", def: "Unallocated addresses. Useful only as aligned blocks that are completely free." },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="sd-recap" eyebrow="Recap" title="What you can now do" tone="success">
+      <GuideSection id="sd-recap" eyebrow="Recap" title="What you can now explain" tone="success">
+        <ChecklistCard
+          tone="cyan"
+          title="Subnetting in this lesson"
+          mark="→"
+          items={[
+            "A host count becomes the smallest block with 2^h − 2 ≥ hosts",
+            "A block starts on a multiple of its size and ends at its broadcast address",
+            "Unequal networks need VLSM; largest first packs them without holes",
+            "Free space counts only as aligned, completely free blocks",
+            "Devices carry the plan as addresses and masks; R1 refuses overlapping interfaces",
+            "An overlap is fixed in the plan: move the block, re-apply, re-test",
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="sd-practice" eyebrow="Practice" title="Practice it" tone="cyan">
+        <p>You now know how to build a plan and how to prove it. The Subnet Explorer takes you from the bits to a real topology:</p>
+        <FlowSteps
+          steps={[
+            { title: "Explore and Calculate", body: "Move the prefix line, see where blocks start, then calculate any address's network, range and broadcast.", tone: "violet" },
+            { title: "Plan", body: "FLSM against VLSM, right-size and pack, and why a written start isn't the real block.", tone: "warning" },
+            { title: "Engineer (7 tickets)", body: "Design a plan for a real branch, apply it to R1 and the hosts in Cisco, Junos, Linux and Windows terminals, prove it with pings, and troubleshoot broken plans.", tone: "danger" },
+          ]}
+        />
+        <PresentationBridge>Rebuild subnetting from zero (bits, prefixes, masks, block sizes, FLSM and VLSM) in the subnetting presentation.</PresentationBridge>
         <LessonLabBridge />
-        <ChecklistCard tone="cyan" title="Subnetting Design Lab" mark="→" items={["Explain why /24 = 256, /25 = 128, /26 = 64 from host bits, not memory", "Calculate network, first, last, broadcast and usable for any address and prefix", "Turn a host count (router included) into a prefix with 2^h − 2", "Place blocks on aligned boundaries, largest first or any valid order", "Reject misaligned, undersized, outside and overlapping blocks, and say why", "Describe free space as aligned blocks, and say what can still fit", "Apply a plan to a router and hosts, then prove it with pings", "Troubleshoot a symptom back to its root cause"]} />
+        <p className="text-sm text-pv-text-muted">For the full course (the capacity ladder, borrowing bits, VLSM step by step, every validation rule, /31 and /32, real output for every ticket, a knowledge check), open the Deep Dive tab.</p>
       </GuideSection>
     </div>
   );
@@ -503,7 +539,7 @@ function LessonLabBridge() {
   const openLab = usePracticeLabOpener();
   return (
     <PracticeBridge label="Open the Subnet Explorer" onPractice={openLab}>
-      Practice it: explore the address board, calculate subnets yourself, then subnet a real branch network — design the plan, configure R1 and every PC and server from it, watch the packets, and solve seven addressing tickets. Nothing you do there changes your lesson progress.
+      Same network, your own copy. Nothing you do there changes your lesson progress.
     </PracticeBridge>
   );
 }

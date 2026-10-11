@@ -4,7 +4,11 @@ import { DFieldRow } from "@/components/lesson/FundamentalsGuideSvg";
 import { ExplainIt, KnowledgeCheck, KnowledgeQuiz, PracticeBridge, type KnowledgeQuestion } from "@/components/lesson/GuideInteractive";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
-import { numToIp } from "@/lib/sim-engine/scenarios/fundamentalsPackets";
+import { ipToNum, numToIp } from "@/lib/sim-engine/scenarios/fundamentalsPackets";
+import { CliPanel, FailureWalk, runGuideCli, type GuideCliRun } from "@/components/lesson/GuideCli";
+import type { CliVendor } from "@/lib/cli/types";
+import { createSsState, ssApply, ssRun, type SsAction, type SsState, type SsTicketId } from "@/lib/sim-engine/scenarios/subnetStudio";
+import { ssHostSet, ssR1Sets, type SsCliApi } from "./subnetting-lab/ssCli";
 import { CORRECT_PLAN, PARENT, SEGMENTS, blockSize, maskOf, overlaps, prefixFor } from "@/lib/sim-engine/scenarios/subnettingDesign";
 import { SL_CALC, SL_INCIDENT_PLAN, SL_LAN_D, capacityLadder, dotOct, lastOctet, equalSplit, firstFit, holes, incidentSymptom, octetBits, planReport, rangeLabel, slUsable, subnetCalc, validateRow, type SlRow } from "@/lib/sim-engine/scenarios/subnettingLab";
 
@@ -16,7 +20,7 @@ import { SL_CALC, SL_INCIDENT_PLAN, SL_LAN_D, capacityLadder, dotOct, lastOctet,
  * section. Routing, aggregation, IPv6 and IPAM stay in "Beyond this lesson".
  */
 
-const G = { foundation: "Foundation", one: "Designing one subnet", flsm: "Equal-size subnetting", vlsm: "VLSM", valid: "Validation", special: "Special prefixes", ops: "Operations", master: "Master it", beyond: "Beyond this lesson" };
+const G = { foundation: "Foundation", one: "Designing one subnet", flsm: "Equal-size subnetting", vlsm: "VLSM", valid: "Validation", special: "Special prefixes", ops: "Operations", trouble: "Troubleshooting", beyond: "Beyond this lesson", master: "Master it" };
 
 export const SD_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "sdd-why", label: "Why subnetting exists", group: G.foundation },
@@ -53,15 +57,17 @@ export const SD_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "sdd-whole", label: "Whole-plan validation", group: G.valid },
   { id: "sdd-31-32", label: "/31 and /32", group: G.special },
   { id: "sdd-read", label: "Reading a plan", group: G.ops },
-  { id: "sdd-incident", label: "The flawed-plan incident", group: G.ops },
-  { id: "sdd-workflow", label: "Troubleshooting workflow", group: G.ops },
-  { id: "sdd-signatures", label: "Failure signatures", group: G.ops },
+  { id: "sdd-devices", label: "Reading a plan on the devices", group: G.ops },
+  { id: "sdd-signatures", label: "Failure signatures", group: G.trouble },
+  { id: "sdd-workflow", label: "Troubleshooting workflow", group: G.trouble },
+  { id: "sdd-faults", label: "The tickets, step by step", group: G.trouble },
+  { id: "sdd-prove", label: "Proving a plan", group: G.trouble },
+  { id: "sdd-beyond", label: "Aggregation, IPv6, IPAM…", group: G.beyond },
   { id: "sdd-myths", label: "Common misconceptions", group: G.master },
   { id: "sdd-quiz", label: "Knowledge check", group: G.master },
   { id: "sdd-challenge", label: "Design challenge", group: G.master },
   { id: "sdd-explain", label: "Can you explain it?", group: G.master },
   { id: "sdd-practice", label: "Practice in the Explorer", group: G.master },
-  { id: "sdd-beyond", label: "Aggregation, IPv6, IPAM…", group: G.beyond },
 ];
 
 // ------------------------------------------------------------------ one source of truth: the lesson + lab models
@@ -104,6 +110,23 @@ const codes = (c: { violations: { code: string; with?: string }[] }) => c.violat
 const C_LADDER = capacityLadder(seg("LAN-C").hosts);
 const COLOR: Record<string, string> = { "LAN-A": D.cyan, "LAN-B": D.violet, "LAN-C": D.success, TRANSIT: D.warning, "LAN-D": "#f472b6" };
 const SHORT: Record<string, string> = { "LAN-A": "A", "LAN-B": "B", "LAN-C": "C", TRANSIT: "T", "LAN-D": "D" };
+// The Subnet Explorer's Engineer model (subnetStudio.ts) and its terminals: a correct plan, and each ticket as reported.
+const S_GOOD = ssRun(createSsState("branch"), ...CORRECT_PLAN.flatMap((a): SsAction[] => [{ type: "size", id: a.id, prefix: a.prefix! }, { type: "place", id: a.id, network: a.network! }]), { type: "apply" });
+const ssTicketState = (id: SsTicketId) => ssApply(createSsState(), { type: "ticket", id });
+const S_MIS = ssTicketState("misaligned");
+const S_MASK = ssTicketState("mask");
+const S_GW = ssTicketState("gateway");
+const S_SMALL = ssTicketState("too-small");
+const S_DUP = ssTicketState("duplicate");
+const S_R1 = ssTicketState("r1-mask");
+const hostIpOf = (st: SsState, id: string) => st.net.hosts[id]?.ip ?? "";
+/** Any Engineer terminal (R1 in Cisco IOS or Junos, a Linux or Windows host); a ping typed there runs on a copy. */
+function ssCli(st: SsState, dev: string, vendor: CliVendor, command: string): GuideCliRun {
+  const api: SsCliApi = { view: st, act: (a) => ssApply(st, a), cisco: { kind: "exec" }, setCisco: () => undefined, junosEdit: false, setJunosEdit: () => undefined, cand: st.net.r1, setCand: () => undefined, hist: [{ r1: st.net.r1, at: 0, by: "root" }], commit: () => undefined };
+  return runGuideCli(dev === "r1" ? ssR1Sets(api)[vendor] : ssHostSet(api, dev), command);
+}
+const PING_LINES = /PING|Pinging|bytes from|Reply|From|transmit|transmitted/;
+const only = (r: GuideCliRun, match: RegExp): GuideCliRun => ({ ...r, output: r.output.split("\n").filter((l) => match.test(l)).join("\n") });
 const Strong = ({ children }: { children: ReactNode }) => <b className="text-pv-text">{children}</b>;
 
 function LabBridge({ label, children }: { label: string; children: ReactNode }) {
@@ -572,25 +595,37 @@ export function SubnettingDeepDiveContent() {
         <p>Read each row as the one-subnet calculation, then read the rows together for overlap and free space.</p>
       </GuideSection>
 
-      <GuideSection id="sdd-incident" eyebrow="Operations" title="The flawed-plan incident" tone="danger">
-        <p>A colleague&apos;s spreadsheet lists:</p>
-        <FieldTable title="As written" columns={["Network", "Written", "Documented range"]} rows={INC.map((r) => validateRow(INC, r.id)!).map((c) => [c.id, `${c.written}/${c.prefix}`, rangeLabel(c.writtenRange)])} />
-        <DiagramFrame caption="The written ranges look contiguous…">
-          <PlanBar rows={INC} label="As written" written />
-        </DiagramFrame>
-        <DiagramFrame caption="…but the real CIDR blocks overlap.">
-          <PlanBar rows={INC} label="Real blocks" h={128} />
-        </DiagramFrame>
+      <GuideSection id="sdd-devices" eyebrow="Operations" title="Reading a plan on the devices" tone="cyan">
         <p>
-          {lastOctet(INC_B.written)} mod 64 = {lastOctet(INC_B.written) % 64}: not a /26 boundary. {lastOctet(INC_B.written)} AND 192 = {lastOctet(INC_B.real)}, so LAN-B is really {INC_B.real}/26 ({rangeLabel(INC_B.realRange)}) and contains all of LAN-C ({rangeLabel(INC_C.realRange)}). The symptom: a LAN-B host at {INC_SYM.host} computes {INC_SYM.decision.srcNet} for itself and for LAN-C&apos;s {INC_SYM.server} — <Strong>{INC_SYM.decision.local ? "LOCAL" : "REMOTE"}</Strong> — so it never uses its gateway {INC_SYM.gateway}.
+          The devices never see the plan. They carry it as addresses and masks, and each one derives its own block from them. So verifying a deployed plan means reading it back from the devices and comparing it, row by row, with the paper. On R1 one command shows every block the router believes in:
         </p>
-        <Callout tone="danger" title="Cause vs consequence">
-          Root cause: an invalid boundary. Consequence: overlap. After a redesign (for example LAN-B {FIX.find((r) => r.id === "LAN-B")!.network}/26, LAN-C {FIX.find((r) => r.id === "LAN-C")!.network}/27) the same host check gives {FIX_SYM.host} → {FIX_SYM.server}: <Strong>{FIX_SYM.decision.local ? "LOCAL" : "REMOTE"}</Strong>. Other layouts pass too — LAN-B .192/26, LAN-C .128/27, Transit .160/30 is {ALT_OK ? "also valid" : "not valid"}.
+        <CliPanel run={only(ssCli(S_GOOD, "r1", "cisco", "show ip route connected"), /^C |variably/)} />
+        <p>Junos shows the same blocks as Direct routes. Each host shows its own view, which must give the same block as R1&apos;s interface on that LAN:</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <CliPanel run={only(ssCli(S_GOOD, "r1", "juniper", "show route"), /Direct|^\d/)} />
+          <CliPanel run={only(ssCli(S_GOOD, "LAN-B", "cisco", "ipconfig"), /IPv4|Subnet|Gateway/)} />
+        </div>
+        <Callout tone="cyan" title="Accepted is not proven" icon="→">
+          A router accepting an address only proves it doesn&apos;t overlap another interface <em>on that router</em>. It says nothing about hosts, about other routers, or about whether the block is the one the plan meant. Compare, then ping every network from every other.
         </Callout>
-        <LabBridge label="Troubleshoot it in the Explorer">It is a ticket in Engineer · Troubleshoot: reproduce the failing ping, climb the evidence ladder, name the root cause (not its consequences), redesign, re-apply and prove it.</LabBridge>
       </GuideSection>
 
-      <GuideSection id="sdd-workflow" eyebrow="Operations" title="Troubleshooting workflow" tone="warning">
+      {/* ---------------------------------------------------------------- Troubleshooting */}
+      <GuideSection id="sdd-signatures" eyebrow="Troubleshooting" title="Failure signatures" tone="danger">
+        <FailureSignatures
+          items={[
+            { tag: "overlap", title: "A host treats another LAN as on-link", tone: "danger", points: ["Its own AND says LOCAL for an address on another segment", "Cause: overlapping or misaligned blocks"] },
+            { tag: "two-homes", title: "An address belongs to two segments", tone: "warning", points: ["The same address falls inside two planned ranges", "Cause: overlap"] },
+            { tag: "refused", title: "Configuration refused on some routers", tone: "violet", points: ["The device rejects an interface address", "Many routers refuse overlapping interface subnets — don't rely on it"] },
+            { tag: "full", title: "A segment runs out of addresses", tone: "warning", points: ["No free usable address left", "Cause: block too small"] },
+            { tag: "nofit", title: "Free space looks big enough but nothing fits", tone: "cyan", points: ["The free count is sufficient", "Cause: no aligned start of the right size"] },
+            { tag: "one-host", title: "One device can't leave, its LAN is fine", tone: "violet", points: ["A correct plan, one wrong mask or gateway", "Cause: configuration, not design"] },
+            { tag: "half-lan", title: "Part of a LAN works, part doesn't", tone: "warning", points: ["Hosts in one half of the block are unreachable", "Cause: the router's interface mask is narrower than the block"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="sdd-workflow" eyebrow="Troubleshooting" title="Troubleshooting workflow" tone="warning">
         <TroubleshootingFlow
           steps={[
             { question: "What is the symptom?", look: "Which hosts cannot reach which — and which still can." },
@@ -605,14 +640,159 @@ export function SubnettingDeepDiveContent() {
         />
       </GuideSection>
 
-      <GuideSection id="sdd-signatures" eyebrow="Operations" title="Failure signatures" tone="danger">
-        <FailureSignatures
+      <GuideSection id="sdd-faults" eyebrow="Troubleshooting" title="The tickets, step by step" tone="danger">
+        <p>Each fault below is one of the Subnet Explorer&apos;s Engineer tickets, reproduced by the lab&apos;s own model; every output is what that device prints. Some are plan errors, some are configuration errors on a correct plan. Telling them apart is half the work.</p>
+        <FailureWalk
+          title="1 · The spreadsheet plan: a misaligned start"
+          normal={<>LAN-B is {B.real}/26 and LAN-C {C.real}/27, side by side.</>}
+          change={
+            <>
+              <p>A colleague&apos;s spreadsheet lists, and is deployed as:</p>
+              <FieldTable title="As written" columns={["Network", "Written", "Documented range"]} rows={INC.map((r) => validateRow(INC, r.id)!).map((c) => [c.id, `${c.written}/${c.prefix}`, rangeLabel(c.writtenRange)])} />
+            </>
+          }
+          evidence={
+            <>
+              <DiagramFrame caption="The written ranges look contiguous…">
+                <PlanBar rows={INC} label="As written" written />
+              </DiagramFrame>
+              <DiagramFrame caption="…but the real CIDR blocks overlap.">
+                <PlanBar rows={INC} label="Real blocks" h={128} />
+              </DiagramFrame>
+              <p>
+                {lastOctet(INC_B.written)} mod 64 = {lastOctet(INC_B.written) % 64}: not a /26 boundary. {lastOctet(INC_B.written)} AND 192 = {lastOctet(INC_B.real)}, so LAN-B is really {INC_B.real}/26 ({rangeLabel(INC_B.realRange)}) and contains all of LAN-C ({rangeLabel(INC_C.realRange)}). R1 refuses LAN-C&apos;s interface, and HOST-B&apos;s own table puts LAN-C&apos;s server on its wire:
+              </p>
+              <CliPanel run={only(ssCli(S_MIS, "r1", "cisco", "show ip interface brief"), /Interface|0\/[23]/)} />
+              <CliPanel run={only(ssCli(S_MIS, "LAN-B", "cisco", "route print"), /Network|On-link|0\.0\.0\.0/)} />
+            </>
+          }
+          next={<>A LAN-B host at {INC_SYM.host} computes {INC_SYM.decision.srcNet} for itself and for LAN-C&apos;s {INC_SYM.server}: <Strong>{INC_SYM.decision.local ? "LOCAL" : "REMOTE"}</Strong>, so it never uses its gateway {INC_SYM.gateway}. Root cause or consequence? The overlap and the refused interface are consequences; the one wrong number is the start of LAN-B. Fixing a consequence (moving R1&apos;s address, adding a route) leaves the plan broken.</>}
+          fix={<>Redesign: LAN-B {FIX.find((r) => r.id === "LAN-B")!.network}/26, LAN-C {FIX.find((r) => r.id === "LAN-C")!.network}/27, re-apply. Other layouts pass too: LAN-B .192/26, LAN-C .128/27, transit .160/30 is {ALT_OK ? "also valid" : "not valid"}.</>}
+          proof={<>Every rule passes, R1 accepts all four interfaces, and the host check flips: {FIX_SYM.host} → {FIX_SYM.server} is <Strong>{FIX_SYM.decision.local ? "LOCAL" : "REMOTE"}</Strong>, through the gateway.</>}
+        />
+        <FailureWalk
+          title="2 · One host with the wrong mask"
+          normal={<>The plan is right: HOST-C is {hostIpOf(S_GOOD, "LAN-C")}/27 with gateway {S_GOOD.net.r1["LAN-C"].ip}.</>}
+          change={<>HOST-C is reinstalled with /24. The plan, R1 and every other host are unchanged.</>}
+          evidence={
+            <>
+              <p>HOST-C reaches R1, but not HOST-A on LAN-A. Its /24 makes the whole 10.44.0.0/24 look local, so it ARPs for HOST-A on its own wire:</p>
+              <CliPanel run={only(ssCli(S_MASK, "LAN-C", "cisco", "ip route"), /./)} />
+              <CliPanel run={only(ssCli(S_MASK, "LAN-C", "cisco", `ping -c 1 ${hostIpOf(S_GOOD, "LAN-A")}`), PING_LINES)} />
+            </>
+          }
+          next={<>A plan error breaks a whole LAN; a configuration error breaks one device. Compare the host&apos;s connected route with R1&apos;s for the same LAN.</>}
+          fix={<>On HOST-C: <Mono>sudo ip addr del {hostIpOf(S_GOOD, "LAN-C")}/24 dev eth0</Mono>, <Mono>sudo ip addr add {hostIpOf(S_GOOD, "LAN-C")}/27 dev eth0</Mono> (and the default route again if it was lost).</>}
+          proof={<>HOST-C&apos;s connected route is {C.real}/27, and its ping to HOST-A answers with ttl 63.</>}
+        />
+        <FailureWalk
+          title="3 · A gateway outside the host's subnet"
+          normal={<>HOST-B&apos;s gateway is R1&apos;s address on LAN-B, {S_GOOD.net.r1["LAN-B"].ip}.</>}
+          change={<>HOST-B&apos;s settings were typed by hand with LAN-A&apos;s gateway, {S_GOOD.net.r1["LAN-A"].ip}.</>}
+          evidence={
+            <>
+              <p>A gateway must be inside the host&apos;s own block: the host reaches it with ARP. {S_GOOD.net.r1["LAN-A"].ip} isn&apos;t in {B.real}/26, so Windows can&apos;t send anything remote at all:</p>
+              <CliPanel run={only(ssCli(S_GW, "LAN-B", "cisco", "ipconfig"), /IPv4|Subnet|Gateway/)} />
+              <CliPanel run={only(ssCli(S_GW, "LAN-B", "cisco", `ping -n 1 ${hostIpOf(S_GOOD, "LAN-A")}`), PING_LINES)} />
+            </>
+          }
+          next={<>AND the gateway with the host&apos;s mask: it must give the host&apos;s own network. (Linux refuses such a default route outright.)</>}
+          fix={<>Set HOST-B&apos;s gateway to {S_GOOD.net.r1["LAN-B"].ip} (<Mono>netsh interface ip set address</Mono> or the adapter settings).</>}
+          proof={<>HOST-B reaches HOST-A, with the reply arriving through R1.</>}
+        />
+        <FailureWalk
+          title="4 · A block too small for its LAN"
+          normal={<>Each LAN&apos;s block holds at least as many usable addresses as it has devices.</>}
+          change={<>In the branch lab, the engineering LAN was planned as a /27 (30 usable) and later grew to 50 devices. LAB-2, numbered on after the others, got an address past the block.</>}
+          evidence={
+            <>
+              <p>LAB-2 reaches nothing, not even LAB-1 on the same switch. Its address is outside the block, so its own gateway is off its subnet:</p>
+              <CliPanel run={only(ssCli(S_SMALL, "LAB-2", "cisco", "ipconfig"), /IPv4|Subnet|Gateway/)} />
+              <CliPanel run={only(ssCli(S_SMALL, "LAB-2", "cisco", `ping -n 1 ${hostIpOf(S_SMALL, "LAB-1")}`), PING_LINES)} />
+            </>
+          }
+          next={<>{hostIpOf(S_SMALL, "LAB-2")} AND {maskOf(27)} = {numToIp(ipToNum(hostIpOf(S_SMALL, "LAB-2")) - (ipToNum(hostIpOf(S_SMALL, "LAB-2")) % 32))}: not the LAB block. Count the LAN&apos;s devices against 2^h − 2 before blaming the host.</>}
+          fix={<>Resize the LAB block to a /26 (62 usable) on a free /26 boundary, re-apply, renumber.</>}
+          proof={<>Every LAB device&apos;s address ANDs to the LAB block, and LAB-2 reaches LAB-1 and the other LANs.</>}
+        />
+        <FailureWalk
+          tone="warning"
+          title="5 · Two devices, one address"
+          normal={<>Every device in the plan has its own address.</>}
+          change={<>SRV-2 was rebuilt from SRV-1&apos;s disk image, address included.</>}
+          evidence={
+            <>
+              <p>The ping to SRV-1 works, yet SRV-1 never sees it: SRV-2 answered. Both claim the same address:</p>
+              <CliPanel run={only(ssCli(S_DUP, "SRV-1", "cisco", "ip addr"), /inet 172/)} />
+              <CliPanel run={only(ssCli(S_DUP, "SRV-2", "cisco", "ip addr"), /inet 172/)} />
+            </>
+          }
+          next={<>A plan can be perfect and still be applied twice to the same address. Keep the address list per device, not only per block.</>}
+          fix={<>Give SRV-2 a free address in the server block, then clear the stale ARP entries.</>}
+          proof={<>One reply per request, from SRV-1&apos;s MAC; SRV-1&apos;s capture shows the pings.</>}
+        />
+        <FailureWalk
+          title="6 · R1's interface mask narrower than the block"
+          normal={<>R1&apos;s Staff interface carries the Staff block&apos;s /25 mask, so its connected route covers the whole LAN.</>}
+          change={<>R1&apos;s Staff interface was configured as /26. R1 accepted it: nothing overlaps.</>}
+          evidence={
+            <>
+              <p>PC-S2, in the upper half of the Staff range, can&apos;t reach the servers; PC-S1 can. R1&apos;s connected route covers only the lower half, so it has no way back to PC-S2:</p>
+              <CliPanel run={only(ssCli(S_R1, "r1", "cisco", "show ip route connected"), /GigabitEthernet0\/1$/)} />
+              <CliPanel run={only(ssCli(S_R1, "PC-S2", "cisco", "ip addr"), /inet 172/)} />
+            </>
+          }
+          next={<>Part of a LAN works and part doesn&apos;t: compare R1&apos;s connected route with the plan&apos;s block, not just the host.</>}
+          fix={<>Cisco <Mono>interface GigabitEthernet0/1</Mono>, <Mono>ip address 172.20.8.1 {maskOf(25)}</Mono> · Junos <Mono>delete interfaces ge-0/0/1 unit 0 family inet address</Mono>, <Mono>set interfaces ge-0/0/1 unit 0 family inet address 172.20.8.1/25</Mono>, <Mono>commit</Mono>.</>}
+          proof={<>R1 lists 172.20.8.0/25 as connected, and PC-S2 reaches the servers.</>}
+        />
+        <FailureWalk
+          tone="warning"
+          title="7 · Free addresses, but no free block"
+          normal={<>New networks fit into free space that is still aligned and contiguous.</>}
+          change={<>In the growth brief, two /30 provider links were placed in the middle of the free space. A Guest LAN for 26 devices (a /27) arrives.</>}
+          evidence={<>56 addresses are free, but every /27 boundary in the free space is blocked by a /30. Nothing on any device is wrong: the plan has simply run out of <em>aligned</em> room.</>}
+          next={<>List the multiples of 32 in the free ranges and keep those whose whole block is free. None left means the small blocks must move.</>}
+          fix={<>Move the two /30 links together at the end of the parent, re-apply them, and place the Guest /27 in the gap that opens.</>}
+          proof={<>Whole-plan validation passes with Guest included, and Guest reaches the office.</>}
+        />
+        <LabBridge label="Troubleshoot them in the Explorer">The seven tickets in Engineer · Troubleshoot: reproduce the failing ping, climb the evidence ladder, name the root cause, fix it, and prove it.</LabBridge>
+      </GuideSection>
+
+      <GuideSection id="sdd-prove" eyebrow="Troubleshooting" title="Proving a plan" tone="success">
+        <p>A plan is finished when the network proves it, not when the spreadsheet looks tidy. Two layers, both required:</p>
+        <CompareCards
           items={[
-            { tag: "overlap", title: "A host treats another LAN as on-link", tone: "danger", points: ["Its own AND says LOCAL for an address on another segment", "Cause: overlapping or misaligned blocks"] },
-            { tag: "two-homes", title: "An address belongs to two segments", tone: "warning", points: ["The same address falls inside two planned ranges", "Cause: overlap"] },
-            { tag: "refused", title: "Configuration refused on some routers", tone: "violet", points: ["The device rejects an interface address", "Many routers refuse overlapping interface subnets — don't rely on it"] },
-            { tag: "full", title: "A segment runs out of addresses", tone: "warning", points: ["No free usable address left", "Cause: block too small"] },
-            { tag: "nofit", title: "Free space looks big enough but nothing fits", tone: "cyan", points: ["The free count is sufficient", "Cause: no aligned start of the right size"] },
+            { title: "The plan is valid", tone: "violet", tag: "on paper", points: ["Every block big enough (2^h − 2 ≥ hosts, ordinary LANs)", "Every start a multiple of its block size", "Every block inside the parent", "No two real blocks share an address"] },
+            { title: "The plan is applied", tone: "cyan", tag: "on the devices", points: ["R1's connected routes equal the plan's blocks", "Every host's address, mask and gateway match its block", "No address used twice", "Every network pings every other, both ways"] },
+          ]}
+        />
+      </GuideSection>
+
+      {/* ---------------------------------------------------------------- Beyond this lesson */}
+      <GuideSection id="sdd-beyond" eyebrow="Beyond this lesson" title="Not covered here — on purpose" tone="violet">
+        <DiagramFrame caption="Carving every block from one parent keeps the plan summarisable.">
+          <AggregationDiagram />
+        </DiagramFrame>
+        <FieldTable
+          title="Where these topics belong"
+          columns={["Topic", "Why it is out of scope here"]}
+          rows={[
+            ["Route summarisation / aggregation", `Because every block came from ${P}, a distant router needs one route instead of four. How it is advertised is a routing topic.`],
+            ["IPv6 subnetting", "Same alignment ideas with /64 LANs and nibble boundaries — a different address family."],
+            ["IPAM", "Tools that store, reserve and audit address plans at scale."],
+            ["Growth policy", "Deliberately oversizing blocks or reserving neighbors for future growth."],
+            ["Routing-table design", "Longest-prefix match across many summaries and more-specifics (Routing Fundamentals)."],
+            ["NAT", "Translating private plans to public addresses."],
+          ]}
+        />
+        <Glossary
+          items={[
+            { term: "CIDR", def: "Classless Inter-Domain Routing (RFC 4632): the prefix length alone defines the network." },
+            { term: "FLSM", def: "Fixed-length subnet masking: every subnet the same size." },
+            { term: "VLSM", def: "Variable-length subnet masking: each subnet its own prefix." },
+            { term: "Real block", def: "Address AND mask — what hosts and routers actually use." },
+            { term: "RFC 3021", def: "Allows /31 on point-to-point links." },
           ]}
         />
       </GuideSection>
@@ -669,34 +849,6 @@ export function SubnettingDeepDiveContent() {
       <GuideSection id="sdd-practice" eyebrow="Master it" title="Practice in the Subnet Explorer" tone="success">
         <p>Same {P}, your own copy: explore prefixes, boundaries and blocks; calculate subnets yourself (last and third octet); try an equal split and VLSM; then subnet a real branch network (and three more briefs): design the plan, configure R1 and every device from it with Cisco/Junos and host terminals, watch the packets on the topology, and solve seven addressing tickets — the spreadsheet incident among them.</p>
         <LabBridge label="Open the Subnet Explorer">Nothing you do there changes your lesson progress.</LabBridge>
-      </GuideSection>
-
-      {/* ---------------------------------------------------------------- Beyond */}
-      <GuideSection id="sdd-beyond" eyebrow="Beyond this lesson" title="Not covered here — on purpose" tone="violet">
-        <DiagramFrame caption="Carving every block from one parent keeps the plan summarisable.">
-          <AggregationDiagram />
-        </DiagramFrame>
-        <FieldTable
-          title="Where these topics belong"
-          columns={["Topic", "Why it is out of scope here"]}
-          rows={[
-            ["Route summarisation / aggregation", `Because every block came from ${P}, a distant router needs one route instead of four. How it is advertised is a routing topic.`],
-            ["IPv6 subnetting", "Same alignment ideas with /64 LANs and nibble boundaries — a different address family."],
-            ["IPAM", "Tools that store, reserve and audit address plans at scale."],
-            ["Growth policy", "Deliberately oversizing blocks or reserving neighbors for future growth."],
-            ["Routing-table design", "Longest-prefix match across many summaries and more-specifics (Routing Fundamentals)."],
-            ["NAT", "Translating private plans to public addresses."],
-          ]}
-        />
-        <Glossary
-          items={[
-            { term: "CIDR", def: "Classless Inter-Domain Routing (RFC 4632): the prefix length alone defines the network." },
-            { term: "FLSM", def: "Fixed-length subnet masking: every subnet the same size." },
-            { term: "VLSM", def: "Variable-length subnet masking: each subnet its own prefix." },
-            { term: "Real block", def: "Address AND mask — what hosts and routers actually use." },
-            { term: "RFC 3021", def: "Allows /31 on point-to-point links." },
-          ]}
-        />
       </GuideSection>
     </div>
   );

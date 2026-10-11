@@ -413,7 +413,7 @@ export function FailureSignatures({ items }: { items: { tag: string; title: stri
         return (
           <div key={c.tag} className="rounded-xl border p-3" style={{ borderColor: tint(tone, 35), background: tint(tone, 5) }}>
             <p className="mb-1 flex items-center gap-2 text-xs font-bold text-pv-text">
-              <span className="flex h-5 w-5 items-center justify-center rounded-full pv-mono text-[10px]" style={{ background: tint(tone, 20), color: tone }}>
+              <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1.5 pv-mono text-[10px]" style={{ background: tint(tone, 20), color: tone }}>
                 {c.tag}
               </span>
               {c.title}

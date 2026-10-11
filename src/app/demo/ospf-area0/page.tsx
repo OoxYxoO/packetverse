@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
@@ -11,6 +11,11 @@ import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
 import { OSPF_BRIEFING_NOTES, OSPF_BRIEFING_PHASES } from "./briefing";
 import { OSPF_LESSON_SECTIONS, OspfLessonGuideContent } from "./LessonGuideContent";
 import { OSPF_DEEP_DIVE_SECTIONS, OspfDeepDiveContent } from "./DeepDiveContent";
+import { OspfPresentation } from "./OspfPresentation";
+import { OspfLabWorkspace } from "./ospf-lab/OspfLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import {
@@ -85,8 +90,8 @@ const WHY_OSPF: { q: string; a: string }[] = [
 ];
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "The Area 0 diamond, step by step", sections: OSPF_LESSON_SECTIONS, content: <OspfLessonGuideContent /> },
-  { id: "deep", label: "OSPF Deep Dive", hint: "How OSPF works in general", sections: OSPF_DEEP_DIVE_SECTIONS, content: <OspfDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "R1–R4 diamond · neighbors, one map, SPF, a cost change and the incident", sections: OSPF_LESSON_SECTIONS, content: <OspfLessonGuideContent /> },
+  { id: "deep", label: "OSPF Deep Dive", hint: "The full study course · Hellos, states, LSAs, SPF, cost, the RIB, evidence, five faults", sections: OSPF_DEEP_DIVE_SECTIONS, content: <OspfDeepDiveContent /> },
 ];
 
 /** Readable 3D bubble for the in-flight message (see ActivePacket3D.callout). */
@@ -119,6 +124,20 @@ export default function OspfArea0Demo() {
   const [sentPackets, setSentPackets] = useState<{ when: "before" | "after"; path: RouterId[]; cost: number }[]>([]);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and Practice Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -624,7 +643,7 @@ export default function OspfArea0Demo() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <Badge tone="cyan" className="mb-3">
-            OSPF · Single Area · Point-to-Point
+            Enterprise · Routing · OSPF Area 0
           </Badge>
           <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">R1 Learns The Network — Automatically</h1>
           <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
@@ -632,8 +651,26 @@ export default function OspfArea0Demo() {
             the best path, then change the physics of the network by changing a single number.
           </p>
         </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="OSPF: Link-State Routing" subtitle="Area 0 · R1–R4 point-to-point diamond" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice OSPF" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="OSPF: Link-State Routing" subtitle="Area 0 · R1–R4 point-to-point diamond" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <OspfPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the OSPF Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <OspfLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="OSPF" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "OSPF Lab", buttonLabel: "Practice OSPF", description: "Form neighbors and break them (area, timers, passive, MTU), watch LSAs flood and SPF pick paths, change costs, fail links loudly and silently, find a static route that overrides OSPF — on R1–R4 with Cisco or Junos, five tickets to solve from evidence." }} contextNote={currentStep && ["flood-lsas", "spf-complete", "cost-changed", "spf-rerun", "fault-injected", "troubleshoot-question", "challenge"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-6 grid gap-2 sm:grid-cols-4">
@@ -655,7 +692,7 @@ export default function OspfArea0Demo() {
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
             className={clsx(
-              "h-1.5 flex-1 min-w-4 rounded-full transition-colors",
+              "h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-4",
               i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10",
             )}
           />
@@ -743,7 +780,7 @@ export default function OspfArea0Demo() {
 
       <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode === "3d" ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
@@ -1057,7 +1094,7 @@ export default function OspfArea0Demo() {
         </div>
 
         {/* SIDEBAR */}
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           {showControlPlane && <PacketInspector packet={activePacket} />}
           {showControlPlane && (
             <ProtocolStateMachine

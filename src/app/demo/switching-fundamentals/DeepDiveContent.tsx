@@ -9,8 +9,9 @@ import { executeCli } from "@/lib/cli/parser";
 import { ciscoMac } from "@/lib/cli/format";
 import type { CliVendor } from "@/lib/cli/types";
 import { BROADCAST_MAC, PRIMARY_PORT, SECONDARY_PORT, SWF_MAC, type SwfHost, type SwfSwitch } from "@/lib/sim-engine/scenarios/switchingFundamentals";
-import { SN_WAVES, createSwitchNet, snApply, snCirculating, snHealthy, snLookup, snPortRole, type SnAction, type SnState } from "@/lib/sim-engine/scenarios/switchNet";
+import { SN_WAVES, createSwitchNet, snApply, snCirculating, snHealthy, snLookup, snPortRole, snTicket, snTicketState, type SnAction, type SnState, type SnTicketId } from "@/lib/sim-engine/scenarios/switchNet";
 import { snSwitchSets } from "./switching-lab/snCli";
+import { FailureWalk } from "@/components/lesson/GuideCli";
 import { BroadcastDiagram, FirstFrameDiagram, LoopDiagram, RepairDiagram, ReplyDiagram, TopologyDiagram, TwoLookupsDiagram } from "./LessonGuideContent";
 import { HostNote, SwNote, TwoSwitches } from "./guideSvg";
 
@@ -51,6 +52,8 @@ export const SWF_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "swd-flap", label: "MAC flapping", group: G.trouble },
   { id: "swd-incident", label: "The loop incident", group: G.trouble },
   { id: "swd-forever", label: "Why a loop never stops", group: G.trouble },
+  { id: "swd-faults", label: "The other four tickets", group: G.trouble },
+  { id: "swd-prove", label: "Proving a repair", group: G.trouble },
   { id: "swd-stp", label: "Loop prevention (STP preview)", group: G.beyond },
   { id: "swd-domains", label: "Collision vs broadcast domains", group: G.beyond },
   { id: "swd-myths", label: "Common misconceptions", group: G.master },
@@ -107,6 +110,13 @@ function cli(state: SnState, sw: SwfSwitch, vendor: CliVendor, command: string) 
   return { prompt: set.prompt, command, output: r.kind === "ok" ? r.output : "" };
 }
 
+// The lab's other tickets, each reproduced with its own test.
+const ticketRun = (id: SnTicketId) => snApply(snTicketState(id, 1), { type: "traffic", sends: snTicket(id).repro });
+const T_MOVED = ticketRun("moved");
+const T_UPLINK = ticketRun("uplink");
+const T_STATIC = ticketRun("static");
+const T_DUP = ticketRun("dup-mac");
+const only = (r: { prompt: string; command: string; output: string }, match: RegExp) => ({ ...r, output: r.output.split("\n").filter((l) => match.test(l)).join("\n") });
 const portOf = (s: SnState, sw: SwfSwitch, host: SwfHost) => snLookup(s.cfg, s.fdb, sw, SWF_MAC[host])?.port;
 const Strong = ({ children }: { children: ReactNode }) => <b className="text-pv-text">{children}</b>;
 
@@ -661,6 +671,85 @@ export function SwitchingDeepDiveContent() {
         <Callout tone="danger" title="About the lab's drawing">
           The lab draws {SN_WAVES} hops per run and keeps the remaining copies in flight: they continue at your next action, and the counters keep climbing. The pause is for clarity only — in a real network those copies keep looping, hundreds of thousands of laps per second, until a link is shut down or a loop-prevention protocol blocks one.
         </Callout>
+      </GuideSection>
+
+      <GuideSection id="swd-faults" eyebrow="Troubleshooting" title="The other four tickets, step by step" tone="danger">
+        <p>The loop is the lesson&apos;s incident. The Switching Lab has four more tickets; each is reproduced here by the lab&apos;s own model, and every output is what SW1 or SW2 prints at that moment.</p>
+        <FailureWalk
+          tone="warning"
+          title="2 · The printer moved floors: a stale entry on the other switch"
+          normal={<>HOST-D sits on SW1 ge-0/0/2; SW2 knows it behind {P}.</>}
+          change={<>HOST-D, a printer that only ever answers, is moved to SW2 ge-0/0/3. Its old port on SW1 goes down, so SW1 forgets it. SW2&apos;s entry points at {P}, and that port never went down.</>}
+          evidence={
+            <>
+              <p>HOST-B can&apos;t reach HOST-D. SW2 sends the frames up the uplink; SW1 doesn&apos;t know HOST-D any more and floods, but never back down the port the frame came in on:</p>
+              <CliPanel {...cli(T_MOVED, "SW2", "cisco", `show mac address-table address ${ciscoMac(Dm)}`)} />
+              <CliPanel {...cli(T_MOVED, "SW1", "cisco", `show mac address-table address ${ciscoMac(Dm)}`)} />
+            </>
+          }
+          next={<>A host that never starts a conversation is never relearned. Compare where each switch thinks it is with where it is plugged.</>}
+          fix={<>On SW2: Cisco <Mono>clear mac address-table dynamic address {ciscoMac(Dm)}</Mono> · Junos <Mono>clear ethernet-switching table interface {P}</Mono>.</>}
+          proof={<>The next frame for HOST-D is flooded on SW2, reaches ge-0/0/3, and HOST-D&apos;s reply is learned there.</>}
+        />
+        <FailureWalk
+          title="3 · Floor 1 can't reach floor 2: the uplink is down"
+          normal={<>{P} is connected on both switches, and LLDP shows the other switch.</>}
+          change={<>During maintenance, SW2&apos;s {P} was shut down.</>}
+          evidence={
+            <>
+              <p>Hosts on the same floor still work together; nothing crosses. SW2&apos;s port is disabled, so SW1&apos;s end sees no signal, and neither switch has an LLDP neighbor:</p>
+              <CliPanel {...only(cli(T_UPLINK, "SW2", "cisco", "show interfaces status"), /Port|Gi1\/0\/2[34]/)} />
+              <CliPanel {...only(cli(T_UPLINK, "SW1", "cisco", "show interfaces status"), /Port|Gi1\/0\/2[34]/)} />
+            </>
+          }
+          next={<><Mono>disabled</Mono> at one end and <Mono>notconnect</Mono> at the other: the shut is on the disabled side.</>}
+          fix={<>On SW2: Cisco <Mono>interface GigabitEthernet1/0/23</Mono>, <Mono>no shutdown</Mono> · Junos <Mono>delete interfaces {P} disable</Mono>, <Mono>commit</Mono>.</>}
+          proof={<>Both ends connected, one LLDP neighbor each, and HOST-A reaches HOST-C.</>}
+        />
+        <FailureWalk
+          title="4 · HOST-C's frames arrive at HOST-D: an old static entry"
+          normal={<>SW1 learns HOST-C dynamically, behind {P}.</>}
+          change={<>An old static entry on SW1 pins HOST-C&apos;s MAC to ge-0/0/2, HOST-D&apos;s port.</>}
+          evidence={
+            <>
+              <p>HOST-A can&apos;t reach HOST-C, and HOST-D&apos;s capture shows frames for HOST-C. Learning can&apos;t correct it: the entry is STATIC.</p>
+              <CliPanel {...cli(T_STATIC, "SW1", "cisco", "show mac address-table static")} />
+            </>
+          }
+          next={<>A frame delivered to the wrong host on the right switch: look for a static entry before blaming the host.</>}
+          fix={<>On SW1: Cisco <Mono>no mac address-table static {ciscoMac(SWF_MAC["HOST-C"])} vlan 1</Mono> · Junos <Mono>delete vlans default switch-options interface ge-0/0/2.0 static-mac {SWF_MAC["HOST-C"].toLowerCase()}</Mono>, <Mono>commit</Mono>.</>}
+          proof={<>SW1 learns HOST-C on {P} as DYNAMIC, and HOST-D&apos;s capture no longer sees HOST-C&apos;s frames.</>}
+        />
+        <FailureWalk
+          title="5 · HOST-A keeps dropping off: two hosts, one MAC"
+          normal={<>Every MAC is learned on exactly one port per switch.</>}
+          change={<>A virtual machine (HOST-E) cloned from HOST-A&apos;s image starts on SW2 ge-0/0/3, with HOST-A&apos;s MAC.</>}
+          evidence={
+            <>
+              <p>Both switches log HOST-A&apos;s MAC flapping, but this time between a host port and the uplink, not between two uplinks: there is no loop, there are two senders.</p>
+              <CliPanel {...only(cli(T_DUP, "SW2", "cisco", "show logging"), /MACFLAP/)} />
+              <CliPanel {...only(cli(T_DUP, "SW1", "cisco", "show logging"), /MACFLAP/)} />
+            </>
+          }
+          next={<>Flapping between two uplinks = a loop (fault 1). Flapping between a host port and the uplink = a duplicate MAC somewhere on the other side.</>}
+          fix={<>Give HOST-E its own MAC (or shut its port until it has one).</>}
+          proof={<>No new MACFLAP messages, and HOST-A stays reachable.</>}
+        />
+        <LabBridge label="Troubleshoot them in the Switching Lab">The five tickets, reported as users report them. Reproduce, gather the evidence on both switches, repair and prove it with frames.</LabBridge>
+      </GuideSection>
+
+      <GuideSection id="swd-prove" eyebrow="Troubleshooting" title="Proving a repair on two switches" tone="success">
+        <ChecklistCard
+          tone="success"
+          title="The proof"
+          mark="✓"
+          items={[
+            "Exactly one active path between the switches: one LLDP neighbor entry each, every redundant port disabled",
+            "Each host's MAC is learned on its real port on its own switch, and on the uplink on the other",
+            "No new flapping messages on either switch after the change",
+            "A fresh broadcast reaches every host once, and the original ticket's test works",
+          ]}
+        />
       </GuideSection>
 
       {/* ------------------------------------------------------------ Beyond this lesson */}

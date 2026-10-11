@@ -44,7 +44,8 @@ export function withSelfPing(set: CliCommandSet, os: PingOs, own: (string | unde
         : {
             ...c,
             run: (args) => {
-              const ip = Object.values(args).find((v) => mine.has(v));
+              // Only the destination counts: an own address given as the source ("ping X source <mine>") is a real ping.
+              const ip = Object.entries(args).find(([k, v]) => !/^(src|source|from)$/i.test(k) && mine.has(v))?.[1];
               if (!ip) return c.run(args);
               const count = Number(args.count ?? args.n ?? args.repeat);
               const data = Number(args.size ?? args.bytes);

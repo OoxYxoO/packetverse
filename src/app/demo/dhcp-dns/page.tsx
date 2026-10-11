@@ -15,8 +15,8 @@ import { DhcpDnsLabWorkspace } from "./dhcp-lab/DhcpDnsLabWorkspace";
 import { DH_DEEP_DIVE_SECTIONS, DhcpDnsDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "CLIENT → relay R1 → DHCP-SRV · DNS lookup · Option 6 incident", sections: DH_LESSON_SECTIONS, content: <DhcpDnsLessonGuideContent /> },
-  { id: "deep", label: "DHCP + DNS Deep Dive", hint: "DHCP leases and DNS resolution in general", sections: DH_DEEP_DIVE_SECTIONS, content: <DhcpDnsDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "CLIENT → relay R1 → DHCP-SRV · broadcast, four messages, giaddr, the lease, DNS and its cache, a wrong option 6", sections: DH_LESSON_SECTIONS, content: <DhcpDnsLessonGuideContent /> },
+  { id: "deep", label: "DHCP + DNS Deep Dive", hint: "The full DHCP & DNS course on this network · messages, relay, scopes, leases, zones, recursion, six tickets", sections: DH_DEEP_DIVE_SECTIONS, content: <DhcpDnsDeepDiveContent /> },
 ];
 
 const config: FundamentalsLessonConfig<DhState> = {

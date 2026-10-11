@@ -5,7 +5,10 @@ import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DNode, DPil
 import { ExplainIt, KnowledgeCheck, KnowledgeQuiz, PracticeBridge, type KnowledgeQuestion } from "@/components/lesson/GuideInteractive";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { ADDR } from "@/lib/sim-engine/scenarios/firstConnection";
-import { TN_HTTP, TN_TIMERS, createTcpNet, flagsText, pktName, tnApply, tnClone, tnTicket, type TnAction, type TnCap, type TnRun, type TnState, type TcpState } from "@/lib/sim-engine/scenarios/tcpNet";
+import { TN_ADDR, TN_HTTP, TN_TIMERS, createTcpNet, flagsText, pktName, tnApply, tnClone, tnTicket, type TnAction, type TnCap, type TnRun, type TnState, type TcpState } from "@/lib/sim-engine/scenarios/tcpNet";
+import { CliPanel, FailureWalk, pickLines, runGuideCli, type GuideCliRun } from "@/components/lesson/GuideCli";
+import type { CliVendor } from "@/lib/cli/types";
+import { tcpLaptopSet, tcpR1Sets, tcpServerSet, type TcpCliApi } from "./tcp-lab/tcpCli";
 
 /**
  * TCP DEEP DIVE — the complete TCP lesson, taught on THIS lesson's network: Laptop 192.168.10.10 → R1 → Server
@@ -41,17 +44,18 @@ export const TCP_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "td-loss", label: "Loss and retransmission", group: G.data },
   { id: "td-reliable", label: "Where reliability comes from", group: G.data },
   { id: "td-rst", label: "RST: a refused port", group: G.refusal },
+  { id: "td-dropvsrst", label: "Drop vs timeout vs refusal", group: G.refusal },
   { id: "td-close", label: "The orderly close and TIME-WAIT", group: G.refusal },
   { id: "td-udp", label: "UDP: datagrams, no connection", group: G.refusal },
-  { id: "td-dropvsrst", label: "Drop vs timeout vs refusal", group: G.refusal },
-  { id: "td-workflow", label: "Troubleshooting workflow", group: G.trouble },
   { id: "td-signatures", label: "Failure signatures and captures", group: G.trouble },
-  { id: "td-incident", label: "The return-path incident", group: G.trouble },
+  { id: "td-workflow", label: "Troubleshooting workflow", group: G.trouble },
+  { id: "td-faults", label: "The six tickets, step by step", group: G.trouble },
+  { id: "td-prove", label: "Proving a repair", group: G.trouble },
+  { id: "td-beyond", label: "MSS, window, congestion, HTTPS, SACK", group: G.beyond },
   { id: "td-myths", label: "Common misconceptions", group: G.master },
   { id: "td-quiz", label: "Knowledge check", group: G.master },
   { id: "td-explain", label: "Can you explain it?", group: G.master },
   { id: "td-practice", label: "Practice in the TCP & UDP Lab", group: G.master },
-  { id: "td-beyond", label: "MSS, window, congestion, HTTPS, SACK", group: G.beyond },
 ];
 
 // ------------------------------------------------------------------ one source of truth: the TCP/UDP Lab model
@@ -75,6 +79,20 @@ const FIXED = (() => {
   c.r1.acl.entries = c.r1.acl.entries.filter((e) => e.action !== "deny");
   return play(INC, [{ type: "cfg", cfg: c, text: "fix" }, tnTicket("synack-drop").repro]);
 })();
+
+const SRV = TN_ADDR.server;
+const ticketRun = (id: "refused" | "host-fw" | "no-gw" | "dns-down" | "bad-cable") => play(fresh(), [{ type: "ticket", id }, tnTicket(id).repro]);
+const T_REFUSED = ticketRun("refused");
+const T_HOSTFW = ticketRun("host-fw");
+const T_NOGW = ticketRun("no-gw");
+const T_DNS = ticketRun("dns-down");
+const T_CABLE = ticketRun("bad-cable");
+/** The lab's own terminals (Laptop, Server, R1 in Cisco IOS or Junos); a test typed there runs on a copy of the state. */
+function cli(st: TnState, dev: "laptop" | "server" | "r1", vendor: CliVendor, command: string): GuideCliRun {
+  const api: TcpCliApi = { view: st, act: (a) => tnApply(st, a), ios: { kind: "exec" }, setIos: () => undefined, junosEdit: false, setJunosEdit: () => undefined, cand: st.cfg.r1, setCand: () => undefined };
+  return runGuideCli(dev === "r1" ? tcpR1Sets(api)[vendor] : dev === "server" ? tcpServerSet(api) : tcpLaptopSet(api), command);
+}
+const only = (r: GuideCliRun, match: RegExp): GuideCliRun => ({ ...r, output: pickLines(r.output, match) });
 
 const M = { clientPort: 51001, serverPort: 443, clientIsn: 100, serverIsn: 300 };
 const R = { clientPort: REF.last!.events.find((e) => e.k === "state")!.local.port, serverPort: 8080, clientIsn: 100 };
@@ -519,6 +537,18 @@ export function TcpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
       </GuideSection>
 
       {/* ------------------------------------------------------------ Troubleshooting */}
+      <GuideSection id="td-signatures" eyebrow="Troubleshooting" title="Failure signatures and reading captures" tone="danger">
+        <FailureSignatures
+          items={[
+            { tag: "A", title: "SYN out, nothing back", tone: "danger", points: ["Client SYN-SENT, retransmitting", "Check the server: did it get the SYN?", "→ forward-path loss, or a lost reply"] },
+            { tag: "B", title: "Server SYN-RECEIVED, client SYN-SENT", tone: "danger", points: ["The server answered; the client never processed it", "→ the SYN-ACK is lost on the way back"] },
+            { tag: "C", title: "Immediate RST,ACK", tone: "warning", points: ["Reachable host, nothing listening on the port", "→ connection refused, no retries"] },
+            { tag: "D", title: "Same seq sent twice", tone: "warning", points: ["A retransmission: the first copy was not acknowledged", "→ look for where the first copy stopped"] },
+          ]}
+        />
+        <p>Reading a capture: each capture point lists only segments that crossed it. The fault lies between the last point that saw a segment and the first one that didn&apos;t.</p>
+      </GuideSection>
+
       <GuideSection id="td-workflow" eyebrow="Troubleshooting" title="Troubleshooting workflow" tone="danger">
         <TroubleshootingFlow
           steps={[
@@ -533,40 +563,146 @@ export function TcpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
         />
       </GuideSection>
 
-      <GuideSection id="td-signatures" eyebrow="Troubleshooting" title="Failure signatures and reading captures" tone="danger">
-        <FailureSignatures
-          items={[
-            { tag: "A", title: "SYN out, nothing back", tone: "danger", points: ["Client SYN-SENT, retransmitting", "Check the server: did it get the SYN?", "→ forward-path loss, or a lost reply"] },
-            { tag: "B", title: "Server SYN-RECEIVED, client SYN-SENT", tone: "danger", points: ["The server answered; the client never processed it", "→ the SYN-ACK is lost on the way back"] },
-            { tag: "C", title: "Immediate RST,ACK", tone: "warning", points: ["Reachable host, nothing listening on the port", "→ connection refused, no retries"] },
-            { tag: "D", title: "Same seq sent twice", tone: "warning", points: ["A retransmission: the first copy was not acknowledged", "→ look for where the first copy stopped"] },
-          ]}
+      <GuideSection id="td-faults" eyebrow="Troubleshooting" title="The six tickets, step by step" tone="danger">
+        <p>Each fault below is one of the TCP & UDP Lab&apos;s tickets, reproduced by the lab&apos;s own model; every output and capture row is what that device shows at that moment. The first is the lesson&apos;s incident, seen from every capture point.</p>
+        <FailureWalk
+          title="1 · The site spins, then times out: SYN-ACKs dropped on the way back"
+          normal={<>SYN out through R1, SYN-ACK back through R1, ACK, request, page.</>}
+          change={<>R1&apos;s filter EDGE on Gi0/1 gets a line that drops TCP from the Server&apos;s port 80.</>}
+          evidence={
+            <>
+              <FieldTable title="The Server's capture during the fault (from the lab's model)" columns={CAP_COLS} rows={captureRows(INC, "server")} />
+              <FieldTable
+                title="Evidence"
+                columns={["Where", "What it shows"]}
+                rows={[
+                  ["Laptop", `${incClient.join(" → ")}: it never processed a SYN-ACK; curl gave up after 10 s`],
+                  ["Server socket", `${incTcbs.server?.state ?? "—"}: it got the SYN and answered (and keeps retrying its SYN-ACK)`],
+                  ["Server capture", "SYN in; SYN-ACK out, and out again each time a SYN repeats"],
+                  ["R1", `SYN-ACK arrives on Gi0/1, never leaves on Gi0/0; deny tcp host 10.20.20.20 eq www any (${INC.cfg.r1.acl.entries[0].hits} matches)`],
+                  ["Laptop capture", "SYNs out, no SYN-ACK, no RST"],
+                ]}
+              />
+              <CliPanel run={cli(INC, "r1", "juniper", "show firewall")} />
+            </>
+          }
+          next={<>Not a refused port (no RST), not the application (the handshake never completed), not the Server (its own capture shows it answering): find the last point that saw the SYN-ACK.</>}
+          fix={<>Cisco <Mono>ip access-list extended EDGE</Mono>, <Mono>no 5</Mono> · Junos <Mono>delete firewall family inet filter EDGE term t5</Mono>, <Mono>commit</Mono>.</>}
+          proof={<>After the deny line is removed, the same curl {fixedRun.ok ? "succeeds" : "still fails"}: SYN, SYN-ACK, ACK, request, page, close. The proof is that test, not the accepted command.</>}
         />
-        <p>Reading a capture: each capture point lists only segments that crossed it. The fault lies between the last point that saw a segment and the first one that didn&apos;t.</p>
+        <FailureWalk
+          tone="warning"
+          title="2 · “Connection refused” on the intranet site"
+          normal={<>nginx listens on TCP 80 and 443.</>}
+          change={<>nginx is stopped. The Server is up, its other services run.</>}
+          evidence={
+            <>
+              <p>curl fails in milliseconds with refused: the Server&apos;s TCP answered the SYN with RST. Nothing listens on 80:</p>
+              <CliPanel run={only(cli(T_REFUSED, "laptop", "cisco", `curl http://${SRV}/`), /curl/)} />
+              <CliPanel run={cli(T_REFUSED, "server", "cisco", "systemctl status nginx")} />
+              <CliPanel run={cli(T_REFUSED, "server", "cisco", "ss -tlnp")} />
+            </>
+          }
+          next={<>Refused proves the path works both ways. Look at the service: stopped, crashed, or listening on another port or address.</>}
+          fix={<>Start nginx (<Mono>systemctl start nginx</Mono> on a real server; the lab&apos;s Server window has the switch).</>}
+          proof={<><Mono>ss -tlnp</Mono> lists :80 and :443 again, and curl returns the page.</>}
+        />
+        <FailureWalk
+          title="3 · The new API times out: the Server's own firewall"
+          normal={<>The API (gunicorn) listens on TCP 8443 and accepts connections from the LAN.</>}
+          change={<>An iptables rule on the Server drops TCP 8443 arriving on eth0.</>}
+          evidence={
+            <>
+              <p>nc times out. The process does listen, but the SYN dies in the Server&apos;s INPUT chain before TCP ever sees it, so there is no SYN-RECV and no RST. The rule&apos;s packet counter shows each attempt:</p>
+              <CliPanel run={cli(T_HOSTFW, "laptop", "cisco", `nc -vz -w 10 ${SRV} 8443`)} />
+              <CliPanel run={cli(T_HOSTFW, "server", "cisco", "sudo iptables -L -n -v")} />
+            </>
+          }
+          next={<>&quot;It works on the server itself&quot; plus a timeout from outside: a host firewall. Compare with fault 1, where the Server did answer.</>}
+          fix={<>Delete the rule (<Mono>sudo iptables -F</Mono> in the lab; on a real server delete just that line, or allow the clients).</>}
+          proof={<>nc reports succeeded, and the DROP counter stops growing.</>}
+        />
+        <FailureWalk
+          title="4 · Nothing works after maintenance: no route back"
+          normal={<>The Server&apos;s default gateway is R1 ({TN_ADDR.r1wan}): replies to the Laptop&apos;s network go there.</>}
+          change={<>The Server loses its default route. It can still reach its own subnet.</>}
+          evidence={
+            <>
+              <p>SSH and the site both time out, and ping fails. Every SYN arrives and every service answers, but the answers have nowhere to go:</p>
+              <CliPanel run={cli(T_NOGW, "laptop", "cisco", `nc -vz -w 10 ${SRV} 22`)} />
+              <CliPanel run={only(cli(T_NOGW, "server", "cisco", "ss -tan"), /State|SYN-RECV/)} />
+              <CliPanel run={cli(T_NOGW, "server", "cisco", "ip route")} />
+            </>
+          }
+          next={<>Everything failing the same way, with SYN-RECV on the Server for each attempt, is a return-path problem on the Server itself, not one service.</>}
+          fix={<>Give the Server its default gateway back ({TN_ADDR.r1wan}; on Linux <Mono>sudo ip route add default via {TN_ADDR.r1wan}</Mono>).</>}
+          proof={<>ping answers, and nc to 22 succeeds.</>}
+        />
+        <FailureWalk
+          tone="warning"
+          title="5 · Name lookups fail at once: DNS stopped"
+          normal={<>named answers UDP queries on port 53.</>}
+          change={<>named is stopped. The website, by IP address, still works.</>}
+          evidence={
+            <>
+              <p>dig fails immediately. With no listener on UDP 53, the Server answers the datagram with an ICMP Port Unreachable, which dig reports as connection refused. UDP itself has no refusal: ICMP carries it.</p>
+              <CliPanel run={cli(T_DNS, "laptop", "cisco", `dig @${SRV} server.lab`)} />
+              <CliPanel run={cli(T_DNS, "server", "cisco", "ss -ulnp")} />
+            </>
+          }
+          next={<>Fast failure over UDP means the host answered (ICMP); slow failure with retries means nothing came back. Check the UDP listeners.</>}
+          fix={<>Start named.</>}
+          proof={<><Mono>ss -ulnp</Mono> shows :53, and dig gets its answer.</>}
+        />
+        <FailureWalk
+          tone="warning"
+          title="6 · The site is slow and stalls: a damaged cable"
+          normal={<>Frames cross R1&apos;s Gi0/1 cable intact; no errors on the interface.</>}
+          change={<>The cable on R1&apos;s Gi0/1 is damaged: every few frames arrive corrupted, and R1 discards them.</>}
+          evidence={
+            <>
+              <p>The page loads, slowly: TCP resends every lost segment, so the user sees delay, not failure. R1&apos;s interface counts the damaged frames:</p>
+              <CliPanel run={only(cli(T_CABLE, "r1", "cisco", "show interfaces gi0/1"), /line protocol|input errors|output errors/)} />
+              <CliPanel run={cli(T_CABLE, "r1", "juniper", "show interfaces ge-0/0/1 extensive")} />
+            </>
+          }
+          next={<>Retransmissions with no filter and no state problem point below TCP: look at interface error counters along the path.</>}
+          fix={<>Replace the cable.</>}
+          proof={<>The error counters stop growing, and the capture shows no more retransmissions.</>}
+        />
+        <LabBridge label="Troubleshoot them in the TCP & UDP Lab" onOpenLab={onOpenLab}>
+          The six tickets, reported as users report them. Reproduce, gather the evidence at every capture point, repair and verify with traffic.
+        </LabBridge>
       </GuideSection>
 
-      <GuideSection id="td-incident" eyebrow="Case study" title="The return-path incident" tone="danger">
-        <FieldTable title="The Server's capture during the fault (from the lab's model)" columns={CAP_COLS} rows={captureRows(INC, "server")} />
-        <FieldTable
-          title="Evidence"
-          columns={["Where", "What it shows"]}
-          rows={[
-            ["Laptop", `${incClient.join(" → ")} — it never processed a SYN-ACK; curl gave up after 10 s`],
-            ["Server socket", `${incTcbs.server?.state ?? "—"} — it got the SYN and answered (and keeps retrying its SYN-ACK)`],
-            ["Server capture", "SYN in; SYN-ACK out — and out again each time a SYN repeats"],
-            ["R1", `SYN-ACK arrives on Gi0/1, never leaves on Gi0/0; show access-lists: deny tcp host 10.20.20.20 eq www any (${INC.cfg.r1.acl.entries[0].hits} matches)`],
-            ["Laptop capture", "SYNs out, no SYN-ACK, no RST"],
+      <GuideSection id="td-prove" eyebrow="Troubleshooting" title="Proving a repair" tone="success">
+        <ChecklistCard
+          tone="success"
+          title="The proof"
+          mark="✓"
+          items={[
+            "Repeat the user's own test (the same tool, port and timeout) after the change",
+            "The handshake completes: SYN, SYN-ACK, ACK in the capture, ESTAB at both ends",
+            "The data arrives and is acknowledged, without a burst of retransmissions",
+            "The counter of the rule or interface you fixed stops growing; nothing else you didn't mean to change moved",
           ]}
         />
-        <Callout tone="danger" title="Root cause">
-          R1&apos;s ACL drops the Server&apos;s TCP replies from port 80. Not a refused port (no RST), not the application (the handshake never completed), not the Server (its own capture shows it answering), not ACK arithmetic (no SYN-ACK ever reached the Laptop).
-        </Callout>
-        <p>
-          After the deny line is removed, the same curl {fixedRun.ok ? "succeeds" : "still fails"}: SYN, SYN-ACK, ACK, request, page, close — and the proof is that test, not the accepted command.
-        </p>
-        <LabBridge label="Troubleshoot it in the TCP & UDP Lab" onOpenLab={onOpenLab}>
-          Reproduce the ticket, gather the evidence at every capture point, prove where the SYN-ACK stops, repair it and verify with traffic.
-        </LabBridge>
+      </GuideSection>
+
+      {/* ------------------------------------------------------------ Beyond this lesson */}
+      <GuideSection id="td-beyond" eyebrow="Beyond this lesson" title="Not simulated here — but part of TCP" tone="violet">
+        <p className="text-pv-text-muted">The following are real and important, but the lesson and the lab do not model them, so they are described without lesson values.</p>
+        <FieldTable
+          title="Beyond this lesson"
+          columns={["Topic", "In short"]}
+          rows={[
+            ["MSS", "Each side announces in its SYN (an option) the largest segment payload it wants; on a 1500-byte Ethernet MTU typically 1460 bytes."],
+            ["Window / flow control", "Every segment advertises how much more the receiver can buffer; the sender never has more than that unacknowledged."],
+            ["Congestion control", "The sender also limits itself to what the network seems to carry (slow start, congestion avoidance) — inferred from loss and delay."],
+            ["HTTPS over TCP", "HTTPS is HTTP over TLS over TCP port 443: TLS starts only after the handshake (the lab tests 443 with nc only). HTTP/3 uses QUIC over UDP instead."],
+            ["SACK, delayed ACK", "Real receivers may delay ACKs and tell the sender exactly which blocks arrived (SACK); the lab acknowledges every segment at once."],
+          ]}
+        />
       </GuideSection>
 
       {/* ------------------------------------------------------------ Master it */}
@@ -604,7 +740,7 @@ export function TcpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
         />
       </GuideSection>
 
-      <GuideSection id="td-practice" eyebrow="Practice" title="Practice in the TCP & UDP Lab" tone="cyan">
+      <GuideSection id="td-practice" eyebrow="Master it" title="Practice in the TCP & UDP Lab" tone="cyan">
         <ChecklistCard
           tone="cyan"
           title="In the lab you will"
@@ -614,22 +750,6 @@ export function TcpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
         <LabBridge label="Open the TCP & UDP Lab" onOpenLab={onOpenLab}>
           Same network, your own copy. Nothing you do there changes your lesson progress.
         </LabBridge>
-      </GuideSection>
-
-      {/* ------------------------------------------------------------ Beyond this lesson */}
-      <GuideSection id="td-beyond" eyebrow="Beyond this lesson" title="Not simulated here — but part of TCP" tone="violet">
-        <p className="text-pv-text-muted">The following are real and important, but the lesson and the lab do not model them, so they are described without lesson values.</p>
-        <FieldTable
-          title="Beyond this lesson"
-          columns={["Topic", "In short"]}
-          rows={[
-            ["MSS", "Each side announces in its SYN (an option) the largest segment payload it wants; on a 1500-byte Ethernet MTU typically 1460 bytes."],
-            ["Window / flow control", "Every segment advertises how much more the receiver can buffer; the sender never has more than that unacknowledged."],
-            ["Congestion control", "The sender also limits itself to what the network seems to carry (slow start, congestion avoidance) — inferred from loss and delay."],
-            ["HTTPS over TCP", "HTTPS is HTTP over TLS over TCP port 443: TLS starts only after the handshake (the lab tests 443 with nc only). HTTP/3 uses QUIC over UDP instead."],
-            ["SACK, delayed ACK", "Real receivers may delay ACKs and tell the sender exactly which blocks arrived (SACK); the lab acknowledges every segment at once."],
-          ]}
-        />
       </GuideSection>
     </div>
   );

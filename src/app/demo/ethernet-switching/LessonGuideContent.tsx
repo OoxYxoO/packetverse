@@ -1,24 +1,32 @@
-import { Callout, ChecklistCard, CompareCards, DIAGRAM as D, DiagramFrame, DiagramSvg, DPill, FlowSteps, Glossary, GuideSection, Mono, PathDivider, ProtocolStory, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DIAGRAM as D, DiagramFrame, DiagramSvg, DPill, FieldTable, FlowSteps, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { PresentationBridge } from "@/components/presentation/LessonPresentation";
 import { DSpokeLegend, DSwitchStar, DTable, type SpokeMode } from "@/components/lesson/FundamentalsGuideSvg";
 import { PracticeBridge } from "@/components/lesson/GuideInteractive";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import { BROADCAST_MAC, ETH_MAC, FDB_AGING_SEC } from "@/lib/sim-engine/scenarios/ethernetSwitching";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import { ciscoMac } from "@/lib/cli/format";
+import type { CliVendor } from "@/lib/cli/types";
+import { createEthLabState, ETH_TICKETS, runInstant, type EthLabAction, type EthLabState } from "@/lib/sim-engine/scenarios/ethernetLab";
+import { ethSw1CliSets, type EthCliApi } from "./ethernet-lab/ethLabCli";
 
 export const ETH_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "eth-mission", label: "The mission" },
-  { id: "eth-story", label: "The whole story" },
-  { id: "eth-breaks", label: "When it breaks" },
-  { id: "eth-topology", label: "The LAN" },
-  { id: "eth-first", label: "Learn + flood" },
-  { id: "eth-reply", label: "Known unicast" },
-  { id: "eth-broadcast", label: "Broadcast vs unknown" },
-  { id: "eth-aging", label: "Aging & MAC move" },
+  { id: "eth-mission", label: "What this lesson teaches" },
+  { id: "eth-network", label: "The network of this lesson" },
+  { id: "eth-ideas", label: "Three ideas you need" },
+  { id: "eth-walk", label: "What you will watch" },
+  { id: "eth-frame", label: "A frame carries two MACs" },
+  { id: "eth-first", label: "The first frame: learn, then flood" },
+  { id: "eth-reply", label: "The reply: one port only" },
+  { id: "eth-broadcast", label: "A broadcast floods on purpose" },
+  { id: "eth-aging", label: "A quiet host is forgotten" },
+  { id: "eth-move", label: "HOST-B moves to the hot desk" },
+  { id: "eth-verify", label: "What working looks like" },
   { id: "eth-incident", label: "The incident" },
-  { id: "eth-verify", label: "Verification" },
-  { id: "eth-evidence", label: "Read it on the switch" },
-  { id: "eth-other", label: "Other ways it breaks" },
+  { id: "eth-investigate", label: "Follow the frame, not the lights" },
+  { id: "eth-repair", label: "Repair and prove it" },
+  { id: "eth-other", label: "Other ways the table goes wrong" },
   { id: "eth-model", label: "Mental model" },
   { id: "eth-glossary", label: "Glossary" },
   { id: "eth-recap", label: "Recap" },
@@ -255,198 +263,267 @@ function LessonLabBridge() {
   );
 }
 
+/** The Ethernet Lab's own SW1 command sets, run against lab states: what this page shows is what the lab prints. */
+function lessonCli(s: EthLabState, vendor: CliVendor, command: string) {
+  const api: EthCliApi = { lab: s, act: () => undefined, cisco: { kind: "exec" }, setCisco: () => undefined, junosMode: "op", setJunosMode: () => undefined, cand: s.cfg, setCand: () => undefined, hist: [{ cfg: s.cfg, at: 0, by: "root" }], commit: () => undefined };
+  return runGuideCli(ethSw1CliSets(api)[vendor], command);
+}
+const playLab = (s: EthLabState, actions: EthLabAction[]) => actions.reduce(runInstant, s);
+const sendLab = (src: "HOST-A" | "HOST-B" | "HOST-C", dst: "HOST-A" | "HOST-B" | "HOST-C" | "broadcast"): EthLabAction => ({ type: "send", src, dst });
+/** A→B, B→A and HOST-C's broadcast: every host learned on its own port. */
+const HEALTHY = playLab(createEthLabState(), [sendLab("HOST-A", "HOST-B"), sendLab("HOST-B", "HOST-A"), sendLab("HOST-C", "broadcast")]);
+/** The lab's "stale" ticket, then HOST-A tries HOST-B. */
+const STALE = playLab(createEthLabState(), [...ETH_TICKETS.stale.setup, sendLab("HOST-A", "HOST-B")]);
+/** Clear the one entry, then the fresh test: flood, reply, known unicast. */
+const FIXED = playLab(STALE, [{ type: "clear", mac: B }, sendLab("HOST-A", "HOST-B"), sendLab("HOST-B", "HOST-A"), sendLab("HOST-A", "HOST-B")]);
+
 export function EthernetLessonGuideContent() {
+  const tableOk = lessonCli(HEALTHY, "cisco", "show mac address-table");
+  const tableBad = lessonCli(STALE, "cisco", "show mac address-table");
+  const statusBad = lessonCli(STALE, "cisco", "show interfaces status");
+  const tableFixed = lessonCli(FIXED, "cisco", "show mac address-table");
+  const junosBad = lessonCli(STALE, "juniper", "show ethernet-switching table");
+  const rows = /Vlan|----|DYNAMIC|STATIC|Total/;
+  const junosRows = /Vlan|name|default|entries/;
   return (
     <div className="space-y-12">
-      <GuideSection id="eth-mission" eyebrow="This lesson" title="Watch one switch think" tone="ethernet">
+      <GuideSection id="eth-mission" eyebrow="This lesson" title="What this lesson teaches" tone="ethernet">
         <p>
-          A switch has one job: get each Ethernet frame to the port where its destination lives. It is never told where anyone is. It works it out from the frames themselves, one <strong>source</strong> MAC at a time, and keeps what it learns in its <strong>forwarding database</strong> (FDB, also called the MAC table).
+          Three computers and a small desk switch are cabled to one switch, SW1. Every frame they send names the computer it is for, by MAC address, and SW1 must deliver it to the right port. Nobody tells SW1 where anyone is: it has to work that out from the frames themselves.
         </p>
-        <Callout tone="ethernet" title="The one rule to remember">
-          A switch learns from the <strong>source</strong> MAC, against the port the frame came in on. It uses the <strong>destination</strong> MAC only to decide where to send the frame.
-        </Callout>
-      </GuideSection>
-
-      <GuideSection id="eth-story" eyebrow="How it works" title="One frame's journey, and what the switch does at each step" tone="cyan">
-        <ProtocolStory
-          problem={
-            <>
-              Several hosts share one LAN. Each frame is meant for one of them, and only the frame says who: the <strong>destination MAC</strong>. A hub would repeat every frame to everyone. A switch must deliver it to the right port, and it starts out knowing no ports at all.
-            </>
-          }
-          steps={[
-            { actor: "HOST-A", action: <>builds an Ethernet frame: destination <Mono>{B}</Mono> (HOST-B), source <Mono>{A}</Mono>, sends it on its cable.</>, changes: "a frame arrives on SW1 ge-0/0/1", verify: `A capture on SW1 ge-0/0/1 shows the frame: destination HOST-B, source HOST-A.`, fails: { symptom: `Nothing reaches SW1.`, evidence: `Link down on ge-0/0/1 (port LED, interface status). That is Layer 1: no table can help until the link is up.` }, tone: "ethernet" },
-            { actor: "SW1", action: <>reads the <strong>source</strong> MAC and remembers it against the ingress port.</>, changes: <>FDB: <Mono>{A}</Mono> → ge-0/0/1</>, why: "that's the only reliable evidence of where a MAC lives: a frame just came from it", verify: `The MAC address table (FDB) lists HOST-A on ge-0/0/1.`, fails: { symptom: `HOST-A appears on the wrong port, or keeps jumping between ports.`, evidence: `A MAC that flaps between ports means a loop or a duplicate MAC. One that moved once means the host moved.` }, tone: "success" },
-            { actor: "SW1", action: <>looks up the <strong>destination</strong> MAC. No entry, so it floods a copy out every other port (never back out ge-0/0/1), frame unchanged.</>, changes: "copies reach HOST-B, HOST-C and DESK-SW", why: "unknown unicast: dropping it would break the very first conversation", verify: `Copies of the frame leave every other port, and none goes back out ge-0/0/1.`, fails: { symptom: `HOST-B never receives the first frame.`, evidence: `HOST-B unplugged or its port down. Or a stale entry still points HOST-B at an old port: then the switch forwards the frame there instead of flooding it (the lesson incident).` }, tone: "warning" },
-            { actor: "HOST-B / HOST-C", action: <>each NIC compares the destination with its own MAC. HOST-B accepts; HOST-C discards silently.</>, why: "hosts filter on the destination MAC, so flooding is safe, just wasteful", verify: `Only HOST-B passes the frame up. HOST-C drops it as not addressed to it.`, fails: { symptom: `HOST-B receives the frame but never answers.`, evidence: `That is a host problem (wrong target MAC, host firewall). The switch has done its job.` }, tone: "cyan" },
-            { actor: "HOST-B", action: <>replies to HOST-A.</>, changes: <>FDB: <Mono>{B}</Mono> → ge-0/0/2; the reply leaves on ge-0/0/1 only (HOST-A is known)</>, verify: `The FDB now lists HOST-B on ge-0/0/2, and the reply leaves on ge-0/0/1 only.`, fails: { symptom: `HOST-B is never learned.`, evidence: `A switch learns a MAC only when that MAC sends. No reply means no entry: look at the host.` }, tone: "success" },
-            { actor: "SW1", action: <>from now on forwards A ↔ B as <strong>known unicast</strong>: one port each way. A broadcast (<Mono>{BROADCAST_MAC}</Mono>) is still flooded every time, by design.</>, verify: `A ↔ B frames appear only on ports 1 and 2. HOST-C sees none of them.`, fails: { symptom: `Unicast frames are still flooded everywhere.`, evidence: `Entries keep disappearing (aging, port flaps) or moving. Watch the FDB while traffic flows.` }, tone: "violet" },
-            { actor: "SW1", action: <>refreshes each entry whenever that MAC sends again; removes it after the aging time (default {FDB_AGING_SEC} s) or when its port goes down.</>, why: "hosts move and switch off, so the table must forget", verify: `Each entry age resets whenever its MAC sends. When a port goes down, its entries vanish.`, fails: { symptom: `After a host moves, its traffic keeps going to the old port for a while.`, evidence: `A stale entry: the old port is still up (for example through a desk switch), so nothing removed it. Clear the entry or let the host send once.` }, tone: "warning" },
-          ]}
-          outcome={
-            <>
-              The switch builds its map purely from source MACs and uses it to deliver each frame to one port. When the map is wrong (a <strong>stale entry</strong>, for example a host moved behind a port that never went down), frames are forwarded confidently to the wrong place and no device reports an error. The fix is to clear the entry or make the host send, then verify that the switch relearns the right port.
-            </>
-          }
-        />
-        <PresentationBridge>New to switching? The visual presentation shows every step above with moving frames and a live MAC table.</PresentationBridge>
-      </GuideSection>
-
-      <GuideSection id="eth-breaks" eyebrow="When it breaks" title={`When a frame does not arrive: reason from the switch's two lookups`} tone="danger">
-        <p className="text-sm text-pv-text-muted">{`A switch only does two things with each frame: it learns the source and looks up the destination. Every Layer 2 failure is one of those two going wrong, or a link that is down.`}</p>
-        <TroubleshootingFlow
-          steps={[
-            { question: `Is the link up at both ends?`, look: `No link, no frames. Check port status and LEDs first.` },
-            { question: `Did the switch learn the sender, on the right port?`, look: `Look for the source MAC in the FDB. Missing: no frames are arriving. Wrong port or flapping: loop, duplicate MAC or a moved host.` },
-            { question: `What does the switch know about the destination?`, look: `No entry: it floods, and every port gets a copy. An entry: it sends on that one port only. If that port is wrong, the frame goes there and nowhere else, without any error.` },
-            { question: `Did the destination receive the frame and answer?`, look: `Capture on the destination port. Received but no answer: host problem. Answer sent: follow the reply through the same two lookups.` },
-            { question: `How do you prove the fix?`, look: `Send again. The frame appears on the correct port only, and the FDB shows both MACs on the ports where they really are.` },
+        <p>
+          This lesson shows how a switch does that: you watch SW1 learn from each frame&apos;s <strong>source</strong>, decide by its <strong>destination</strong>, flood when it doesn&apos;t know, and forget what it hasn&apos;t heard about. Then a user moves desks, SW1&apos;s table becomes wrong without a single error, and you find out why, fix it, and prove it.
+        </p>
+        <ChecklistCard
+          tone="ethernet"
+          title="By the end of this lesson you can"
+          mark="→"
+          items={[
+            "read the two MAC addresses of a frame and say which one the switch learns from",
+            "predict, for any frame, whether SW1 floods it or sends it out one port",
+            "explain why a broadcast floods even when SW1 knows every host",
+            "explain why SW1 forgets a quiet host, and why a link event never teaches it where a host went",
+            "find and repair the stale entry of the incident, and prove HOST-B is reachable again",
           ]}
         />
-        <Callout tone="cyan" title="The habit to build" icon="✓">
-          Walk the story in order and confirm each step with real evidence (a table, a capture, a command). The first step you cannot confirm is where the problem is. The boxes under each story step above say what to look at.
-        </Callout>
       </GuideSection>
 
-      <PathDivider title="Reference">Every part of the story in detail. Read the parts you need.</PathDivider>
-
-      <GuideSection id="eth-topology" eyebrow="Topology" title="SW1, three hosts and a hot desk" tone="cyan">
-        <DiagramFrame caption="Every link is one switch port. Everything shown is one broadcast domain.">
+      <GuideSection id="eth-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="SW1 with three hosts and a hot desk. Everything shown is one LAN: one broadcast domain.">
           <TopologyDiagram />
         </DiagramFrame>
+        <FieldTable
+          title="Who is where"
+          columns={["Device", "SW1 port", "MAC address"]}
+          rows={[
+            ["HOST-A", "ge-0/0/1", <Mono key="a">{A}</Mono>],
+            ["HOST-B", "ge-0/0/2", <Mono key="b">{B}</Mono>],
+            ["HOST-C", "ge-0/0/3", <Mono key="c">{C}</Mono>],
+            ["DESK-SW (hot desk)", "ge-0/0/4", "unmanaged, one free port"],
+          ]}
+        />
         <p>
-          The addresses are easy to read on purpose: HOST-A <Mono>{A}</Mono>, HOST-B <Mono>{B}</Mono>, HOST-C <Mono>{C}</Mono>. DESK-SW is a small unmanaged switch on ge-0/0/4. It is a learning bridge too, but nobody configures it.
+          The MAC addresses are easy to read on purpose: they only differ in the last digit. DESK-SW is a small unmanaged switch under the hot desk. It learns and floods like SW1, but nobody configures it and you can&apos;t ask it anything.
         </p>
         <p className="text-sm text-pv-text-muted">
-          One port, two names: this guide uses SW1&apos;s Junos names (<Mono>ge-0/0/1</Mono>–<Mono>ge-0/0/4</Mono>). On a Cisco switch the same ports are <Mono>GigabitEthernet1/0/1</Mono>–<Mono>1/0/4</Mono>, printed <Mono>Gi1/0/1</Mono>–<Mono>Gi1/0/4</Mono> in its MAC table. The Ethernet Lab shows whichever you pick, everywhere at once.
+          One port, two names: this page uses SW1&apos;s Junos names (<Mono>ge-0/0/1</Mono>–<Mono>ge-0/0/4</Mono>). On a Cisco switch the same ports are <Mono>GigabitEthernet1/0/1</Mono>–<Mono>1/0/4</Mono>, printed <Mono>Gi1/0/1</Mono>–<Mono>Gi1/0/4</Mono>. The Ethernet Lab shows whichever you pick.
         </p>
       </GuideSection>
 
-      <GuideSection id="eth-first" eyebrow="First frame" title="Learn the source, then flood the unknown" tone="warning">
+      <GuideSection id="eth-ideas" eyebrow="This lesson" title="Three ideas you need" tone="cyan">
+        <FlowSteps
+          steps={[
+            { title: "Learn from the source", body: "Each frame says who sent it. SW1 writes that source MAC down against the port the frame came in on. That is the only way it ever finds a host.", tone: "success" },
+            { title: "Decide by the destination", body: "SW1 looks the destination MAC up in its table. Found: out that one port. Not found, or a broadcast: a copy out every other port.", tone: "cyan" },
+            { title: "The table is only as fresh as the last frame", body: `An entry is refreshed each time that host sends, and forgotten after ${FDB_AGING_SEC} s of silence or when its port goes down. Nothing else updates it.`, tone: "warning" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="eth-walk" eyebrow="This lesson" title="What you will watch, step by step" tone="warning">
+        <FlowSteps
+          steps={[
+            { title: "The first frame", body: "HOST-A → HOST-B on an empty table: SW1 learns HOST-A and floods the frame, because it doesn't know HOST-B yet.", tone: "warning" },
+            { title: "The reply", body: "HOST-B answers. SW1 learns HOST-B and sends the reply out ge-0/0/1 only.", tone: "success" },
+            { title: "A broadcast", body: "HOST-C sends to everyone. SW1 floods it although it knows every host, and still learns HOST-C.", tone: "arp" },
+            { title: "Silence", body: `HOST-C goes quiet for more than ${FDB_AGING_SEC} s, and SW1 forgets it.`, tone: "violet" },
+            { title: "A move", body: "HOST-B moves to the hot desk. SW1 finds it there only when HOST-B sends.", tone: "cyan" },
+            { title: "The incident", body: "HOST-B comes back to its own desk, and HOST-A can't reach it. Every light is green. You find out why and fix it.", tone: "danger" },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">The sections below walk through each step on this network, in the same order.</p>
+      </GuideSection>
+
+      <GuideSection id="eth-frame" eyebrow="The frame" title="A frame carries two MAC addresses" tone="ethernet">
+        <p>
+          Everything on this LAN travels in Ethernet frames. When HOST-A sends to HOST-B, its network card builds a frame that starts with two addresses: the <strong>destination</strong> <Mono>{B}</Mono> (who it is for) and the <strong>source</strong> <Mono>{A}</Mono> (who sent it). Then comes the EtherType (what is inside), the data, and a checksum (FCS) that lets the receiver throw away a damaged frame.
+        </p>
+        <p>
+          Every network card keeps only frames addressed to its own MAC (or to everyone) and silently drops the rest. So a copy of HOST-B&apos;s frame that reaches HOST-C does no harm: HOST-C&apos;s card reads the destination, sees it isn&apos;t its own, and discards it.
+        </p>
+        <Callout tone="ethernet" title="SW1 never changes the frame" icon="→">
+          The switch reads both addresses but rewrites neither. The frame that leaves SW1 is bit for bit the frame that came in. Only a router builds a new frame.
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="eth-first" eyebrow="The first frame" title="The first frame: learn the source, flood the unknown" tone="warning">
+        <p>SW1 has just started and its table is empty. HOST-A&apos;s frame for HOST-B arrives on ge-0/0/1, and SW1 does two things, always in this order:</p>
         <DiagramFrame caption="The frame arrives on ge-0/0/1 (amber). Copies leave every other port (cyan). The destination MAC never changes.">
           <FirstFrameDiagram />
         </DiagramFrame>
         <FlowSteps
           steps={[
-            { title: "Learn", body: <>The frame came in on ge-0/0/1 with source <Mono>{A}</Mono>, so SW1 records <Mono>{A} → ge-0/0/1</Mono>.</>, tone: "warning" },
-            { title: "Look up", body: <>SW1 looks up the destination <Mono>{B}</Mono>. There is no entry.</>, tone: "danger" },
-            { title: "Flood (unknown unicast)", body: "SW1 sends copies out ge-0/0/2, ge-0/0/3 and ge-0/0/4, but never back out ge-0/0/1. The frame is still a unicast frame for HOST-B. Nothing turns it into a broadcast.", tone: "cyan" },
-            { title: "Filter at the hosts", body: "HOST-B's NIC sees its own MAC and accepts the frame. HOST-C's NIC sees a different MAC and discards it.", tone: "success" },
+            { title: "Learn", body: <>The source is <Mono>{A}</Mono> and the frame came in on ge-0/0/1, so SW1 writes <Mono>{A} → ge-0/0/1</Mono>.</>, tone: "success" },
+            { title: "Look up", body: <>The destination <Mono>{B}</Mono> is not in the table.</>, tone: "danger" },
+            { title: "Flood", body: "SW1 sends a copy out ge-0/0/2, ge-0/0/3 and ge-0/0/4, never back out ge-0/0/1. This is unknown unicast: the frame is still addressed to HOST-B alone.", tone: "warning" },
+            { title: "Filter at the hosts", body: "HOST-B's card accepts its copy. HOST-C's card discards its copy. DESK-SW has nobody behind its free port, so its copy goes no further.", tone: "cyan" },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="eth-reply" eyebrow="The reply" title="Known unicast uses one port" tone="success">
+      <GuideSection id="eth-reply" eyebrow="The reply" title="The reply goes out one port only" tone="success">
+        <p>HOST-B answers. Its frame comes in on ge-0/0/2 with source <Mono>{B}</Mono>, so SW1 learns HOST-B there. The destination, HOST-A, is already in the table: SW1 sends the reply out ge-0/0/1 and nowhere else.</p>
         <DiagramFrame caption="HOST-B's reply teaches SW1 where HOST-B lives. HOST-A is already known, so only ge-0/0/1 is used.">
           <ReplyDiagram />
         </DiagramFrame>
-        <p>From now on, frames in both directions are known unicast. When HOST-A sends to HOST-B again, SW1 simply refreshes HOST-A&apos;s entry and forwards out ge-0/0/2. Nothing is flooded.</p>
+        <p>From now on HOST-A ↔ HOST-B is <strong>known unicast</strong> in both directions: one port in, one port out. HOST-C never sees another frame of their conversation, and each frame refreshes its sender&apos;s entry.</p>
       </GuideSection>
 
-      <GuideSection id="eth-broadcast" eyebrow="Two kinds of flood" title="Broadcast is not unknown unicast" tone="arp">
-        <DiagramFrame caption="Both are flooded out every port except the ingress port, but for different reasons.">
+      <GuideSection id="eth-broadcast" eyebrow="Broadcast" title="A broadcast floods on purpose" tone="arp">
+        <p>
+          HOST-C sends a frame to <Mono>{BROADCAST_MAC}</Mono>, the broadcast address, which means &quot;every card on this LAN&quot;. (Here it is an ARP request, EtherType <Mono>0x0806</Mono>; the ARP lesson covers what it asks.) SW1 learns <Mono>{C} → ge-0/0/3</Mono> from the source as usual, and floods the frame out every other port, although it knows exactly where HOST-A and HOST-B are.
+        </p>
+        <DiagramFrame caption="Both kinds of flood leave every port except the one the frame came in on, for two different reasons.">
           <BroadcastVsUnknownDiagram />
         </DiagramFrame>
-        <p>
-          HOST-C&apos;s broadcast (EtherType <Mono>0x0806</Mono>, an ARP request; what ARP does is covered in its own lesson) is flooded even though SW1 knows every host. SW1 still learns <Mono>{C} → ge-0/0/3</Mono> from its source.
-        </p>
+        <p>Unknown unicast floods because SW1 is missing an entry, and it stops once the host is learned. A broadcast floods because it is addressed to everyone, and no table entry can ever stop it.</p>
       </GuideSection>
 
-      <GuideSection id="eth-aging" eyebrow="Time and movement" title="Entries age out, and hosts move" tone="violet">
+      <GuideSection id="eth-aging" eyebrow="Time" title="A quiet host is forgotten" tone="violet">
         <p>
-          Every dynamic entry has a timer. Each frame a MAC <em>sources</em> refreshes its entry. An entry that goes {FDB_AGING_SEC} s without a refresh (the IEEE 802.1D recommended default) is removed. That is what happened to HOST-C after it went quiet.
+          Every learned entry has a timer. Each frame a host <em>sends</em> resets its timer. HOST-A and HOST-B keep talking, so their entries stay. HOST-C goes quiet, and after {FDB_AGING_SEC} s without a frame from it (the usual default), SW1 removes its entry.
+        </p>
+        <p>Nothing is broken: HOST-C is still cabled to ge-0/0/3. The next frame for HOST-C is simply unknown unicast and is flooded, and HOST-C is learned again the moment it answers.</p>
+        <Callout tone="violet" title="Why forget at all?" icon="→">
+          Hosts move, switch off and get replaced. A table that never forgot would keep sending frames to places hosts left long ago. Aging trades a little flooding for a table that heals itself.
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="eth-move" eyebrow="A move" title="HOST-B moves to the hot desk" tone="cyan">
+        <p>
+          HOST-B&apos;s user unplugs from ge-0/0/2 and plugs into DESK-SW. Two things happen on SW1. First, ge-0/0/2 goes down, and SW1 removes the entries it had learned there: HOST-B is gone from the table. Second, nothing else. A link going up or down never tells a switch where a host went.
         </p>
         <DiagramFrame caption="HOST-B moves to DESK-SW. SW1 finds the new location only from HOST-B's own frame.">
           <MoveDiagram />
         </DiagramFrame>
-        <p>When ge-0/0/2 went down, SW1 flushed the entries learned on that port. That is common managed-switch behavior, but it tells SW1 nothing about where HOST-B went. The new entry on ge-0/0/4 appears only when HOST-B transmits.</p>
+        <p>
+          When HOST-B sends its first frame from the hot desk, it reaches SW1 on ge-0/0/4, and SW1 learns <Mono>{B} → ge-0/0/4</Mono>. Now look at what holds that entry in place: ge-0/0/4 is the link to DESK-SW, and it stays up whoever is plugged into DESK-SW. Keep that in mind: it is the key to the incident.
+        </p>
       </GuideSection>
 
-      <GuideSection id="eth-incident" eyebrow="Troubleshooting" title="A stale entry, with no errors anywhere" tone="danger">
-        <DiagramFrame caption="The FDB is confidently wrong. SW1 forwards correctly according to its table; the table is out of date.">
+      <GuideSection id="eth-verify" eyebrow="Verification" title="What working looks like on SW1" tone="success">
+        <p>Each idea of this lesson has one place on SW1 that proves it. The commands are only the way to ask; what matters is what each answer proves.</p>
+        <FieldTable
+          title="Read the lesson on the switch"
+          columns={["Question", "Cisco IOS", "Junos", "What the answer proves"]}
+          rows={[
+            ["Is the link up?", <Mono key="1">show interfaces status</Mono>, <Mono key="2">show interfaces terse</Mono>, "No link, no frames: nothing is learned or delivered on that port"],
+            ["Where does SW1 think a MAC is?", <Mono key="3">show mac address-table</Mono>, <Mono key="4">show ethernet-switching table</Mono>, "The port SW1 will use. Compare it with where the host really is"],
+            ["Learned, or configured?", <Mono key="5">show mac address-table static</Mono>, <Mono key="6">show configuration vlans</Mono>, "A static entry never ages and is never relearned"],
+            ["Is a MAC moving between ports?", <Mono key="7">show logging</Mono>, <Mono key="8">show ethernet-switching mac-learning-log</Mono>, "One move: the host moved. Back and forth: two cards share a MAC"],
+          ]}
+        />
+        <p>After the conversation and the broadcast above, every host is learned on its own port:</p>
+        <CliPanel run={{ ...tableOk, output: pickLines(tableOk.output, rows) }} caption="SW1 · Cisco IOS · healthy" />
+        <p>And traffic confirms it: after that first flood, a capture on ge-0/0/3 shows none of HOST-A ↔ HOST-B&apos;s frames, only broadcasts and HOST-C&apos;s own traffic.</p>
+      </GuideSection>
+
+      <GuideSection id="eth-incident" eyebrow="Incident" title="The incident: HOST-B is back, and unreachable" tone="danger">
+        <p>HOST-B&apos;s user worked at the hot desk this morning, and is now back at their own desk, on ge-0/0/2. Since then HOST-A can&apos;t reach HOST-B. Every link light is green, and no device reports an error.</p>
+        <DiagramFrame caption="The table is confidently wrong: SW1 forwards correctly by its table, and the table is out of date.">
           <StaleDiagram />
         </DiagramFrame>
         <CompareCards
           items={[
-            { title: "Why it fails", tone: "danger", tag: "cause", points: ["HOST-B moved back to ge-0/0/2 and hasn't sent a frame yet", "ge-0/0/4 (DESK-SW) never went down, so nothing was flushed", "The entry has not aged out yet", "Known unicast goes out ge-0/0/4 only"] },
-            { title: "Why the other fixes don't help", tone: "warning", tag: "red herrings", points: ["ARP: HOST-A already uses the right MAC", "A static entry to ge-0/0/4 would lock in the wrong port", "The ge-0/0/4 cable works fine"] },
+            { title: "What should happen", tone: "success", tag: "normal", points: ["HOST-B's old entry is gone, so HOST-A's frame is flooded", "HOST-B receives it on ge-0/0/2 and answers", "SW1 learns HOST-B on ge-0/0/2"] },
+            { title: "What happens", tone: "danger", tag: "incident", points: ["SW1 still has HOST-B on ge-0/0/4", "HOST-A's frame is known unicast: out ge-0/0/4 only", "DESK-SW's port 2 is empty, so the frame dies there"] },
           ]}
         />
-      </GuideSection>
-
-      <GuideSection id="eth-verify" eyebrow="Verification" title="Prove it with frames" tone="success">
-        <ChecklistCard
-          tone="success"
-          title="After clearing the entry"
-          mark="✓"
-          items={[
-            <>HOST-A → HOST-B is unknown unicast again, so SW1 floods it and HOST-B (on ge-0/0/2) receives it.</>,
-            <>HOST-B replies. SW1 learns <Mono>{B} → ge-0/0/2</Mono>, the correct port.</>,
-            "The next HOST-A → HOST-B frame is known unicast out ge-0/0/2 only.",
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="eth-evidence" eyebrow="Evidence" title="Read the story on the switch itself" tone="cyan">
-        <p>Each question in the story has one place on SW1 that answers it. The commands are only the way to ask; what matters is what each answer proves.</p>
-        <div className="overflow-x-auto rounded-xl border border-pv-border">
-          <table className="w-full min-w-[560px] text-left text-[13px]">
-            <thead className="text-[11px] uppercase tracking-wide text-pv-text-faint">
-              <tr>
-                <th className="px-3 py-2 font-semibold">Question</th>
-                <th className="px-3 py-2 font-semibold">Cisco IOS</th>
-                <th className="px-3 py-2 font-semibold">Junos</th>
-                <th className="px-3 py-2 font-semibold">What the answer proves</th>
-              </tr>
-            </thead>
-            <tbody className="align-top">
-              {[
-                ["Is the link up?", "show interfaces status", "show interfaces terse", "No link, no frames: nothing can be learned or delivered on that port."],
-                ["Where does SW1 think a MAC is?", "show mac address-table address …", "show ethernet-switching table", "The port SW1 will use. Compare it with where the host really is."],
-                ["Was it learned or configured?", "show mac address-table static", "show configuration vlans", "A static entry never ages and is never relearned: only removing it fixes it."],
-                ["Did frames really cross a port?", "show interfaces Gi1/0/N", "show interfaces ge-0/0/N", "Counters move only when frames pass. A capture shows which ones."],
-                ["Is a MAC moving between ports?", "show logging", "show ethernet-switching mac-learning-log", "One move: the host moved. Back and forth: a duplicate MAC or a loop."],
-                ["Make SW1 forget one entry", "clear mac address-table dynamic address …", "clear ethernet-switching table", "The next frame to that MAC is flooded until it sends again — proof of relearning."],
-              ].map(([q, c, j, w]) => (
-                <tr key={q} className="border-t border-pv-border/60">
-                  <td className="px-3 py-2 text-pv-text">{q}</td>
-                  <td className="px-3 py-2"><Mono>{c}</Mono></td>
-                  <td className="px-3 py-2"><Mono>{j}</Mono></td>
-                  <td className="px-3 py-2 text-pv-text-muted">{w}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </GuideSection>
-
-      <GuideSection id="eth-other" eyebrow="Troubleshooting" title="Other ways the map goes wrong" tone="warning">
-        <p>The stale entry is one way for SW1&apos;s table to disagree with reality. The same two lookups explain the others; each leaves different evidence.</p>
         <CompareCards
           items={[
-            { title: "No link", tone: "danger", tag: "cable / shut port", points: ["Port status: notconnect or disabled", "Entries on that port were flushed", "Frames to the host: flooded or dropped, never accepted"] },
-            { title: "A static entry", tone: "warning", tag: "configured", points: ["The table says STATIC, with no age", "Survives the host sending from its real port", "Fixed only by removing it from the configuration"] },
-            { title: "A duplicate MAC", tone: "danger", tag: "two NICs, one address", points: ["The MAC jumps between two ports (show logging: flapping)", "Frames go to whichever card spoke last", "Fixed by giving one card back its own address"] },
-            { title: "A silent host", tone: "cyan", tag: "nothing broken", points: ["No entry for the host: it hasn't sent within the aging time", "Every frame to it is flooded: other hosts' captures see them", "Ends the moment the host sends anything"] },
+            { title: "Why it fails", tone: "danger", tag: "cause", points: ["Leaving the hot desk took down DESK-SW's port, not SW1's ge-0/0/4", "So SW1 never flushed the entry, and it has not aged out yet", "HOST-B has not sent since it came back, so nothing corrected it"] },
+            { title: "What it can't be", tone: "warning", tag: "red herrings", points: ["A cable fault: ge-0/0/2 is connected, and so is ge-0/0/4", "A wrong MAC at HOST-A: the frame is correctly addressed to HOST-B", "Flooding: SW1 isn't flooding at all, it is sure it knows"] },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="eth-model" eyebrow="Mental model" title="A switch is a very honest note-taker" tone="cyan">
-        <p>SW1 writes down where each sender was last seen. It forwards by those notes, and when it has no note it asks everyone (floods). Its notes are only as fresh as the last frame each host sent. Most switching mysteries come down to a missing note, an old note, or a note in the wrong place.</p>
+      <GuideSection id="eth-investigate" eyebrow="Investigation" title="Follow the frame, not the link lights" tone="danger">
+        <TroubleshootingFlow
+          steps={[
+            { question: "Is every link up?", look: "show interfaces status: all four ports connected. Layer 1 is fine." },
+            { question: "Where does SW1 think HOST-B is?", look: "show mac address-table: HOST-B on Gi1/0/4, the hot desk." },
+            { question: "Where is HOST-B really?", look: "On ge-0/0/2. The table and reality disagree: that entry is stale." },
+          ]}
+        />
+        <CliPanel run={{ ...statusBad, output: pickLines(statusBad.output, /Port|Gi1\/0\/[24]/) }} caption="SW1 · Cisco IOS · during the incident" />
+        <CliPanel run={{ ...tableBad, output: pickLines(tableBad.output, rows) }} caption="SW1 · Cisco IOS · during the incident" />
+        <p className="text-sm text-pv-text-muted">On Junos the same entry shows as <Mono>{B.toLowerCase()}</Mono> with flag D on <Mono>ge-0/0/4.0</Mono>. The D matters: a dynamic entry was learned, so it can be cleared and relearned.</p>
+        <CliPanel run={{ ...junosBad, output: pickLines(junosBad.output, junosRows) }} caption="SW1 · Junos · during the incident" />
+      </GuideSection>
+
+      <GuideSection id="eth-repair" eyebrow="Repair" title="Repair, and prove it with fresh traffic" tone="success">
+        <p>The entry is wrong, so remove it, and let HOST-B&apos;s own frame teach SW1 the right port. Clear only that entry: nothing else in the table is wrong.</p>
+        <CompareCards
+          items={[
+            { title: "Cisco IOS · SW1", tone: "cyan", tag: "one entry", points: [`clear mac address-table dynamic address ${ciscoMac(B)}`] },
+            { title: "Junos · SW1", tone: "violet", tag: "what ge-0/0/4 learned", points: ["clear ethernet-switching table interface ge-0/0/4"] },
+          ]}
+        />
+        <p>Then send HOST-A → HOST-B again. With no entry, SW1 floods it, HOST-B answers from ge-0/0/2, and SW1 learns the right port:</p>
+        <CliPanel run={{ ...tableFixed, output: pickLines(tableFixed.output, rows) }} caption="SW1 · Cisco IOS · after the repair" />
+        <ChecklistCard
+          tone="success"
+          title="The proof"
+          mark="✓"
+          items={[
+            "show mac address-table lists HOST-B on Gi1/0/2 (ge-0/0/2), learned again",
+            "The next HOST-A → HOST-B frame leaves ge-0/0/2 only, and HOST-B receives it",
+            "A capture on ge-0/0/4 shows no HOST-B frames any more",
+            "HOST-A and HOST-C kept their entries: nothing else was touched",
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Waiting also fixes it, eventually: the entry ages out, or the moment HOST-B sends anything, SW1 moves it to ge-0/0/2. Clearing is how you stop waiting.</p>
+      </GuideSection>
+
+      <GuideSection id="eth-other" eyebrow="Troubleshooting" title="Other ways SW1's table goes wrong" tone="warning">
+        <p>The stale entry is one way for the table to disagree with reality. The lab&apos;s tickets add four more, each with its own evidence. The Deep Dive walks through all five with real Cisco and Junos output.</p>
+        <CompareCards
+          items={[
+            { title: "No link", tone: "danger", tag: "cable / shut port", points: ["The port is notconnect (or disabled)", "The host's entry was flushed with the link", "Frames for it are flooded and nobody accepts them"] },
+            { title: "A static entry", tone: "warning", tag: "configured", points: ["The table says STATIC, with no age", "The host sending from its real port changes nothing", "Only removing the configuration fixes it"] },
+            { title: "A duplicate MAC", tone: "danger", tag: "two cards, one address", points: ["The MAC moves between two ports (show logging)", "Frames go to whichever card spoke last", "Fixed by giving one card back its own address"] },
+            { title: "A silent host", tone: "cyan", tag: "nothing broken", points: ["No entry: the host hasn't sent in the aging time", "Frames for it are flooded, so others see them", "Ends the moment the host sends anything"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="eth-model" eyebrow="Mental model" title="A switch is an honest note-taker" tone="cyan">
+        <p>
+          SW1 keeps a notebook of last sightings: &quot;I last saw this MAC on that port&quot;. It writes a note only when a host sends, and crosses one out when it goes stale or its port goes dark. To deliver a frame it reads its notes; with no note, it asks every port. It never checks a note against reality, so a note can be missing (the frame floods), old (the frame goes where the host used to be) or forced (a static note nobody can overwrite). Every Ethernet mystery on one switch is one of those three.
+        </p>
       </GuideSection>
 
       <GuideSection id="eth-glossary" eyebrow="Glossary" title="Terms used in this lesson" tone="violet">
         <Glossary
           items={[
-            { term: "FDB / MAC table", def: "The switch's MAC → port table, built by source learning." },
-            { term: "Source learning", def: "Recording a frame's source MAC against its ingress port." },
-            { term: "Unknown unicast", def: "A unicast frame whose destination is not in the FDB. It is flooded, and its destination MAC is left unchanged." },
-            { term: "Known unicast", def: "A unicast frame whose destination is in the FDB, sent out that one port." },
-            { term: "Broadcast", def: `Destination ${BROADCAST_MAC}. Always flooded within the broadcast domain.` },
-            { term: "Aging", def: `A dynamic entry is removed after ${FDB_AGING_SEC} s (default) with no frame from that MAC.` },
-            { term: "MAC move", def: "The same MAC is learned on a new port, which replaces the old entry." },
-            { term: "Ingress exclusion", def: "A frame is never flooded back out the port it arrived on." },
+            { term: "MAC address", def: "The 48-bit hardware address of a network card, written as six bytes." },
+            { term: "MAC table (FDB)", def: "The switch's MAC → port table, built by source learning." },
+            { term: "Source learning", def: "Writing a frame's source MAC against the port it came in on." },
+            { term: "Unknown unicast", def: "A frame for one host that the switch hasn't learned. It is flooded, still addressed to that one host." },
+            { term: "Known unicast", def: "A frame for a learned host, sent out that one port." },
+            { term: "Broadcast", def: `Destination ${BROADCAST_MAC}: for every card on the LAN, always flooded.` },
+            { term: "Aging", def: `Removing a learned entry after ${FDB_AGING_SEC} s (default) without a frame from that MAC.` },
+            { term: "Stale entry", def: "A learned entry that points to a port the host has left." },
           ]}
         />
       </GuideSection>
@@ -454,15 +531,31 @@ export function EthernetLessonGuideContent() {
       <GuideSection id="eth-recap" eyebrow="Recap" title="What you can now explain" tone="success">
         <ChecklistCard
           tone="cyan"
-          title="Ethernet & Switching"
+          title="Ethernet & Switching in this lesson"
           mark="→"
-          items={["Learn from the source MAC; forward by the destination MAC", "Unknown unicast floods (the destination stays unicast), and hosts filter it", "Known unicast uses one port", "Broadcast always floods", "Entries age out and move only when the host sends", "A stale dynamic entry is fixed by clearing it and letting the host be relearned"]}
+          items={[
+            "A frame carries a destination and a source MAC; the switch rewrites neither",
+            "SW1 learns from the source and decides by the destination",
+            "Unknown unicast floods until the host is learned; a broadcast always floods",
+            "Known unicast leaves one port only; hosts drop copies that aren't for them",
+            `Entries refresh when the host sends and age out after ${FDB_AGING_SEC} s; a port going down flushes them`,
+            "A stale entry is fixed by clearing it and letting the host's next frame be learned",
+          ]}
         />
       </GuideSection>
 
-      <GuideSection id="eth-practice" eyebrow="Practice" title="Do it yourself" tone="cyan">
-        <p>The Deep Dive tab teaches every step in detail, with SW1&apos;s Cisco and Junos output. The Ethernet Lab runs on this same network in four short levels — one frame, inside the switch, broadcast and time, two switches and a moving host — where you predict each forwarding decision on SW1&apos;s ports and watch its reasoning. Then the engineering workspace opens every device in its own window: SW1&apos;s console (Cisco or Junos), its ports, counters and captures, the hosts&apos; cables and network cards. There you take reported tickets (reproduce, explain from evidence, fix, prove with frames) and practice challenges.</p>
+      <GuideSection id="eth-practice" eyebrow="Practice" title="Practice it" tone="cyan">
+        <p>You now know what SW1 should be doing with every frame, and how to prove it. The Ethernet Lab gives you the same network, with SW1 as Cisco IOS or Junos:</p>
+        <FlowSteps
+          steps={[
+            { title: "Learn (4 levels)", body: "One frame, inside the switch, broadcast and time, two switches and a moving host: you predict each decision before SW1 makes it.", tone: "violet" },
+            { title: "Challenges (7)", body: "Teach SW1 every host, make HOST-C see HOST-B's frame, create a stale entry on purpose, pin HOST-B and see the price.", tone: "warning" },
+            { title: "Troubleshoot (5 tickets)", body: "This lesson's incident and the four other faults above, reported as users report them.", tone: "danger" },
+          ]}
+        />
+        <PresentationBridge>Watch SW1 learn, flood and forget with moving frames and a live MAC table in the Ethernet presentation.</PresentationBridge>
         <LessonLabBridge />
+        <p className="text-sm text-pv-text-muted">For the full course (the frame byte by byte, MAC address structure, aging and flushing in detail, real device output for every fault, a knowledge check), open the Deep Dive tab.</p>
       </GuideSection>
     </div>
   );

@@ -53,7 +53,7 @@ import type { CliVendor } from "@/lib/cli/types";
 import { firstConnectionCliSets } from "@/components/connection-network/cliAdapter";
 import { ArpLabWorkspace } from "./arp-lab/ArpLabWorkspace";
 import { ArpPresentationOverlay } from "./arp-presentation/ArpPresentation";
-import { PresentationButton, PresentationCard } from "@/components/presentation/LessonPresentation";
+import { PresentationButton, PresentationCard, PresentationOpenerContext } from "@/components/presentation/LessonPresentation";
 import { PracticeLabButton, PracticeLabCard, usePracticeLab, type PracticeLabEntry } from "@/components/practice-lab/PracticeLabLauncher";
 
 const CLI_BOUNDARY_NOTE = "PacketVerse CLI supports the commands relevant to this lesson. It is a state-driven learning simulator, not a full network operating system emulator.";
@@ -85,7 +85,7 @@ function eyeOffsetForFocusTarget(target: FocusTarget3D): [number, number, number
 /** The ARP Lesson Guide: the walkthrough's story, and the complete ARP Deep Dive (its bridges open the ARP Lab). */
 function guideTabs(onOpenLab: () => void): LessonGuideTab[] {
   return [
-    { id: "lesson", label: "This lesson", hint: "ARP in the guided walkthrough: the first packet to the Server", sections: ARP_LESSON_GUIDE_SECTIONS, content: <ArpLessonGuideContent /> },
+    { id: "lesson", label: "This lesson", hint: "Laptop · PC-B · PC-C · R1 · request, reply, cache, the gateway and a wrong gateway", sections: ARP_LESSON_GUIDE_SECTIONS, content: <ArpLessonGuideContent onOpenLab={onOpenLab} /> },
     { id: "arp", label: "ARP Deep Dive", hint: "The complete ARP lesson", sections: ARP_DEEP_DIVE_SECTIONS, content: <ArpDeepDiveContent onOpenLab={onOpenLab} /> },
   ];
 }
@@ -923,7 +923,14 @@ export function ArpLesson() {
         />
       )}
 
-      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="ARP: Resolving IP to MAC" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={tabs} recommendation={arpPhaseStep ? { tabId: "arp", text: "You’re at an ARP step — the ARP Deep Dive explains exactly what is happening." } : undefined} />
+      <PresentationOpenerContext.Provider
+        value={() => {
+          setGuideOpen(false);
+          openArpIntro();
+        }}
+      >
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="ARP: Resolving IP to MAC" subtitle="Laptop → Switch → Router → Server · 192.168.10.10 → 10.20.20.20" tabs={tabs} recommendation={arpPhaseStep ? { tabId: "arp", text: "You’re at an ARP step — the ARP Deep Dive explains exactly what is happening." } : undefined} />
+      </PresentationOpenerContext.Provider>
     </div>
   );
 }
