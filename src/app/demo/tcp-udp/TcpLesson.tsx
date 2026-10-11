@@ -56,7 +56,7 @@ import { CLITerminal, type CliSessionMap } from "@/components/protocol/CLITermin
 import type { CliVendor } from "@/lib/cli/types";
 import { firstConnectionCliSets } from "@/components/connection-network/cliAdapter";
 import { TcpPresentation } from "./tcp-presentation/TcpPresentation";
-import { PresentationButton, PresentationCard, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
 import { TcpLabWorkspace } from "./tcp-lab/TcpLabWorkspace";
 import { PracticeLabButton, PracticeLabCard, usePracticeLab, type PracticeLabEntry } from "@/components/practice-lab/PracticeLabLauncher";
 
@@ -95,7 +95,7 @@ const TCP_ENDPOINT_ROWS: { who: "client" | "server"; label: string; endpoint: st
 /** The TCP/UDP Lesson Guide: the walkthrough's story, and the complete TCP Deep Dive (its bridges open the TCP Lab). */
 function guideTabs(onOpenLab: () => void): LessonGuideTab[] {
   return [
-    { id: "lesson", label: "This lesson", hint: "The three-way handshake in the guided walkthrough", sections: TCP_LESSON_GUIDE_SECTIONS, content: <TcpLessonGuideContent /> },
+    { id: "lesson", label: "This lesson", hint: "Laptop → R1 → Server · ports, handshake, seq/ack, loss, refused vs timeout, UDP, a dropped SYN-ACK", sections: TCP_LESSON_GUIDE_SECTIONS, content: <TcpLessonGuideContent onOpenLab={onOpenLab} /> },
     { id: "tcp", label: "TCP & UDP Deep Dive", hint: "The complete TCP & UDP lesson · ports, seq/ack, states, loss, reset, troubleshooting", sections: TCP_DEEP_DIVE_SECTIONS, content: <TcpDeepDiveContent onOpenLab={onOpenLab} /> },
   ];
 }
@@ -925,7 +925,14 @@ export function TcpLesson() {
       {tcpIntro.mounted && <TcpPresentation open={tcpIntro.open} onClose={tcpIntro.close} onFinish={tcpIntro.finish} finishLabel={tcpIntro.hasNext ? "Open the TCP & UDP Lab →" : "Back to the lesson →"} />}
       {tcpLab.mounted && <TcpLabWorkspace open={tcpLab.open} onClose={tcpLab.closeLab} />}
 
-      <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="TCP &amp; UDP" subtitle="Ports, connections, state, reliability · Laptop → R1 → Server (10.20.20.20)" tabs={tabs}  />
+      <PresentationOpenerContext.Provider
+        value={() => {
+          setGuideOpen(false);
+          tcpIntro.show();
+        }}
+      >
+        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="TCP &amp; UDP" subtitle="Ports, connections, state, reliability · Laptop → R1 → Server (10.20.20.20)" tabs={tabs} />
+      </PresentationOpenerContext.Provider>
     </div>
   );
 }

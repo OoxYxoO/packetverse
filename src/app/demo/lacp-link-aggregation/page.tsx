@@ -13,10 +13,12 @@ import { lacpNames } from "./addressNames";
 import { LacpBundlePanel } from "./LacpBundlePanel";
 import { LACP_LESSON_SECTIONS, LacpLessonGuideContent } from "./LessonGuideContent";
 import { LACP_DEEP_DIVE_SECTIONS, LacpDeepDiveContent } from "./DeepDiveContent";
+import { LacpPresentation } from "./LacpPresentation";
+import { LacpLabWorkspace } from "./lacp-lab/LacpLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "SW1 ═ LAG1 ═ SW2 · Actor/Partner, keys, member failure and a key mismatch", sections: LACP_LESSON_SECTIONS, content: <LacpLessonGuideContent /> },
-  { id: "deep", label: "LACP & Link Aggregation Deep Dive", hint: "IEEE link aggregation and LACP in general", sections: LACP_DEEP_DIVE_SECTIONS, content: <LacpDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "SW1 + SW2 · two members, one LAG1 · flows, a failed member and the incident", sections: LACP_LESSON_SECTIONS, content: <LacpLessonGuideContent /> },
+  { id: "deep", label: "LACP & Link Aggregation Deep Dive", hint: "The full study course · LACPDUs, keys, states, modes, hashing, evidence, five faults", sections: LACP_DEEP_DIVE_SECTIONS, content: <LacpDeepDiveContent /> },
 ];
 
 function memberEdge(s: LacpState, m: Member, dy: number, dz: number): ShellEdge {
@@ -115,6 +117,12 @@ const config: FundamentalsLessonConfig<LacpState> = {
     },
   },
   sidePanel: (s) => <LacpBundlePanel s={s} />,
+  practiceLab: {
+    entry: { title: "LACP Lab", buttonLabel: "Practice LACP", description: "See two separate cables lose to spanning tree, bundle them, watch flows take different members, break the bundle every way it breaks (static vs LACP, passive, wrong group, silent failure) — then open SW1 and SW2 (Cisco or Junos) and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["m23-sw1-pdu", "lag-formed", "flow1-hash", "flow2-sw2", "fail-23", "flow1-moved", "flows-rebalanced", "incident-sw1", "incident-traffic", "diagnostic-layers", "verify-flows"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <LacpLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "link aggregation", render: (p) => <LacpPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read an LACP bundle", message: "Actor and Partner, local keys, Synchronization → Collecting → Distributing, per-flow member choice, member failover and a consistent key restored." },
 };
 

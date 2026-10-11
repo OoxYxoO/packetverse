@@ -17,7 +17,7 @@ import { Ipv4Presentation } from "./Ipv4Presentation";
 import { V4_DEEP_DIVE_SECTIONS, Ipv4DeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "HOST-A /26 → R1 → HOST-B /26 · AND test, gateway, TTL, wrong mask", sections: V4_LESSON_SECTIONS, content: <Ipv4LessonGuideContent /> },
+  { id: "lesson", label: "This Lesson", hint: "HOST-A · HOST-C · R1 · HOST-B · mask, local or remote, gateway, new frame, TTL, a wrong mask", sections: V4_LESSON_SECTIONS, content: <Ipv4LessonGuideContent /> },
   { id: "deep", label: "IPv4 Addressing & Subnetting Deep Dive", hint: "The full lesson on this network · prefixes, local vs remote, next hop vs destination, R1, troubleshooting", sections: V4_DEEP_DIVE_SECTIONS, content: <Ipv4DeepDiveContent /> },
 ];
 

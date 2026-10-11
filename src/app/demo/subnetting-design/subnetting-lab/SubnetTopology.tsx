@@ -191,8 +191,8 @@ export function SubnetTopology({ ss, color, focus, setFocus, onOpen, ping, pingK
         {ss.needs.map((n) => {
           const ds = devs.filter((d) => d.wire === n.id);
           const c = color(n.id);
-          if (n.kind === "link") return ds.map((d) => line("r1", d.id, `l-${d.id}`, c, n.id));
-          return [line("r1", `sw:${n.id}`, `l-${n.id}`, c, n.id), ...ds.map((d) => line(`sw:${n.id}`, d.id, `l-${d.id}`, c, n.id))];
+          if (n.kind === "link") return ds.map((d) => line("r1", d.id, `l-${n.id}-${d.id}`, c, n.id));
+          return [line("r1", `sw:${n.id}`, `l-${n.id}-sw`, c, n.id), ...ds.map((d) => line(`sw:${n.id}`, d.id, `l-${n.id}-${d.id}`, c, n.id))];
         })}
         {ss.needs.map((n) => {
           const q = ifLabel[n.id];

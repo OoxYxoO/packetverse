@@ -14,10 +14,12 @@ import { vpnNames } from "./addressNames";
 import { VpnSaPanel } from "./VpnSaPanel";
 import { VPN_LESSON_SECTIONS, VpnLessonGuideContent } from "./LessonGuideContent";
 import { VPN_DEEP_DIVE_SECTIONS, VpnDeepDiveContent } from "./DeepDiveContent";
+import { VpnPresentation } from "./VpnPresentation";
+import { VpnLabWorkspace } from "./vpn-lab/VpnLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "GW-A · GW-B · IKEv2, CHILD SAs, ESP tunnel mode and a traffic-selector incident", sections: VPN_LESSON_SECTIONS, content: <VpnLessonGuideContent /> },
-  { id: "deep", label: "IPsec / IKEv2 Deep Dive", hint: "IKEv2 and ESP in general — standards-based", sections: VPN_DEEP_DIVE_SECTIONS, content: <VpnDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "GW-A · GW-B · IKEv2, the CHILD SA, ESP and the incident", sections: VPN_LESSON_SECTIONS, content: <VpnLessonGuideContent /> },
+  { id: "deep", label: "IPsec / IKEv2 Deep Dive", hint: "The full study course · IKEv2, selectors, ESP, SPIs, steering, evidence, five faults", sections: VPN_DEEP_DIVE_SECTIONS, content: <VpnDeepDiveContent /> },
 ];
 
 const IKE_HEX = "#a78bfa";
@@ -122,6 +124,12 @@ const config: FundamentalsLessonConfig<VpnState> = {
     },
   },
   sidePanel: (s) => <VpnSaPanel s={s} />,
+  practiceLab: {
+    entry: { title: "VPN Lab", buttonLabel: "Practice VPNs", description: "Bring a site-to-site IPsec tunnel up and break it layer by layer — peer, IKE proposal, pre-shared key, traffic selectors, steering — watch IKE_SA_INIT and IKE_AUTH, ESP with its SPIs and counters, split tunneling to the internet, then configure both gateways in Cisco IOS or Junos and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["sa-summary", "incident-intro", "diagnostic-layers", "repair-challenge"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <VpnLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "site-to-site IPsec", render: (p) => <VpnPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read an IPsec tunnel", message: "Diffie-Hellman in IKE_SA_INIT, authentication and the first CHILD SA in IKE_AUTH, directional ESP SAs in tunnel mode, anti-replay sequence numbers — and a CHILD SA failure you can tell apart from a dead peer." },
 };
 

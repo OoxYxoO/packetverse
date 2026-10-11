@@ -13,10 +13,12 @@ import { stpNames } from "./addressNames";
 import { SpanningTreePanel } from "./SpanningTreePanel";
 import { STP_LESSON_SECTIONS, StpLessonGuideContent } from "./LessonGuideContent";
 import { STP_DEEP_DIVE_SECTIONS, StpDeepDiveContent } from "./DeepDiveContent";
+import { StpPresentation } from "./StpPresentation";
+import { StpLabWorkspace } from "./stp-lab/StpLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "SW1 · SW2 · SW3 triangle · root election, port roles, failover and an RSTP-disabled incident", sections: STP_LESSON_SECTIONS, content: <StpLessonGuideContent /> },
-  { id: "deep", label: "STP/RSTP Deep Dive", hint: "Spanning tree protocols in general", sections: STP_DEEP_DIVE_SECTIONS, content: <StpDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "SW1 · SW2 · SW3 triangle · the election, the blocked port, failover and the incident", sections: STP_LESSON_SECTIONS, content: <StpLessonGuideContent /> },
+  { id: "deep", label: "STP/RSTP Deep Dive", hint: "The full study course · BPDUs, election, RSTP convergence, guards, evidence, five faults", sections: STP_DEEP_DIVE_SECTIONS, content: <StpDeepDiveContent /> },
 ];
 
 const LINKS: { id: LinkId; a: StpSw; ap: string; b: StpSw; bp: string }[] = [
@@ -121,6 +123,12 @@ const config: FundamentalsLessonConfig<StpState> = {
     },
   },
   sidePanel: (s) => <SpanningTreePanel s={s} />,
+  practiceLab: {
+    entry: { title: "STP Lab", buttonLabel: "Practice STP", description: "Watch the triangle elect a root and block one port, change priorities and costs, cut links (RSTP vs legacy STP), plug in a stray switch and protect the tree — then open SW1–SW3 (Cisco or Junos), capture BPDUs and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["bpdu-anatomy", "sw3-learns-root", "root-ports", "cross-bpdus", "final-tree", "c-bcast-sw3-discard", "fail-link", "sw3-reconverge", "loop-send", "wave-3", "diagnostic-layers", "verify-tree"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <StpLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "spanning tree", render: (p) => <StpPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read a spanning tree", message: "Root by lowest Bridge ID, Root / Designated / Alternate roles, Discarding without link-down, rapid failover — and why every redundant port must stay under RSTP control." },
 };
 

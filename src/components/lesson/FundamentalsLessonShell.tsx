@@ -139,7 +139,7 @@ function framesFromPacket(p: PacketVisual | undefined): PacketStackFrame[] | und
 }
 
 /** Set by the shell around the Lesson Guide when the lesson has a Practice Lab: closes the Guide and opens the lab. */
-const PracticeLabOpenerContext = createContext<(() => void) | undefined>(undefined);
+export const PracticeLabOpenerContext = createContext<(() => void) | undefined>(undefined);
 
 /**
  * For Lesson Guide content: returns a function that opens this lesson's Practice Lab (e.g. for a `PracticeBridge`),

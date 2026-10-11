@@ -12,10 +12,12 @@ import { explainSd, sdTables } from "./explain";
 import { SdwanPathPanel } from "./SdwanPathPanel";
 import { SD_LESSON_SECTIONS, SdLessonGuideContent } from "./LessonGuideContent";
 import { SD_DEEP_DIVE_SECTIONS, SdDeepDiveContent } from "./DeepDiveContent";
+import { SdwanPresentation } from "./SdwanPresentation";
+import { SdwanLabWorkspace } from "./sdwan-lab/SdwanLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "BRANCH-EDGE · TUN-A / TUN-B · SLA probes, Voice/Bulk steering, failover, hysteresis and a monitor-target incident", sections: SD_LESSON_SECTIONS, content: <SdLessonGuideContent /> },
-  { id: "deep", label: "SD-WAN Path Engineering Deep Dive", hint: "Path engineering in general — vendor-neutral", sections: SD_DEEP_DIVE_SECTIONS, content: <SdDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "BRANCH · TUN-A / TUN-B · probes, steering, failover and the incident", sections: SD_LESSON_SECTIONS, content: <SdLessonGuideContent /> },
+  { id: "deep", label: "SD-WAN Path Engineering Deep Dive", hint: "The full study course · probes, SLA classes, policy, hysteresis, evidence, six faults", sections: SD_DEEP_DIVE_SECTIONS, content: <SdDeepDiveContent /> },
 ];
 
 const PROBE_HEX = "#f472b6";
@@ -125,6 +127,12 @@ const config: FundamentalsLessonConfig<SdState> = {
     },
   },
   sidePanel: (s) => <SdwanPathPanel s={s} />,
+  practiceLab: {
+    entry: { title: "SD-WAN Lab", buttonLabel: "Practice SD-WAN", description: "Brown out, break and restore each ISP; watch the edge measure both overlay paths, steer calls and backups by application policy, fail voice over and bring it back after the hold time — then change the policy on a Cisco Catalyst SD-WAN controller or a Junos SRX and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["policies", "measure-healthy", "select-voice", "degrade-a", "measure-bad", "voice-failover", "recover-1", "recover-3", "incident-intro", "diagnostic-layers", "repair-challenge"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <SdwanLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "SD-WAN path selection", render: (p) => <SdwanPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can engineer paths by SLA", message: "Underlay vs overlay, probe-based measurements, per-application steering, SLA failover, modeled hysteresis — and a monitor that must point at something that answers." },
 };
 

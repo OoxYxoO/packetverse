@@ -15,8 +15,8 @@ import { IcmpLabWorkspace } from "./icmp-lab/IcmpLabWorkspace";
 import { IC_DEEP_DIVE_SECTIONS, IcmpDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "HOST-A → R1 → R2 → HOST-B · ping · traceroute · PMTU incident", sections: IC_LESSON_SECTIONS, content: <IcmpLessonGuideContent /> },
-  { id: "deep", label: "ICMP & Diagnostics Deep Dive", hint: "ICMP messages and diagnostic tools in general", sections: IC_DEEP_DIVE_SECTIONS, content: <IcmpDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "HOST-A → R1 → R2 → HOST-B · ping, Time Exceeded, traceroute, unreachables, MTU/DF, a PMTU black hole", sections: IC_LESSON_SECTIONS, content: <IcmpLessonGuideContent /> },
+  { id: "deep", label: "ICMP & Diagnostics Deep Dive", hint: "The full ICMP course on this network · messages, ping, traceroute, unreachables, MTU and DF, six tickets", sections: IC_DEEP_DIVE_SECTIONS, content: <IcmpDeepDiveContent /> },
 ];
 /** The size calculator appears only after the repair, so it never answers the diagnosis or the repair challenge. */
 const CALC_STEPS = new Set(["verify-send", "verify-forward", "verify-deliver", "verify-reply"]);

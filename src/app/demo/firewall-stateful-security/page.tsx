@@ -14,10 +14,12 @@ import { fwNames } from "./addressNames";
 import { FirewallSessionPanel } from "./FirewallSessionPanel";
 import { FW_LESSON_SECTIONS, FwLessonGuideContent } from "./LessonGuideContent";
 import { FW_DEEP_DIVE_SECTIONS, FwDeepDiveContent } from "./DeepDiveContent";
+import { FirewallPresentation } from "./FirewallPresentation";
+import { FirewallLabWorkspace } from "./fw-lab/FirewallLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "CLIENT · FW1 · ISP · WEB-SERVER · policy, sessions, source NAT and a bad-NAT incident", sections: FW_LESSON_SECTIONS, content: <FwLessonGuideContent /> },
-  { id: "deep", label: "Stateful Firewall Deep Dive", hint: "Stateful filtering and NAT in general — vendor-neutral", sections: FW_DEEP_DIVE_SECTIONS, content: <FwDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "CLIENT · FW1 · WEB · the first packet, the reply, NAT and the incident", sections: FW_LESSON_SECTIONS, content: <FwLessonGuideContent /> },
+  { id: "deep", label: "Stateful Firewall Deep Dive", hint: "The full study course · zones, rules, sessions, NAT, order, evidence, five faults", sections: FW_DEEP_DIVE_SECTIONS, content: <FwDeepDiveContent /> },
 ];
 
 const TCP_HEX = "#34d399";
@@ -114,6 +116,12 @@ const config: FundamentalsLessonConfig<FwState> = {
     },
   },
   sidePanel: (s) => <FirewallSessionPanel s={s} />,
+  practiceLab: {
+    entry: { title: "Firewall Lab", buttonLabel: "Practice firewalls", description: "Follow packets through FW1's pipeline across trust, dmz and untrust: reorder and fix rules, watch sessions admit replies and drop strays, translate sources and publish the DMZ server — then run FW1 as a Cisco IOS zone-based firewall or a Junos SRX and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["policy-table", "fw-policy", "fw-nat", "session-table", "fw-deny", "incident-intro", "inc-stuck", "diagnostic-layers", "repair-challenge"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <FirewallLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "stateful firewalls", render: (p) => <FirewallPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can separate routing, policy, state and NAT", message: "Zone policy with a default deny, sessions that admit only their own replies, source NAT that rewrites the source tuple and both checksums — and an outage that was never a policy problem." },
 };
 

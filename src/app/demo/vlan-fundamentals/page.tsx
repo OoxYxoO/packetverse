@@ -11,10 +11,12 @@ import { explainVlan, vlanTables } from "./explain";
 import { vlanNames } from "./addressNames";
 import { VLAN_LESSON_SECTIONS, VlanLessonGuideContent } from "./LessonGuideContent";
 import { VLAN_DEEP_DIVE_SECTIONS, VlanDeepDiveContent } from "./DeepDiveContent";
+import { VlanPresentation } from "./VlanPresentation";
+import { VlanLabWorkspace } from "./vlan-lab/VlanLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "SW1 ⇄ SW2 trunk · VLAN 10 (A, B) · VLAN 20 (C, D) · allowed-VLAN incident", sections: VLAN_LESSON_SECTIONS, content: <VlanLessonGuideContent /> },
-  { id: "deep", label: "VLANs & Trunking Deep Dive", hint: "IEEE 802.1Q VLANs and trunks in general", sections: VLAN_DEEP_DIVE_SECTIONS, content: <VlanDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "SW1 + SW2 · Sales VLAN 10, Engineering VLAN 20 · the trunk and the incident", sections: VLAN_LESSON_SECTIONS, content: <VlanLessonGuideContent /> },
+  { id: "deep", label: "VLANs & Trunking Deep Dive", hint: "The full study course · tag, trunk rules, state, routing, evidence, five faults", sections: VLAN_DEEP_DIVE_SECTIONS, content: <VlanDeepDiveContent /> },
 ];
 
 function VlanPanel({ s }: { s: VlanState }) {
@@ -50,7 +52,7 @@ const config: FundamentalsLessonConfig<VlanState> = {
   xp: 150,
   steps: vlanFundamentalsSteps,
   createState: createVlanState,
-  badge: "Fundamentals · Layer 2",
+  badge: "Enterprise · Layer 2",
   title: "VLANs & Trunking",
   intro: "Two switches, one trunk, two VLANs. Watch access ports classify untagged frames, the trunk carry 802.1Q tags, FDBs stay per VLAN and broadcasts stay inside their VLAN — then fix a trunk that stopped carrying one VLAN.",
   facts: [
@@ -117,6 +119,12 @@ const config: FundamentalsLessonConfig<VlanState> = {
     ],
   },
   sidePanel: (s) => <VlanPanel s={s} />,
+  practiceLab: {
+    entry: { title: "VLAN Lab", buttonLabel: "Practice VLANs", description: "Watch frames take their VLAN's lane, gain and lose 802.1Q tags, break a trunk's allowed list and native VLAN, and route between VLANs through R1 — then open SW1, SW2 and R1 (Cisco or Junos), capture the tags on any link and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["a-sends", "sw1-tags", "tag-anatomy", "sw2-untag", "vlan-scoped-fdb", "a-broadcast", "isolation-note", "predict-inter-vlan", "fault-drop", "fault-vlan20-works", "diagnostic-layers"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <VlanLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "VLANs and trunking", render: (p) => <VlanPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can trace a frame through VLANs", message: "Access classification, 802.1Q tagging, per-VLAN FDBs, broadcast isolation and an allowed-VLAN repair." },
 };
 

@@ -1,30 +1,61 @@
-import { Callout, ChecklistCard, CompareCards, FailureSignatures, Misconceptions, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, FlowSteps, Glossary, GuideSection, Mono, PathDivider, ProtocolStory, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, FieldTable, FlowSteps, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { PresentationBridge } from "@/components/presentation/LessonPresentation";
 import { PracticeBridge } from "@/components/lesson/GuideInteractive";
 import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import { DFieldRow } from "@/components/lesson/FundamentalsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import type { CliVendor } from "@/lib/cli/types";
 import { BIG_DATA, ECHO_IDENTIFIER, FAULT_MTU, FIXED_DATA, IC_ADDR, INITIAL_TTL, PING_DATA } from "@/lib/sim-engine/scenarios/icmpDiagnostics";
+import { createIcNet, icApply, icRun, type IcDev, type IcState } from "@/lib/sim-engine/scenarios/icmpNet";
+import { icHostSet, icRouterSets, type IcCliApi } from "./icmp-lab/icCli";
 
+/**
+ * ICMP LESSON GUIDE — the lesson's story on the ICMP Lab's network (HOST-A → R1 → R2 → HOST-B): ping and its reply,
+ * Time Exceeded and traceroute, the unreachables, size/MTU/DF, then the path-MTU black hole incident. Every output is
+ * printed by the ICMP Lab's own terminals, run against the lab's model.
+ */
 export const IC_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "ic-mission", label: "The mission" },
-  { id: "ic-story", label: "The whole story" },
-  { id: "ic-proves", label: "What ping proves" },
-  { id: "ic-unreach", label: "Unreachables" },
-  { id: "ic-breaks", label: "When it breaks" },
-  { id: "ic-silence", label: "Silence & the way back" },
-  { id: "ic-method", label: "Fix → verify → prove" },
-  { id: "ic-position", label: "ICMP inside IPv4" },
-  { id: "ic-ping", label: "Ping and TTL" },
-  { id: "ic-echo", label: "Identifier & sequence" },
-  { id: "ic-trace", label: "Traceroute" },
-  { id: "ic-pmtu", label: "MTU, DF and 3/4" },
-  { id: "ic-fix", label: "The repair math" },
-  { id: "ic-verify", label: "Verification" },
+  { id: "ic-mission", label: "What this lesson teaches" },
+  { id: "ic-network", label: "The network of this lesson" },
+  { id: "ic-ideas", label: "Three ideas you need" },
+  { id: "ic-walk", label: "What you will watch" },
+  { id: "ic-position", label: "ICMP rides inside IPv4" },
+  { id: "ic-ping", label: "Ping: request and reply" },
+  { id: "ic-ttl", label: "Time Exceeded" },
+  { id: "ic-trace", label: "Traceroute: TTL 1, 2, 3" },
+  { id: "ic-unreach", label: "Unreachable: who says no" },
+  { id: "ic-silence", label: "Silence is evidence too" },
+  { id: "ic-pmtu", label: "Size, MTU and DF" },
+  { id: "ic-verify", label: "What working looks like" },
+  { id: "ic-incident", label: "The incident" },
+  { id: "ic-investigate", label: "Find the size that fails" },
+  { id: "ic-repair", label: "Repair and prove it" },
+  { id: "ic-other", label: "Other ways ICMP tells you" },
   { id: "ic-model", label: "Mental model" },
   { id: "ic-glossary", label: "Glossary" },
   { id: "ic-recap", label: "Recap" },
+  { id: "ic-practice", label: "Practice it" },
 ];
+
+/** The ICMP Lab's own terminals, run against a lab state (a probe typed there runs on a copy of that state). */
+function lessonCli(s: IcState, dev: IcDev, vendor: CliVendor, command: string) {
+  const r = dev === "R1" || dev === "R2" ? dev : "R1";
+  const api: IcCliApi = { view: s, act: (a) => icApply(s, a), cisco: { kind: "exec" }, setCisco: () => undefined, junosEdit: false, setJunosEdit: () => undefined, cand: s.cfg[r], setCand: () => undefined, hist: [{ cfg: s.cfg[r], at: 0, by: "root" }], commit: () => undefined };
+  return runGuideCli(dev === "R1" || dev === "R2" ? icRouterSets(api, dev)[vendor] : icHostSet(api, dev), command);
+}
+const HEALTHY = createIcNet();
+/** The lab's "blackhole" ticket: the R1–R2 circuit carries 1400 bytes, and HOST-B drops ICMP 3/4. */
+const BROKEN = icApply(createIcNet(), { type: "ticket", id: "blackhole" });
+const AFTER_DOWNLOAD = icApply(BROKEN, { type: "curl", file: "big" });
+const FIXED = (() => {
+  const cfg = JSON.parse(JSON.stringify(BROKEN.cfg)) as IcState["cfg"];
+  cfg["HOST-B"].input = [];
+  return icRun(BROKEN, { type: "cfg", cfg, text: "HOST-B: sudo iptables -D INPUT 1" }, { type: "curl", file: "big" });
+})();
+const B = IC_ADDR["HOST-B"];
+const BIG_URL = `http://${B}/files/big.iso`;
+const SMALL_URL = `http://${B}/index.html`;
 
 const ICMP = "#f472b6";
 
@@ -139,7 +170,7 @@ function TraceDiagram() {
         );
       })}
       <text x={20} y={238} fill={D.muted} fontSize={10}>
-        This lesson models ICMP-Echo-based traceroute. Other tools use UDP or TCP probes (Deep Dive).
+        Drawn with ICMP Echo probes (traceroute -I). Linux traceroute’s default uses UDP; the last hop then answers 3/3.
       </text>
     </DiagramSvg>
   );
@@ -191,198 +222,310 @@ function RepairMathDiagram() {
   );
 }
 
-
-function StoryLabBridge() {
+function LessonLabBridge() {
   const open = usePracticeLabOpener();
   return (
     <PracticeBridge label="Open the ICMP Lab" onPractice={open}>
-      Learn the signals in six short levels, then work like an engineer: probe from HOST-A, follow every packet on the topology, open the routers (Cisco or Junos) and hosts, read captures at every interface, and solve six tickets — fixing the real configuration and proving the repair.
+      Same network, your own copy. Nothing you do there changes your lesson progress.
     </PracticeBridge>
   );
 }
 
 export function IcmpLessonGuideContent() {
+  const pingOk = lessonCli(HEALTHY, "HOST-A", "cisco", `ping -c 2 ${B}`);
+  const ttl1 = lessonCli(HEALTHY, "HOST-A", "cisco", `ping -c 1 -t 1 ${B}`);
+  const traceOk = lessonCli(HEALTHY, "HOST-A", "cisco", `traceroute -I ${B}`);
+  const netUnr = lessonCli(HEALTHY, "HOST-A", "cisco", "ping -c 1 10.20.30.40");
+  const hostUnr = lessonCli(HEALTHY, "HOST-A", "cisco", "ping -c 1 198.51.100.99");
+  const bigOk = lessonCli(HEALTHY, "HOST-A", "cisco", `ping -c 1 -s ${BIG_DATA} -M do ${B}`);
+  const curlSmall = lessonCli(BROKEN, "HOST-A", "cisco", `curl -o /dev/null ${SMALL_URL}`);
+  const curlBig = lessonCli(BROKEN, "HOST-A", "cisco", `curl -o /dev/null ${BIG_URL}`);
+  const pingSmallBad = lessonCli(BROKEN, "HOST-A", "cisco", `ping -c 1 ${B}`);
+  const bigBad = lessonCli(BROKEN, "HOST-A", "cisco", `ping -c 1 -s ${BIG_DATA} -M do ${B}`);
+  const fitBad = lessonCli(BROKEN, "HOST-A", "cisco", `ping -c 1 -s ${FIXED_DATA} -M do ${B}`);
+  const r2Sent = lessonCli(AFTER_DOWNLOAD, "R2", "cisco", "show ip traffic");
+  const ipt = lessonCli(BROKEN, "HOST-B", "cisco", "sudo iptables -L INPUT -n --line-numbers");
+  const curlFixed = lessonCli(FIXED, "HOST-A", "cisco", `curl -o /dev/null ${BIG_URL}`);
+  const cacheFixed = lessonCli(FIXED, "HOST-B", "cisco", `ip route get ${IC_ADDR["HOST-A"]}`);
+  const pingLines = /PING|bytes from|From|transmitted/;
   return (
     <div className="space-y-12">
-      <GuideSection id="ic-mission" eyebrow="This lesson" title="Let the network tell you what's wrong" tone="ip">
-        <p>ICMP is how IPv4 reports reachability, path and delivery problems. Every tool in this lesson (ping, traceroute and path-MTU testing) works by sending a packet and reading which ICMP Type and Code come back.</p>
-        <Callout tone="ip" title="The core idea">
-          The message type <em>is</em> the diagnosis. 0/0 means the destination answered. 11/0 means TTL ran out at this hop. 3/4 means the packet is too big and DF is set.
-        </Callout>
-      </GuideSection>
-      <GuideSection id="ic-story" eyebrow="How it works" title="What happens, message by message" tone="cyan">
-        <ProtocolStory
-          problem={<>IP delivers packets or silently drops them. It has no way of its own to tell the sender why a packet didn&apos;t arrive, or whether the path works at all. ICMP is the network&apos;s feedback channel: small messages carried inside IP (Protocol 1, no ports).</>}
-          steps={[
-            { actor: "HOST-A", action: <>runs <Mono>ping {IC_ADDR["HOST-B"]}</Mono>: sends an <strong>Echo Request 8/0</strong> with Identifier {ECHO_IDENTIFIER} and Sequence 1, TTL {INITIAL_TTL}.</>, verify: `The capture shows ICMP type 8 code 0 leaving HOST-A, with the Identifier and Sequence 1.`, fails: { symptom: `ping fails immediately, or nothing leaves HOST-A.`, evidence: `Check HOST-A first: its address, mask, gateway and the ARP entry for the gateway. No request means no test at all.` }, tone: "ip" },
-            { actor: "R1, R2", action: <>forward it like any packet, each decrementing TTL ({INITIAL_TTL} → {INITIAL_TTL - 1} → {INITIAL_TTL - 2}).</>, why: "TTL limits how long a looping packet can live", verify: `The request arrives at HOST-B with TTL two lower than it left: one per router.`, fails: { symptom: `Time Exceeded comes back from a router, or the request just disappears.`, evidence: `Time Exceeded on a normal ping means a loop (traceroute repeats the same routers). A silent drop points at a missing route or a filter on that router.` }, tone: "cyan" },
-            { actor: "HOST-B", action: <>answers with an <strong>Echo Reply 0/0</strong> that copies the Identifier, Sequence and data.</>, changes: "HOST-A matches the reply to its request and measures round-trip time", why: "a reply proves both directions of the path work", verify: `An Echo Reply 0/0 with the same Identifier and Sequence arrives, and ping prints a round-trip time.`, fails: { symptom: `Request timed out, although a capture at HOST-B shows the requests arriving.`, evidence: `The forward path works and the reply path does not. Check each router has a route back to HOST-A, and look for filters on the way back.` }, tone: "success" },
-            { actor: "Traceroute", action: <>sends probes with TTL 1, 2, 3… Each router where TTL runs out drops the probe and returns <strong>Time Exceeded 11/0</strong>, revealing itself; the destination finally sends an Echo Reply.</>, verify: `Each traceroute line is a router that sent Time Exceeded. The last line is the destination itself.`, fails: { symptom: `A line of * * *, or the same two addresses repeating.`, evidence: `* means no ICMP came back from that hop (filtered or rate-limited). If later hops answer, the path works. Repeating addresses mean a routing loop.` }, tone: "violet" },
-            { actor: "HOST-A", action: <>sends a {20 + 8 + BIG_DATA}-byte ping with <strong>DF</strong> set. The R1–R2 link&apos;s IP MTU is only {FAULT_MTU}.</>, verify: `The capture shows the total length and DF=1 in the IP header.`, fails: { symptom: `Small pings work, big ones get no reply.`, evidence: `A size-dependent failure is an MTU problem. The size where replies stop is close to the path MTU.` }, tone: "warning" },
-            { actor: "R1", action: <>can&apos;t forward it without fragmenting, which DF forbids, so it drops it and returns <strong>Destination Unreachable 3/4</strong> with Next-Hop MTU {FAULT_MTU}.</>, changes: "the sender learns the exact size limit and who imposes it", verify: `HOST-A receives Destination Unreachable 3/4 from R1, carrying Next-Hop MTU ${FAULT_MTU}.`, fails: { symptom: `Big packets vanish with no message at all: a black hole.`, evidence: `Something on the way is dropping ICMP 3/4. The fix is to allow it, never to block more ICMP.` }, tone: "danger" },
-            { actor: "HOST-A", action: <>resends a packet that fits: 20 + 8 + {FIXED_DATA} = {FAULT_MTU} bytes, DF still set. The Echo Reply comes back.</>, verify: `An Echo Reply comes back for the ${FAULT_MTU}-byte packet, DF still set.`, fails: { symptom: `Still no reply at the new size.`, evidence: `Redo the arithmetic: total = 20 (IP) + 8 (ICMP) + data. A smaller link may sit further along the path: send again and read the next 3/4.` }, tone: "success" },
-          ]}
-          outcome={<>Echo tells you whether the path works; Time Exceeded maps the path; Destination Unreachable explains a drop and often exactly why. The pattern “small pings work, big ones vanish” points at MTU; the 3/4 message (if it isn&apos;t filtered) names the limit. Never blanket-block ICMP: filtering 3/4 creates path-MTU black holes.</>}
-        />
-        <PresentationBridge>Watch ping, traceroute and the MTU incident animated hop by hop in the ICMP presentation.</PresentationBridge>
-        <StoryLabBridge />
-      </GuideSection>
-
-      <GuideSection id="ic-proves" eyebrow="Reading a result" title="What a ping proves — and what it doesn't" tone="cyan">
-        <CompareCards
+      <GuideSection id="ic-mission" eyebrow="This lesson" title="What this lesson teaches" tone="violet">
+        <p>
+          HOST-A reaches the server HOST-B through two routers. When something goes wrong on that path, the routers and the server don&apos;t stay silent: they report back with small messages called <strong>ICMP</strong>. Ping and traceroute are built entirely on them.
+        </p>
+        <p>
+          This lesson shows how to read those messages: you watch a ping go out and come back, a TTL run out at a router, traceroute map the path hop by hop, routers refuse packets they can&apos;t deliver, and a too-big packet get turned away. Then the small web page loads but the big download hangs, and you find out why, fix it, and prove it.
+        </p>
+        <ChecklistCard
+          tone="violet"
+          title="By the end of this lesson you can"
+          mark="→"
           items={[
-            { title: "An Echo Reply proves", tone: "success", tag: "for this packet", points: ["The request reached the destination", "The reply found its way back", "Both directions work for this size and type of packet"] },
-            { title: "It does not prove", tone: "warning", tag: "test those separately", points: ["That an application (a TCP port) works", "That bigger packets fit the path", "That there is never any loss", "That DNS works"] },
-          ]}
-        />
-        <Callout tone="warning" title="A failed ping isn't a diagnosis" icon="!">
-          A timeout only says the request, the reply, or the answer to it was dropped — or never sent (a host firewall chooses not to answer). It is a symptom. Captures, counters, traceroute and an application test tell you which.
-        </Callout>
-      </GuideSection>
-
-      <GuideSection id="ic-unreach" eyebrow="Errors" title="Destination Unreachable names the device and the reason" tone="danger">
-        <FailureSignatures
-          items={[
-            { tag: "3/0", title: "Net Unreachable", tone: "danger", points: ["Sent by a router with no route", "Source = that router's interface", "Look at its routing table"] },
-            { tag: "3/1", title: "Host Unreachable", tone: "warning", points: ["Sent by the last router", "It has a route, but ARP got no answer", "The host is off, or the address is wrong"] },
-            { tag: "3/3", title: "Port Unreachable", tone: "cyan", points: ["Sent by the destination itself", "Nothing listens on that UDP port", "How UDP traceroute knows it arrived"] },
-            { tag: "3/4", title: "Fragmentation Needed", tone: "danger", points: ["Sent by the router before the small link", "Carries the next-hop MTU", "If it's filtered: a silent black hole"] },
-          ]}
-        />
-        <p>How to verify: the source address of the error is the device that reported it — check its routes (3/0), its ARP and the host (3/1), the service (3/3), the MTU of its outgoing link (3/4). A router&apos;s ICMP statistics prove it sent the message, even when the sender never received it.</p>
-      </GuideSection>
-
-      <GuideSection id="ic-breaks" eyebrow="When it breaks" title={`When ping or traceroute fails: let the messages point the way`} tone="danger">
-        <p className="text-sm text-pv-text-muted">{`Every failure stops the story at one step. Either an ICMP message tells you which device stopped the packet and why, or silence tells you that something dropped it without reporting.`}</p>
-        <TroubleshootingFlow
-          steps={[
-            { question: `Did an Echo Reply come back?`, look: `Yes: both directions work at this size. Reachability is not the problem.` },
-            { question: `Did an ICMP error come back instead?`, look: `Read the type/code and the source address. 11/0: TTL ran out at that router (a loop if traceroute repeats). 3/0 or 3/1: that router has no route, or can not reach the host. 3/4: too big with DF set. The source IP is the device that reported it.` },
-            { question: `Did nothing come back at all?`, look: `Silence is a drop with no report: a filter, a missing return route or a dead host. Traceroute shows the last hop that answers. Check the next hop: its routes and filters, in both directions.` },
-            { question: `Does the result depend on packet size?`, look: `If small packets work and large ones fail, it is MTU. Send DF pings of decreasing size. The 3/4 message names the limit, unless it is filtered.` },
-            { question: `How do you prove the fix?`, look: `Repeat the exact test that failed (same destination, size and DF) and get the reply. Then run traceroute to check the path is the one you expect.` },
-          ]}
-        />
-        <Callout tone="cyan" title="The habit to build" icon="✓">
-          Walk the story in order and confirm each step with real evidence (a table, a capture, a command). The first step you cannot confirm is where the problem is. The boxes under each story step above say what to look at.
-        </Callout>
-      </GuideSection>
-
-      <GuideSection id="ic-silence" eyebrow="Silence" title="Silence is evidence — and the reply has its own way back" tone="warning">
-        <TroubleshootingFlow
-          steps={[
-            { question: "R1 answers, then nothing", look: "The problem is beyond R1 — or on the way back through R2. A router's ICMP needs a route back too." },
-            { question: "R2 answers, then nothing", look: "Beyond R2: the destination itself, or its firewall. Try a UDP traceroute or the application." },
-            { question: "Nothing answers at all", look: "HOST-A's own side: its link, gateway, or a filter near it." },
-            { question: "The request reaches HOST-B, the reply never returns", look: "A capture on HOST-B shows the request in and the reply out. The return path is broken: check every router's route back to HOST-A." },
-            { question: "Small works, big hangs, no error anywhere", look: "A path-MTU black hole: a link with a smaller MTU, and the 3/4 messages that would fix it are being filtered (often by the server's own firewall)." },
-          ]}
-        />
-        <Callout tone="cyan" title="* * * is not “down”">
-          A traceroute hop that prints * * * only means no Time Exceeded came back from it. If the next hop answers, the router is forwarding fine — something filters its ICMP, or it doesn&apos;t send any.
-        </Callout>
-        <Misconceptions
-          items={[
-            { myth: "Ping failed, so HOST-B is down.", correction: "Its firewall may drop ping while the application works, or the reply may die on the way back." },
-            { myth: "Traceroute stops at R1, so R1 is broken.", correction: "R1 answered. The trouble is beyond it, or on the return path from the next hop." },
-            { myth: "Blocking all ICMP is safer.", correction: "It breaks Path MTU Discovery (3/4) and blinds troubleshooting. Filter specific types, carefully." },
+            "say what a ping reply proves, and what it doesn't",
+            "read Time Exceeded, Net, Host and Port Unreachable, and say who sent each and why",
+            "explain how traceroute finds each router, and why * * * isn't proof of failure",
+            "explain DF, the MTU and the Fragmentation Needed message, and find a path's MTU with ping",
+            "find and repair the black hole of this lesson, and prove it",
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="ic-method" eyebrow="Repair" title="Change → verify on the device → probe → prove" tone="success">
+      <GuideSection id="ic-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <FieldTable
+          title="The path"
+          columns={["Device", "Address", "Role"]}
+          rows={[
+            ["HOST-A (Linux)", `${IC_ADDR["HOST-A"]}/24`, "The client: ping, traceroute, curl"],
+            ["R1", `${IC_ADDR["R1:LAN"]} (LAN) · ${IC_ADDR["R1:TRANSIT"]} (to R2)`, "HOST-A's gateway, static route to HOST-B's network"],
+            ["R2", `${IC_ADDR["R2:TRANSIT"]} (to R1) · ${IC_ADDR["R2:LAN"]} (LAN)`, "HOST-B's gateway, static route back"],
+            ["HOST-B (Linux)", `${B}/24`, "The server: a status page and a 50 MB file"],
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">
+          R1 and R2 are joined by a /30 transit link. Every link carries 1500-byte IPv4 packets (the MTU) until the incident. On Cisco the routers&apos; LAN ports are Gi0/0 and the transit ports Gi0/1; on Junos, ge-0/0/0 and ge-0/0/1.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="ic-ideas" eyebrow="This lesson" title="Three ideas you need" tone="cyan">
         <FlowSteps
           steps={[
-            { title: "Change one thing", body: "On the device that owns the problem: an interface MTU, a route, a filter line, a host firewall rule.", tone: "cyan" },
-            { title: "Verify it on the device", body: "show ip interface / show route / show access-lists / iptables -L. Accepted is not the same as correct.", tone: "violet" },
-            { title: "Generate a fresh probe", body: "The exact test that failed: same destination, size and DF — and watch where it goes.", tone: "warning" },
-            { title: "Prove the user's symptom is gone", body: "The download completes, the ping returns, traceroute shows every hop. Then check nothing else broke.", tone: "success" },
+            { title: "ICMP is how the network talks back", body: "A router or host that drops a packet usually sends an ICMP message to the sender, saying why. Ping uses ICMP on purpose: a request that asks for a reply.", tone: "violet" },
+            { title: "Who sent it matters as much as what it says", body: "The source address of the ICMP message is the device that gave up. That tells you where on the path the problem was seen.", tone: "warning" },
+            { title: "Silence is evidence too", body: "No reply at all means something dropped the packet, or the answer, without a word: a firewall, a missing route back, a switched-off host.", tone: "danger" },
           ]}
         />
       </GuideSection>
 
-      <PathDivider title="Reference">Every part of the story in detail. Read the parts you need.</PathDivider>
+      <GuideSection id="ic-walk" eyebrow="This lesson" title="What you will watch, step by step" tone="warning">
+        <FlowSteps
+          steps={[
+            { title: "Ping", body: "An Echo Request out, an Echo Reply back, two routers crossed.", tone: "violet" },
+            { title: "Time Exceeded", body: "A packet sent with TTL 1 dies at R1, and R1 says so.", tone: "warning" },
+            { title: "Traceroute", body: "TTL 1, 2, 3: each router reveals itself in turn.", tone: "cyan" },
+            { title: "Unreachable", body: "R1 has no route, R2 finds nobody: two different refusals.", tone: "danger" },
+            { title: "Size", body: "A full-size packet with DF set crosses the healthy path.", tone: "ip" },
+            { title: "The incident", body: "Small pages load, big downloads hang. You find out why and fix it.", tone: "danger" },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">The sections below walk through each step on this network, in the same order.</p>
+      </GuideSection>
 
-
-      <GuideSection id="ic-position" eyebrow="Encapsulation" title="ICMP rides directly in IPv4" tone="violet">
-        <DiagramFrame caption="Protocol 1. No transport layer.">
+      <GuideSection id="ic-position" eyebrow="ICMP" title="ICMP rides inside IPv4" tone="violet">
+        <p>
+          ICMP is not a separate layer with ports: it is carried directly inside an IPv4 packet, with Protocol number 1. Every message starts with a <strong>type</strong> and a <strong>code</strong> that say what it means (8/0 Echo Request, 0/0 Echo Reply, 11/0 Time Exceeded, 3/x Destination Unreachable), followed by a checksum.
+        </p>
+        <DiagramFrame caption="An Echo Request on the wire: no TCP, no UDP, no ports.">
           <PositionDiagram />
         </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="ic-ping" eyebrow="Ping" title="Echo Request, Echo Reply and TTL" tone="cyan">
-        <DiagramFrame caption="Each forwarding router subtracts one. The reply is a separate packet, routed on its own.">
+      <GuideSection id="ic-ping" eyebrow="Ping" title="Ping: an Echo Request and its Echo Reply" tone="violet">
+        <p>
+          <Mono>ping</Mono> sends an Echo Request to HOST-B. HOST-B answers with an Echo Reply: a brand-new packet, which starts its own trip back with its own TTL. Each router lowers the TTL on the way, so HOST-B&apos;s reply arrives at HOST-A with {INITIAL_TTL} − 2 = {INITIAL_TTL - 2}:
+        </p>
+        <DiagramFrame caption="Routers decrement the TTL in both directions; the destination starts a fresh one.">
           <PingDiagram />
         </DiagramFrame>
-        <p>
-          TTL is a hop limit, not a timer: <Mono>{INITIAL_TTL}</Mono> → 63 at R1 → 62 at R2. HOST-B receives it with 62 and doesn&apos;t decrement it further.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="ic-echo" eyebrow="Matching" title="Identifier and Sequence" tone="warning">
-        <DiagramFrame caption="The reply copies the Identifier, Sequence and data.">
+        <CliPanel run={{ ...pingOk, output: pickLines(pingOk.output, pingLines) }} caption="HOST-A · Linux" />
+        <p>Ping matches each reply to its request by the Identifier and Sequence number the reply copies back. A reply proves that the request reached HOST-B <em>and</em> that HOST-B&apos;s answer found its way back: both directions work. It says nothing about TCP ports, large packets or applications.</p>
+        <DiagramFrame caption="The reply copies the request's Identifier, Sequence and data.">
           <EchoMatchDiagram />
         </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="ic-trace" eyebrow="Path discovery" title="ICMP-Echo-based traceroute" tone="violet">
-        <DiagramFrame caption="Raising the TTL one step at a time makes each hop reveal itself.">
-          <TraceDiagram />
-        </DiagramFrame>
-        <p>The router that discards the probe sends Time Exceeded from its own address. That source address is what traceroute prints for the hop.</p>
+      <GuideSection id="ic-ttl" eyebrow="Time Exceeded" title="When the TTL runs out: Time Exceeded" tone="warning">
+        <p>
+          Each router lowers the TTL by one and must drop a packet whose TTL would reach zero. When it does, it sends the sender an ICMP <strong>Time Exceeded</strong> (11/0), from its own address. Send a ping with TTL 1 and R1 is the router that drops it:
+        </p>
+        <CliPanel run={{ ...ttl1, output: pickLines(ttl1.output, pingLines) }} caption="HOST-A · TTL 1 dies at R1" />
+        <p>The error comes from <Mono>{IC_ADDR["R1:LAN"]}</Mono>: R1&apos;s address on the side facing HOST-A. That one detail is all traceroute needs.</p>
       </GuideSection>
 
-      <GuideSection id="ic-pmtu" eyebrow="The incident" title="MTU, DF and Fragmentation Needed" tone="danger">
-        <DiagramFrame caption="The router can't fragment a DF packet, so it tells the sender the MTU instead.">
+      <GuideSection id="ic-trace" eyebrow="Traceroute" title="Traceroute: TTL 1, 2, 3" tone="cyan">
+        <p>Traceroute sends probes with TTL 1, then 2, then 3. The first dies at R1, the second at R2, each router answering Time Exceeded from its own address; the third reaches HOST-B, which answers like a destination:</p>
+        <DiagramFrame caption="Each TTL reveals one more hop.">
+          <TraceDiagram />
+        </DiagramFrame>
+        <CliPanel run={traceOk} caption="HOST-A · ICMP probes" />
+        <Callout tone="cyan" title="Two kinds of probe, same trick" icon="→">
+          <Mono>traceroute -I</Mono> sends Echo Requests, so the last hop answers with an Echo Reply. Plain <Mono>traceroute</Mono> on Linux sends UDP to unlikely ports, so the last hop answers Port Unreachable (3/3). Both rely on Time Exceeded for every hop in between.
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="ic-unreach" eyebrow="Unreachable" title="Destination Unreachable: who says no, and why" tone="danger">
+        <p>When a device can&apos;t deliver a packet, it sends Destination Unreachable (type 3). The code says why, and the source says where:</p>
+        <CliPanel run={{ ...netUnr, output: pickLines(netUnr.output, pingLines) }} caption="HOST-A · a network nobody routes" />
+        <CliPanel run={{ ...hostUnr, output: pickLines(hostUnr.output, pingLines) }} caption="HOST-A · an address nobody has, on HOST-B's LAN" />
+        <FieldTable
+          title="Reading an unreachable"
+          columns={["Message", "Sent by", "Means"]}
+          rows={[
+            ["3/0 Net Unreachable", "a router (here R1)", "No route to the destination's network"],
+            ["3/1 Host Unreachable", "the last router (here R2)", "The network is right, but nobody answers ARP for that address"],
+            ["3/3 Port Unreachable", "the destination host", "The host is there; nothing listens on that UDP port"],
+            ["3/4 Fragmentation Needed", "a router", "Too big for the next link, and DF forbids splitting it"],
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ic-silence" eyebrow="Silence" title="Silence is evidence too" tone="danger">
+        <p>Not every failure sends a message. A host&apos;s firewall can drop Echo Requests, a router can have no route <em>back</em>, a router can be told not to send Time Exceeded. Each leaves a different pattern of silence, and an error message, when there is one, always beats a guess:</p>
+        <CompareCards
+          items={[
+            { title: "An error came back", tone: "warning", tag: "someone gave up", points: ["The source address names the device", "The type and code name the reason", "Everything before that device worked"] },
+            { title: "Nothing came back", tone: "danger", tag: "something dropped it", points: ["The request, or the answer, was lost without a word", "Compare tools: does curl or a UDP traceroute get through?", "Check both directions: the way back fails just as quietly"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ic-pmtu" eyebrow="Size" title="Size, MTU and the DF bit" tone="ip">
+        <p>
+          Every link has an <strong>MTU</strong>: the largest IPv4 packet it carries, 1500 bytes here. A packet can carry the <strong>DF</strong> (Don&apos;t Fragment) flag; modern hosts set it on almost everything. A router that receives a DF packet too big for the next link must drop it, and sends back <strong>Fragmentation Needed</strong> (3/4) with the next link&apos;s MTU. The sender lowers its packet size for that destination and tries again: that loop is <strong>Path MTU Discovery</strong>.
+        </p>
+        <p>On the healthy path a full 1500-byte packet with DF set crosses every link (<Mono>-s {BIG_DATA}</Mono> is the ICMP data: 20 + 8 + {BIG_DATA} = 1500 bytes of IPv4):</p>
+        <CliPanel run={{ ...bigOk, output: pickLines(bigOk.output, pingLines) }} caption="HOST-A · 1500 bytes, DF set" />
+        <p>
+          Path MTU Discovery only works if the 3/4 message actually gets back to the sender of the big packet. Nobody checks that it does. Keep that in mind: it is the key to the incident.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="ic-verify" eyebrow="Verification" title="What working looks like" tone="success">
+        <p>Each idea of this lesson has one probe that proves it. The commands are only the way to ask; what matters is what each answer proves.</p>
+        <FieldTable
+          title="Read the path with ICMP"
+          columns={["Question", "From a Linux host", "From a router (Cisco / Junos)", "What the answer proves"]}
+          rows={[
+            ["Do both directions work?", <Mono key="1">ping</Mono>, <Mono key="2">ping</Mono>, "A reply needs the request and the answer to arrive"],
+            ["Which routers are on the path?", <Mono key="3">traceroute -I</Mono>, <Mono key="4">traceroute</Mono>, "Each hop answers Time Exceeded from its own address"],
+            ["How big can a packet be?", <Mono key="5">ping -s N -M do</Mono>, <Mono key="6">ping … size N df-bit / do-not-fragment</Mono>, "The largest size that passes is the path MTU"],
+            ["Which ICMP did a router send?", "—", <Mono key="7">show ip traffic / show system statistics icmp</Mono>, "Counters of every message sent and received"],
+          ]}
+        />
+        <p>On the healthy path, HOST-A&apos;s ping and traceroute both reach HOST-B, two routers away, and a full-size DF packet crosses (all shown above).</p>
+      </GuideSection>
+
+      <GuideSection id="ic-incident" eyebrow="Incident" title="The incident: big downloads hang" tone="danger">
+        <p>
+          The user says: &quot;The status page on HOST-B loads instantly. Downloading the big file just sits at 0 bytes and never fails with an error.&quot; The provider has moved the R1–R2 circuit to a service that carries 1400-byte packets, and the server team blocks ICMP unreachables on HOST-B. Ping works.
+        </p>
+        <DiagramFrame caption={`A 1500-byte DF packet meets the ${FAULT_MTU}-byte link. The router drops it and reports 3/4: whether that report is heard decides everything.`}>
           <PmtuDiagram />
         </DiagramFrame>
         <CompareCards
           items={[
-            { title: "Evidence", tone: "danger", tag: "facts", points: ["Small pings work", "1500-byte DF pings fail", "R1 returns ICMP 3/4 with MTU 1400"] },
-            { title: "Not the cause", tone: "success", tag: "ruled out", points: ["TTL (it's 64, and no 11/0 came back)", "Routing (small pings pass)", "DNS (no names involved)"] },
+            { title: "What should happen", tone: "success", tag: "normal", points: ["HOST-B sends full-size packets with DF", `R2 drops the first one and sends HOST-B 3/4, MTU ${FAULT_MTU}`, "HOST-B resends smaller packets, and the download flows"] },
+            { title: "What happens", tone: "danger", tag: "incident", points: ["HOST-B sends full-size packets with DF", "R2 drops them and sends 3/4", "HOST-B's firewall drops the 3/4, so HOST-B keeps resending 1500-byte packets"] },
+          ]}
+        />
+        <CompareCards
+          items={[
+            { title: "Why it fails", tone: "danger", tag: "cause", points: [`The R1–R2 link carries ${FAULT_MTU}-byte packets`, "HOST-B drops ICMP 3/4, so Path MTU Discovery can't work", "Every large packet vanishes: a black hole"] },
+            { title: "What it can't be", tone: "warning", tag: "red herrings", points: ["Routing: ping and the small page work", "HOST-B down: it answers", "The web server: small files download fine"] },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="ic-fix" eyebrow="Repair" title="Fit the DF packet to the path" tone="success">
-        <DiagramFrame caption="IP MTU counts the whole IPv4 packet: IPv4 header + ICMP header + data.">
+      <GuideSection id="ic-investigate" eyebrow="Investigation" title="Find the size that fails, then who isn't listening" tone="danger">
+        <TroubleshootingFlow
+          steps={[
+            { question: "What works, what doesn't?", look: "Small things (ping, the status page) work; the big download hangs without an error. That pattern points at size." },
+            { question: "How big can a packet be?", look: `ping with DF: 1500 bytes is refused by R1 with 3/4, MTU ${FAULT_MTU}; 1400 bytes passes.` },
+            { question: "Who never hears the 3/4?", look: "R2 sent one toward HOST-B; HOST-B's firewall drops type 3 code 4." },
+          ]}
+        />
+        <CliPanel run={{ ...curlSmall, output: pickLines(curlSmall.output, /100|curl/) }} caption="HOST-A · the small page" />
+        <CliPanel run={{ ...curlBig, output: pickLines(curlBig.output, /curl|0 50/) }} caption="HOST-A · the big file" />
+        <CliPanel run={{ ...pingSmallBad, output: pickLines(pingSmallBad.output, pingLines) }} caption="HOST-A · a small ping still works" />
+        <CliPanel run={{ ...bigBad, output: pickLines(bigBad.output, pingLines) }} caption="HOST-A · 1500 bytes with DF" />
+        <DiagramFrame caption={`The arithmetic: 20 (IPv4) + 8 (ICMP) + data must fit in ${FAULT_MTU}.`}>
           <RepairMathDiagram />
         </DiagramFrame>
-        <p>
-          Keep DF and send <Mono>{FIXED_DATA}</Mono> bytes of data: 20 + 8 + {FIXED_DATA} = {FAULT_MTU}. The IP MTU doesn&apos;t include the Ethernet header or FCS; those are outside the 1400.
-        </p>
+        <CliPanel run={{ ...fitBad, output: pickLines(fitBad.output, pingLines) }} caption={`HOST-A · ${FAULT_MTU} bytes with DF`} />
+        <p>HOST-A heard R1&apos;s 3/4 and adapted. The download goes the other way: HOST-B sends the big packets, so R2 is the router that drops them, and HOST-B must hear R2. R2 did send it; HOST-B threw it away:</p>
+        <CliPanel run={{ ...r2Sent, output: pickLines(r2Sent.output, /Sent:/) }} caption="R2 · Cisco IOS · after the download attempt" />
+        <CliPanel run={ipt} caption="HOST-B · its firewall" />
       </GuideSection>
 
-      <GuideSection id="ic-verify" eyebrow="Verification" title="Prove it both ways" tone="success">
-        <FlowSteps
-          steps={[
-            { title: "Send the fitted probe", body: `DF set, ${FIXED_DATA} bytes of data → 1400-byte IPv4 packet.`, tone: "cyan" },
-            { title: "Watch it cross", body: "R1 forwards it onto the 1400-byte link unfragmented.", tone: "ip" },
-            { title: "Confirm the reply", body: "HOST-B's 1400-byte Echo Reply comes back with the same id and seq.", tone: "success" },
+      <GuideSection id="ic-repair" eyebrow="Repair" title="Repair, and prove it with a fresh download" tone="success">
+        <p>
+          The link MTU is the provider&apos;s and is legitimate. What breaks the network is the rule that blinds HOST-B to it. Remove it: <Mono>sudo iptables -D INPUT 1</Mono> on HOST-B (in production, allow at least type 3 code 4 rather than all ICMP). Then download again:
+        </p>
+        <CliPanel run={{ ...curlFixed, output: pickLines(curlFixed.output, /100|curl/) }} caption="HOST-A · after the repair" />
+        <CliPanel run={cacheFixed} caption="HOST-B · it learned the path MTU" />
+        <ChecklistCard
+          tone="success"
+          title="The proof"
+          mark="✓"
+          items={[
+            "The big file downloads completely",
+            `HOST-B's route cache to HOST-A shows mtu ${FAULT_MTU}: it heard the 3/4 and adapted`,
+            "Ping and the status page were never affected",
+            "The provider's 1400-byte link is unchanged: nothing on R1 or R2 had to move",
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="ic-model" eyebrow="Mental model" title="Postcards from the path" tone="cyan">
-        <p>Every ICMP message is a postcard sent back to the source. &quot;Arrived&quot; (Echo Reply), &quot;I had to throw it away here, it ran out of hops&quot; (Time Exceeded) and &quot;too big for my next road, and you told me not to cut it&quot; (3/4). Diagnostics is reading the postcards.</p>
+      <GuideSection id="ic-other" eyebrow="Troubleshooting" title="Other ways ICMP tells you what broke" tone="warning">
+        <p>The black hole is one pattern. The lab&apos;s tickets add five more, each with its own signature. The Deep Dive walks through all six with real output from the hosts and both routers.</p>
+        <CompareCards
+          items={[
+            { title: "HOST-B switched off", tone: "danger", tag: "!H from R2", points: ["Destination Host Unreachable, from R2", "traceroute ends with !H at R2", "R2 got the packet; nobody answered its ARP"] },
+            { title: "No route back", tone: "warning", tag: "only R1 answers", points: ["Ping: silence, no error", "traceroute: R1, then * * * for ever", "R2 has no route to HOST-A's network"] },
+            { title: "A routing loop", tone: "danger", tag: "TTL dies", points: ["Ping prints Time to live exceeded", "traceroute alternates R1, R2, R1, R2…", "Each router sends the packet back to the other"] },
+            { title: "A hidden hop", tone: "cyan", tag: "* * * but it works", points: ["traceroute shows * * * at hop 2", "Ping and the app work fine", "A filter drops Time Exceeded, not traffic"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ic-model" eyebrow="Mental model" title="Postcards from the road" tone="cyan">
+        <p>
+          Every packet travels with a fuel gauge (the TTL) and a size label. When a router has to turn a packet away (out of fuel, no road, too wide for the next bridge), it mails a postcard back to the sender, signed with its own address and saying why. Ping is a postcard you ask for on purpose; traceroute deliberately runs packets out of fuel one router further each time, to collect a postcard from every stop. If the postcards are thrown away on arrival, the sender keeps driving the same oversized truck at the same bridge, and nobody ever says why it never arrives.
+        </p>
       </GuideSection>
 
       <GuideSection id="ic-glossary" eyebrow="Glossary" title="Terms used in this lesson" tone="violet">
         <Glossary
           items={[
-            { term: "Echo Request / Reply", def: "ICMP 8/0 and 0/0, used by ping." },
-            { term: "Identifier / Sequence", def: "Echo fields that pair replies with requests." },
-            { term: "TTL", def: "IPv4 hop limit. Each forwarding router decrements it." },
-            { term: "Time Exceeded (11/0)", def: "Sent by a router that discards a packet whose TTL ran out." },
-            { term: "Dest. Unreachable 3/4", def: "Fragmentation Needed and DF set. Carries the next-hop MTU." },
-            { term: "IP MTU", def: "Largest IPv4 packet a link carries (header + payload)." },
-            { term: "DF", def: "Don't Fragment flag in the IPv4 header." },
+            { term: "ICMP", def: "Internet Control Message Protocol: IPv4 Protocol 1, for errors and tests." },
+            { term: "Echo Request / Reply", def: "Types 8 and 0: the two halves of a ping." },
+            { term: "Time Exceeded", def: "Type 11 code 0: a router dropped a packet whose TTL ran out." },
+            { term: "Destination Unreachable", def: "Type 3: codes 0 net, 1 host, 3 port, 4 fragmentation needed." },
+            { term: "MTU", def: "The largest IPv4 packet a link carries, header included." },
+            { term: "DF", def: "Don't Fragment: a router may not split the packet; it must drop it and report 3/4." },
+            { term: "PMTU black hole", def: "Large packets vanish because the 3/4 messages never reach their sender." },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="ic-recap" eyebrow="Recap" title="What you can now read" tone="success">
-        <ChecklistCard tone="cyan" title="ICMP & Network Diagnostics" mark="→" items={["ICMP = IPv4 Protocol 1, no ports", "Echo 8/0 → 0/0: the round trip works — not the application, not big packets", "TTL −1 per router; 11/0 when it expires, from the interface it arrived on", "Traceroute: TTL 1, 2, 3… (UDP ends with 3/3, -I with an Echo Reply); * * * isn't down", "3/0 no route · 3/1 no ARP answer · 3/3 no listener · 3/4 too big with DF", "data + 8 + 20 = the IP packet; compare it with the smallest MTU on the path", "Silence is evidence: find where the probe — or its reply — was last seen", "Fix on the device, verify there, then prove it with a fresh probe"]} />
+      <GuideSection id="ic-recap" eyebrow="Recap" title="What you can now explain" tone="success">
+        <ChecklistCard
+          tone="cyan"
+          title="ICMP in this lesson"
+          mark="→"
+          items={[
+            "A ping reply proves both directions, for small ICMP packets only",
+            "Time Exceeded comes from the router where the TTL ran out; traceroute uses that hop by hop",
+            "Net Unreachable: a router has no route. Host Unreachable: the last router found nobody",
+            "The source of an ICMP message tells you where the problem was seen",
+            "A DF packet too big for a link is dropped and reported with 3/4 and the link's MTU",
+            "Block that 3/4 and large transfers hang without an error: a black hole",
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ic-practice" eyebrow="Practice" title="Practice it" tone="cyan">
+        <p>You now know what each ICMP message means and who sends it. The ICMP Lab gives you this network with Linux hosts and Cisco or Junos routers:</p>
+        <FlowSteps
+          steps={[
+            { title: "Learn (6 levels)", body: "One ping, TTL and Time Exceeded, traceroute, when delivery fails, size/MTU/DF, silence is evidence.", tone: "violet" },
+            { title: "Probe and follow", body: "Send any ping, traceroute or download and follow every packet and every ICMP reply across the topology and the captures.", tone: "warning" },
+            { title: "Troubleshoot (6 tickets)", body: "This lesson's incident and the five other patterns above, reported as users report them.", tone: "danger" },
+          ]}
+        />
+        <PresentationBridge>Watch ping, TTL expiry, traceroute and the MTU black hole animated in the ICMP presentation.</PresentationBridge>
+        <LessonLabBridge />
+        <p className="text-sm text-pv-text-muted">For the full course (every message type and its layout, the error rules, traceroute variants, the PMTUD loop, real output for every ticket, a knowledge check), open the Deep Dive tab.</p>
       </GuideSection>
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { LessonGuideButton, LessonGuideDialog, type LessonGuideTab } from "@/components/lesson/LessonGuideDialog";
@@ -11,6 +11,11 @@ import { GraphPacketBubble } from "@/components/network/GraphPacketBubble";
 import { BGP_BRIEFING_NOTES, BGP_BRIEFING_PHASES } from "./briefing";
 import { BGP_LESSON_SECTIONS, BgpLessonGuideContent } from "./LessonGuideContent";
 import { BGP_DEEP_DIVE_SECTIONS, BgpDeepDiveContent } from "./DeepDiveContent";
+import { BgpPresentation } from "./BgpPresentation";
+import { BgpLabWorkspace } from "./bgp-lab/BgpLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import {
@@ -107,8 +112,8 @@ function toBgpPathRow(p: BgpPath): BgpPathRow {
 }
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "AS65001 multihoming, step by step", sections: BGP_LESSON_SECTIONS, content: <BgpLessonGuideContent /> },
-  { id: "deep", label: "BGP Deep Dive", hint: "How BGP works in general", sections: BGP_DEEP_DIVE_SECTIONS, content: <BgpDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "AS65001 with two ISPs · sessions, AS_PATH, the best path and the incident", sections: BGP_LESSON_SECTIONS, content: <BgpLessonGuideContent /> },
+  { id: "deep", label: "BGP Deep Dive", hint: "The full study course · sessions, attributes, best path, policy, evidence, five faults", sections: BGP_DEEP_DIVE_SECTIONS, content: <BgpDeepDiveContent /> },
 ];
 
 /** Readable 3D bubble for the in-flight message (see ActivePacket3D.callout). */
@@ -140,6 +145,20 @@ export default function BgpEnterpriseDemo() {
   const [sentPackets, setSentPackets] = useState<{ when: "before" | "after"; path: string[]; viaIsp?: string }[]>([]);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and Practice Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -677,7 +696,7 @@ export default function BgpEnterpriseDemo() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <Badge tone="cyan" className="mb-3">
-            BGP · eBGP + iBGP · Enterprise Multihoming
+            Enterprise · Routing · BGP Multihoming
           </Badge>
           <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">AS65001 Reaches The Internet</h1>
           <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
@@ -685,8 +704,26 @@ export default function BgpEnterpriseDemo() {
             sessions yourself, watch the best-path decision run on real attributes, then change the outcome with policy.
           </p>
         </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="BGP: Path Selection Between Networks" subtitle="AS65001 · ISP-A (AS65010) · ISP-B (AS65020) · 203.0.113.0/24" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice BGP" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="BGP: Path Selection Between Networks" subtitle="AS65001 · ISP-A (AS65010) · ISP-B (AS65020) · 203.0.113.0/24" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <BgpPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the BGP Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <BgpLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="BGP" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "BGP Lab", buttonLabel: "Practice BGP", description: "Bring sessions up and break them (remote AS, shutdown), read UPDATEs and AS_PATHs, pick the exit with LOCAL_PREF, steer the way back with prepending, catch a route leak, fail ISP-A over to ISP-B — on R1 and R2 with Cisco or Junos, the ISPs' looking glasses, five tickets to solve from evidence." }} contextNote={currentStep && ["bestpath-r1", "bestpath-r2", "trouble-intro", "trouble-question", "trouble-fix", "prepend-apply", "localpref-change", "challenge"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-6 grid gap-2 sm:grid-cols-4">
@@ -708,7 +745,7 @@ export default function BgpEnterpriseDemo() {
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
             className={clsx(
-              "h-1.5 flex-1 min-w-4 rounded-full transition-colors",
+              "h-1.5 flex-1 min-w-1.5 sm:min-w-4 rounded-full transition-colors",
               i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10",
             )}
           />
@@ -778,9 +815,9 @@ export default function BgpEnterpriseDemo() {
         )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode === "3d" ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
@@ -1193,7 +1230,7 @@ export default function BgpEnterpriseDemo() {
         </div>
 
         {/* SIDEBAR */}
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           {showControlPlane && <PacketInspector packet={activePacket} />}
 
           {showControlPlane && (

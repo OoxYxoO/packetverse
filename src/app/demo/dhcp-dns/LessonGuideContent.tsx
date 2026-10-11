@@ -1,29 +1,54 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, DRegion, FailureSignatures, FieldTable, FlowSteps, Glossary, GuideSection, Mono, PathDivider, ProtocolStory, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, DPill, DRegion, FieldTable, FlowSteps, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { PresentationBridge } from "@/components/presentation/LessonPresentation";
 import { PracticeBridge } from "@/components/lesson/GuideInteractive";
 import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
 import { DFieldRow } from "@/components/lesson/FundamentalsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import type { CliVendor } from "@/lib/cli/types";
 import { hex4, hex8 } from "@/lib/sim-engine/scenarios/fundamentalsPackets";
 import { CLIENT_DNS_PORT, DH_ADDR, DNS_NAME, DNS_RECORD_TTL, LEASE_SECONDS, MASK, XID1 } from "@/lib/sim-engine/scenarios/dhcpDns";
+import { createDlState, DL_LAB_MODEL, type DlAction, type DlNode, type DlState } from "@/lib/sim-engine/scenarios/dhcpDnsLab";
+import { dlCliSets } from "./dhcp-lab/dhcpCli";
+import { clientPromptSet } from "./dhcp-lab/dhcpBuildCli";
 
+/**
+ * DHCP & DNS LESSON GUIDE — the lesson's story on the DHCP & DNS Lab's network (CLIENT → R1 relay → DHCP-SRV and DNS-SRV):
+ * the broadcast, the four DHCP messages, the relay and giaddr, the lease, the DNS lookup and its cache; then the incident
+ * where DHCP hands out the wrong DNS server. Every output comes from the lab's own model and its device terminals.
+ */
 export const DH_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "dh-mission", label: "The mission" },
-  { id: "dh-story", label: "The whole story" },
-  { id: "dh-evidence", label: "From watching to proving" },
-  { id: "dh-breaks", label: "When it breaks" },
-  { id: "dh-build", label: "Building it" },
-  { id: "dh-boundary", label: "The broadcast boundary" },
-  { id: "dh-dora", label: "Discover → Ack" },
-  { id: "dh-giaddr", label: "Relay & giaddr" },
+  { id: "dh-mission", label: "What this lesson teaches" },
+  { id: "dh-network", label: "The network of this lesson" },
+  { id: "dh-ideas", label: "Three ideas you need" },
+  { id: "dh-walk", label: "What you will watch" },
+  { id: "dh-start", label: "A laptop that knows nothing" },
+  { id: "dh-boundary", label: "The first message is a broadcast" },
+  { id: "dh-dora", label: "Discover, Offer, Request, Ack" },
+  { id: "dh-giaddr", label: "The relay and giaddr" },
   { id: "dh-lease", label: "What the lease sets" },
-  { id: "dh-dns", label: "The DNS lookup" },
-  { id: "dh-incident", label: "Option 6 incident" },
-  { id: "dh-verify", label: "Verification" },
+  { id: "dh-dns", label: "Then a name: DNS" },
+  { id: "dh-cache", label: "Answers are cached" },
+  { id: "dh-verify", label: "What working looks like" },
+  { id: "dh-incident", label: "The incident" },
+  { id: "dh-investigate", label: "Which DNS server was asked?" },
+  { id: "dh-repair", label: "Repair and prove it" },
+  { id: "dh-other", label: "Other ways it breaks" },
   { id: "dh-model", label: "Mental model" },
   { id: "dh-glossary", label: "Glossary" },
   { id: "dh-recap", label: "Recap" },
+  { id: "dh-practice", label: "Practice it" },
 ];
+
+/** The lab's own terminals: the laptop's command prompt ("PC") and the devices' consoles; actions run on a copy. */
+function lessonCli(s: DlState, dev: DlNode | "PC", vendor: CliVendor, command: string) {
+  return runGuideCli(dev === "PC" ? clientPromptSet(s, () => undefined) : dlCliSets(s, dev)[vendor], command);
+}
+const run = (s: DlState, ...as: DlAction[]) => as.reduce((x, a) => DL_LAB_MODEL.start(x, a), s);
+const HEALTHY = run(createDlState(), { type: "dhcp-all" }, { type: "resolve", name: DNS_NAME });
+const BROKEN = run(createDlState(), { type: "ticket", id: "dns-option" });
+const FIXED = run(BROKEN, { type: "config", patch: { option6: DH_ADDR["DNS-SRV"] } }, { type: "renew" });
+
 const DHCP = "#f59e0b";
 const DNS = "#a78bfa";
 
@@ -161,261 +186,296 @@ function IncidentDiagram() {
   );
 }
 
-
-function StoryLabBridge() {
+function LessonLabBridge() {
   const open = usePracticeLabOpener();
   return (
     <PracticeBridge label="Open the DHCP & DNS Lab" onPractice={open}>
-      Seven levels, one skill at a time: watch the story, see what each device does, learn where you could look, read one capture, follow messages to find where they stop, troubleshoot real tickets with each device&apos;s tables, logs and command line, then build DHCP and DNS yourself from nothing and prove they work.
+      Same network, your own copy. Nothing you do there changes your lesson progress.
     </PracticeBridge>
   );
 }
 
 export function DhcpDnsLessonGuideContent() {
+  const renewOk = lessonCli(createDlState(), "PC", "cisco", "ipconfig /renew");
+  const journal = lessonCli(HEALTHY, "DHCP-SRV", "cisco", "journalctl -u isc-dhcp-server");
+  const helper = lessonCli(HEALTHY, "R1", "cisco", "show running-config interface GigabitEthernet0/0");
+  const allOk = lessonCli(HEALTHY, "PC", "cisco", "ipconfig /all");
+  const nsOk = lessonCli(HEALTHY, "PC", "cisco", `nslookup ${DNS_NAME}`);
+  const cacheOk = lessonCli(HEALTHY, "PC", "cisco", "ipconfig /displaydns");
+  const nsBad = lessonCli(BROKEN, "PC", "cisco", `nslookup ${DNS_NAME}`);
+  const pingIp = lessonCli(BROKEN, "PC", "cisco", `ping ${DH_ADDR.WEB}`);
+  const pingName = lessonCli(BROKEN, "PC", "cisco", `ping ${DNS_NAME}`);
+  const allBad = lessonCli(BROKEN, "PC", "cisco", "ipconfig /all");
+  const confBad = lessonCli(BROKEN, "DHCP-SRV", "cisco", "cat /etc/dhcp/dhcpd.conf");
+  const allFixed = lessonCli(FIXED, "PC", "cisco", "ipconfig /all");
+  const nsFixed = lessonCli(FIXED, "PC", "cisco", `nslookup ${DNS_NAME}`);
   return (
     <div className="space-y-12">
-      <GuideSection id="dh-mission" eyebrow="This lesson" title="From nothing to a name" tone="warning">
-        <p>The whole lesson is one short story:</p>
-        <ol className="list-decimal space-y-0.5 pl-5">
-          <li>My computer needs network settings.</li>
-          <li>It asks for them.</li>
-          <li>The request has to reach the DHCP server.</li>
-          <li>The server answers.</li>
-          <li>The computer receives an IP address, a router (default gateway) and a DNS server.</li>
-          <li>Then it can use DNS to turn a name into an IP address.</li>
-        </ol>
-        <p>Everything else, from the relay to the captures, is detail about one of these lines. Learn the story first; the investigation skills come after, in the same order as the lab&apos;s levels.</p>
-        <Callout tone="warning" title="Two services, two jobs">
-          DHCP answers &quot;what are my settings?&quot;. DNS answers &quot;what address is this name?&quot;. A wrong DHCP option can break DNS while every IP test passes.
-        </Callout>
-      </GuideSection>
-      <GuideSection id="dh-story" eyebrow="How it works" title="From plugging in to opening a website by name" tone="cyan">
-        <ProtocolStory
-          problem={<>A freshly connected CLIENT has no IP address, mask, gateway or DNS server, so it can&apos;t talk to anything. The DHCP server that could configure it sits on another subnet, behind a router that doesn&apos;t forward broadcasts. And even once configured, the user types names, not addresses.</>}
-          steps={[
-            { actor: "CLIENT", action: <>broadcasts <strong>DHCPDISCOVER</strong> from <Mono>0.0.0.0</Mono> to <Mono>255.255.255.255</Mono> (UDP 68 → 67) with a transaction ID (xid {`0x${XID1.toString(16)}`}).</>, why: "it knows neither its own address nor the server's", verify: `A capture on the client LAN: a DHCP Discover from 0.0.0.0 to 255.255.255.255, UDP 68 → 67.`, fails: { symptom: `The client ends up with 169.254.x.x.`, evidence: `No offer came back. Follow the next steps: relay, server, pool.` }, tone: "warning" },
-            { actor: "R1 (relay)", action: <>receives the broadcast, sets <strong>giaddr = {DH_ADDR["R1:CLIENT"]}</strong>, and unicasts it to DHCP-SRV {DH_ADDR["DHCP-SRV"]}.</>, why: "routers stop broadcasts; giaddr tells the server which subnet to serve", verify: `A capture on the server LAN: the Discover arrives as a unicast from R1, with giaddr ${DH_ADDR["R1:CLIENT"]}.`, fails: { symptom: `The Discover is seen on the client LAN but never on the server LAN.`, evidence: `No relay (ip helper) on R1's client interface, or it points at the wrong server.` }, tone: "cyan" },
-            { actor: "DHCP-SRV", action: <>picks the pool for giaddr&apos;s subnet and sends <strong>DHCPOFFER</strong> {DH_ADDR.CLIENT} back to the relay, which broadcasts it onto the client LAN.</>, verify: `The server's bindings show an offer from the pool for giaddr's subnet.`, fails: { symptom: `The Discover reaches the server and no offer comes back.`, evidence: `The server's log says why (“no free leases”: the pool is exhausted). If the host answers ICMP port unreachable instead, the DHCP service isn't running: the host is up, the service is down.` }, tone: "violet" },
-            { actor: "CLIENT", action: <>broadcasts <strong>DHCPREQUEST</strong> with Option 50 (requested IP) and Option 54 (server ID): “I accept this offer from this server.”</>, why: "broadcast so any other server knows its offer was declined", verify: `The Request carries option 50 (the offered IP) and option 54 (this server).`, fails: { symptom: `The client keeps sending Discovers.`, evidence: `The offers are not reaching the client: check the relay's path back.` }, tone: "warning" },
-            { actor: "DHCP-SRV", action: <>confirms with <strong>DHCPACK</strong>: {DH_ADDR.CLIENT} / {MASK}, router {DH_ADDR["R1:CLIENT"]}, DNS {DH_ADDR["DNS-SRV"]} (Option 6), lease {LEASE_SECONDS} s.</>, changes: "the client is BOUND and configured", verify: `ipconfig / ip addr shows the address, mask, gateway and DNS server from the ACK.`, fails: { symptom: `The client has an address, but the wrong gateway or DNS server.`, evidence: `The scope options (3 and 6) are wrong. The client uses exactly what it was given.` }, tone: "success" },
-            { actor: "CLIENT", action: <>needs to send to another subnet for the first time, so it ARPs for its gateway {DH_ADDR["R1:CLIENT"]} (from Option 3) and stores R1&apos;s MAC address.</>, why: "a frame needs the next hop's MAC; the gateway's IP alone isn't enough", verify: `arp -a lists ${DH_ADDR["R1:CLIENT"]}. A capture on the client LAN shows the ARP request and R1's reply.`, fails: { symptom: `Nothing leaves the LAN, by name or by IP; the real gateway still answers a ping.`, evidence: `The gateway from Option 3 doesn't answer ARP: nobody owns that address. Only ARP requests appear on the wire; the DNS query is never sent.` }, tone: "arp" },
-            { actor: "CLIENT", action: <>resolves <Mono>{DNS_NAME}</Mono>: a DNS query from UDP {CLIENT_DNS_PORT} to {DH_ADDR["DNS-SRV"]}:53 with a Transaction ID, routed via its gateway.</>, verify: `Capture: a DNS query to the server from option 6, port 53, with a Transaction ID.`, fails: { symptom: `The lookup fails while pinging IP addresses works.`, evidence: `Follow the query. It dies at R1 (R1 can't ARP for that address): Option 6 points at a server that doesn't exist. It reaches DNS-SRV and comes back “port unreachable”: the DNS service is down.` }, tone: "ip" },
-            { actor: "DNS-SRV", action: <>answers with the same Transaction ID: A record {DH_ADDR.WEB}, record TTL {DNS_RECORD_TTL} s.</>, changes: "the client caches the answer and can now send to the web server's IP", verify: `A response with the same Transaction ID and an A record. The client cache shows it with its TTL.`, fails: { symptom: `NXDOMAIN, or an old address.`, evidence: `A wrong name or missing record, or a cached answer that has not expired yet (flush the cache to test).` }, tone: "success" },
-            { actor: "CLIENT", action: "renews halfway through the lease with a unicast REQUEST straight to the server (no relay needed); the ACK carries the current options.", verify: `At T1: a unicast Request from the client's own IP, then an ACK. The lease timer restarts.`, fails: { symptom: `The renewal fails, and later the client loses its address.`, evidence: `The server is unreachable or down. The client keeps its address until the lease expires, then starts over.` }, tone: "cyan" },
-          ]}
-          outcome={<>DHCP turns “nothing” into a working configuration, across the router thanks to the relay; DNS turns names into addresses using the server DHCP supplied. If Option 6 is wrong ({DH_ADDR.WRONG_DNS}), names fail while IP addresses still work. Fix the scope option, then make the client <strong>renew</strong> (existing leases aren&apos;t rewritten), and verify with a real lookup.</>}
-        />
-        <PresentationBridge>Watch DORA cross the relay, the DNS lookup and the Option 6 incident in the DHCP & DNS presentation.</PresentationBridge>
-        <StoryLabBridge />
-      </GuideSection>
-
-
-
-
-
-      <GuideSection id="dh-evidence" eyebrow="Investigating" title="From watching to proving" tone="violet">
+      <GuideSection id="dh-mission" eyebrow="This lesson" title="What this lesson teaches" tone="warning">
         <p>
-          An animation shows the DISCOVER moving. On a real network there is no animation: an engineer has to <strong>prove</strong> where a message went. That skill is built in four small steps, each one answering a question you already understand.
+          A new laptop is plugged into the office network. Before it can open a single website it needs an address, a mask, a gateway and a DNS server, and nobody types any of them in. Then the user types a name, and something has to turn that name into an address.
         </p>
-
-        <h4 className="text-[15px] font-semibold text-pv-text">1 · Ask questions about places (checkpoints)</h4>
-        <p>When a laptop gets no address, don&apos;t start with the cause. Ask, in order: did the laptop send its request? Did it reach the router? Did the router pass it on? Did it reach the server? Did an answer come back? Each question is about one place, a <strong>checkpoint</strong>.</p>
-        <Callout tone="cyan" title="The last ✓ is where to dig">
-          You don&apos;t need to know why something failed to find where. The last checkpoint that saw the message is where the problem is; everything before it works.
-        </Callout>
-
-        <h4 className="text-[15px] font-semibold text-pv-text">2 · Read one capture</h4>
-        <p>A checkpoint is read with a <strong>capture</strong>: a recording of what crossed one cable. A few fields tell you almost everything:</p>
-        <FieldTable
-          title="What the fields of a DHCP or DNS capture mean"
-          columns={["You see", "It means"]}
-          accent="violet"
-          rows={[
-            ["From 0.0.0.0", "a client that has no address yet: it can only be asking for one"],
-            ["To 255.255.255.255", "“everyone on this network”: a broadcast, which routers don't pass on"],
-            ["UDP 68 → 67", "DHCP: servers listen on 67, clients on 68. Any message with these ports is DHCP, which is why a capture filter on them shows exactly the DHCP traffic"],
-            [<>giaddr <Mono>{DH_ADDR["R1:CLIENT"]}</Mono></>, "a relay forwarded it, and the client is on that network"],
-            ["Option 3 / Option 6", "the router and DNS server the client is being given"],
-            ["UDP → 53", "DNS: a name question, or its answer"],
-          ]}
-        />
-        <p>Seeing a message at a point proves it <strong>got there</strong>. An empty, filtered capture proves it <strong>never got there</strong>. Seeing it arrive at a server does <strong>not</strong> prove the server answered: look for the answer too.</p>
-
-        <h4 className="text-[15px] font-semibold text-pv-text">3 · Follow one message</h4>
-        <p>Put the checkpoints together and follow one message from the laptop to the server and back. On R1&apos;s laptop side the DISCOVER is the client&apos;s broadcast; on R1&apos;s server side it is a new message from the router itself, with giaddr filled in. For DNS there are two extra stops before anything is sent: the laptop&apos;s <strong>cache</strong> (a remembered answer sends nothing) and <strong>ARP</strong> (the laptop needs its router&apos;s hardware address, and the router needs the DNS server&apos;s).</p>
-        <CompareCards
+        <p>
+          This lesson shows how <strong>DHCP</strong> and <strong>DNS</strong> do that: you watch the laptop shout for help, a relay carry the shout to a server in another subnet, four messages hand out a lease, and a DNS query turn a name into an address that is then cached. Then websites open by IP but not by name, and you find out why, fix it, and prove it.
+        </p>
+        <ChecklistCard
+          tone="warning"
+          title="By the end of this lesson you can"
+          mark="→"
           items={[
-            { title: "Traffic exists", tone: "cyan", tag: "network", points: ["The message is seen at a point", "Proves the path up to there", "Doesn't prove any service answered"] },
-            { title: "The service answered", tone: "violet", tag: "service", points: ["An offer/ACK or DNS answer came back", "Proves the server's program works", "A ping to the server proves neither"] },
-            { title: "The user's task works", tone: "success", tag: "end to end", points: ["The laptop has the right settings", "The name resolves, the address is reachable", "Each is a separate test"] },
-          ]}
-        />
-
-        <h4 className="text-[15px] font-semibold text-pv-text">4 · Pick the tool that answers your question</h4>
-        <p>Once you know where a message stopped, each device&apos;s own information tells you why. Start from the question, not from the tool:</p>
-        <FieldTable
-          title="Question → where to look"
-          columns={["Your question", "Look at"]}
-          accent="cyan"
-          rows={[
-            ["What settings did the laptop get?", "the laptop's configuration (ipconfig /all)"],
-            ["Is the router set up to relay DHCP?", "R1's interface settings: the helper address"],
-            ["Can the router reach that address at all?", "R1's ARP table: an incomplete entry means nobody answered"],
-            ["Is the DHCP / DNS service running?", "the server's service status and listening ports"],
-            ["Did the server hear this laptop, and what did it decide?", "the server's log (and its leases: any free?)"],
-            ["Is the laptop answering from memory?", "the laptop's DNS cache"],
-          ]}
-        />
-        <FailureSignatures
-          items={[
-            { tag: "1", title: "169.254, stops at R1", tone: "danger", points: ["Seen arriving at R1, never leaving its other side", "No helper address configured", "Cause: no relay"] },
-            { tag: "2", title: "Reaches the server, no offer", tone: "danger", points: ["Server log: “no free leases” → pool exhausted", "Host answers port unreachable → service stopped", "The network works in both cases"] },
-            { tag: "3", title: "Address OK, nothing leaves", tone: "warning", points: ["Only ARP questions for the router, no reply", "Cause: wrong Option 3"] },
-            { tag: "4", title: "Names fail, stops at R1", tone: "warning", points: ["R1 can't find the DNS address (ARP incomplete)", "Cause: wrong Option 6"] },
-            { tag: "5", title: "Names fail, reaches DNS-SRV", tone: "warning", points: ["Refused (port unreachable); ping still works", "Cause: DNS service stopped"] },
-            { tag: "6", title: "Old address, nothing sent", tone: "cyan", points: ["The laptop's cache still holds the old answer", "Cause: stale cache until the TTL runs out"] },
+            "explain why the laptop's first message is a broadcast, and why a relay must carry it",
+            "name the four DHCP messages and say what each one changes",
+            "read a lease: address, mask, gateway (option 3), DNS server (option 6), lease time",
+            "follow a DNS query and its answer, and say how long the answer is kept",
+            "find and repair the incident of this lesson from the laptop and the servers, and prove it",
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="dh-breaks" eyebrow="When it breaks" title={`When a client can not get online: find which half failed`} tone="danger">
-        <p className="text-sm text-pv-text-muted">{`Getting online is two stories: DHCP gives the client its identity, then DNS turns names into addresses. First find which story stopped, then which step.`}</p>
-        <TroubleshootingFlow
-          steps={[
-            { question: `Does the client have a real address?`, look: `169.254.x.x or no address means DHCP failed: follow the DISCOVER (client → R1 → server) until the evidence stops. A real address means DHCP worked, so move on.` },
-            { question: `Are its gateway and DNS server what they should be?`, look: `Compare them with the scope's options 3 and 6. Wrong values come from the server: fix the scope, then renew the client.` },
-            { question: `Can it reach an IP address?`, look: `Ping the gateway, then a remote IP. If that fails, check the client's ARP entry for its gateway: the problem is the gateway or routing, not DNS.` },
-            { question: `Can it resolve a name?`, look: `IPs work but names fail means DNS: which server did DHCP give, did the query reach it, and did the service answer, refuse or never hear of it?` },
-            { question: `How do you prove the fix?`, look: `Renew, so the client picks up the corrected options. Then check its identity, resolve the name, and ping.` },
-          ]}
-        />
-        <Callout tone="cyan" title="The habit to build" icon="✓">
-          Walk the story in order and confirm each step with real evidence (a table, a capture, a command). The first step you cannot confirm is where the problem is. The boxes under each story step above say what to look at.
-        </Callout>
-      </GuideSection>
-
-      <GuideSection id="dh-build" eyebrow="Configuration" title="Building it: what goes where, and how to prove it works" tone="success">
-        <p>Three devices need configuration, each for a reason that follows from the story. The laptop needs none (it is set to obtain everything automatically), and the switches need none (they only carry messages). Each is configured where it really lives: the router from its command line (IOS or Junos), the DHCP server from its terminal (edit <Mono>/etc/dhcp/dhcpd.conf</Mono>, check it with <Mono>dhcpd -t</Mono>, restart the service), the DNS server through its zone file, <Mono>named-checkzone</Mono> and a reload. In the lab&apos;s Build station you do exactly that, device by device, and confirm each change: the device accepted it, it is active, you saw it on the device, traffic shows it, and the whole service works.</p>
-        <FieldTable
-          title="What to configure, on which device, and why"
-          columns={["Device", "Configure", "Why it belongs there", "If it's wrong or missing"]}
-          accent="success"
-          rows={[
-            ["DHCP server", "a scope: the clients' subnet, an address range, option 3 (router) and option 6 (DNS server)", "only the server decides addresses and settings; it picks the scope whose subnet contains giaddr", "no scope for that subnet: requests arrive and are ignored (“unknown network segment”). A range outside the subnet: the service fails to start"],
-            ["Router (R1)", <>a DHCP relay: <Mono>ip helper-address</Mono> on the interface facing the clients</>, "routers don't pass broadcasts on; the relay turns the client's broadcast into a message to the server", "missing or on the wrong interface: requests stop at the router. Pointing at the wrong address: they go to the wrong place"],
-            ["DNS server", "one A record per name in the zone", "a DNS server can only answer names it has records for", "missing: “no such name”. Wrong address: a confident wrong answer, which only a test of the address reveals"],
-          ]}
-        />
-        <Callout tone="warning" title="Accepted is not the same as working">
-          A configuration being saved proves nothing about the network. The DHCP service might not have started. The relay might sit on the wrong interface. A record might point at the wrong address. Only the network&apos;s behavior proves the service works.
-        </Callout>
-        <CompareCards
-          items={[
-            { title: "Testing DHCP", tone: "cyan", tag: "proves settings", points: ["A new laptop gets an address in the planned range", "It received the planned router and DNS server", "Its router answers a ping", "Doesn't prove names work"] },
-            { title: "Testing DNS", tone: "violet", tag: "proves names", points: ["The cache is empty, so a real query is sent", "Each name resolves to its planned address", "ping by name reaches the server", "Depends on DHCP having given the right DNS server"] },
-          ]}
-        />
-        <FieldTable
-          title="A DHCP problem or a DNS problem?"
-          columns={["What you see", "Whose configuration"]}
-          accent="violet"
-          rows={[
-            ["169.254 address, or no settings", "DHCP: server or relay"],
-            ["An address, but nothing beyond the LAN works (by name or IP)", "DHCP: option 3 (router)"],
-            ["Names fail, the question never reaches a DNS server, or is refused by a host that isn't one", "DHCP: option 6 (the laptop was told the wrong server)"],
-            ["The question reaches the DNS server: “no such name”", "DNS: the zone has no such record"],
-            ["A name resolves, but to an address that doesn't answer", "DNS: the record points at the wrong address"],
-            ["The DNS server refuses everything (port unreachable) but answers pings", "DNS: the service isn't running"],
-          ]}
-        />
-      </GuideSection>
-
-      <PathDivider title="Reference">Every part of the story in detail. Read the parts you need.</PathDivider>
-
-
-      <GuideSection id="dh-boundary" eyebrow="Broadcast boundary" title="Why a relay is needed" tone="cyan">
-        <DiagramFrame caption="255.255.255.255 never crosses a router. The relay agent re-sends the DHCP message as unicast.">
+      <GuideSection id="dh-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="The laptop's subnet and the servers' subnet. R1 joins them and relays DHCP.">
           <BoundaryDiagram />
         </DiagramFrame>
+        <FieldTable
+          title="Who does what"
+          columns={["Device", "Address", "Role"]}
+          rows={[
+            ["CLIENT (Windows laptop)", "none yet → 10.10.10.50", "Asks DHCP for its settings, then asks DNS for names"],
+            ["R1", `${DH_ADDR["R1:CLIENT"]} · ${DH_ADDR["R1:SERVER"]}`, "The laptop's gateway; relays DHCP to the server (ip helper-address)"],
+            ["DHCP-SRV (Linux, ISC dhcpd)", DH_ADDR["DHCP-SRV"], "Holds the scope 10.10.10.50–150 and the options"],
+            ["DNS-SRV (Linux, BIND)", DH_ADDR["DNS-SRV"], "Authoritative for packetverse.test"],
+            ["WEB", DH_ADDR.WEB, `What ${DNS_NAME} points to`],
+          ]}
+        />
       </GuideSection>
 
-      <GuideSection id="dh-dora" eyebrow="The exchange" title="DHCPDISCOVER → DHCPOFFER → DHCPREQUEST → DHCPACK" tone="violet">
-        <DiagramFrame caption="Client side: UDP 68 ↔ 67 broadcasts (the client set the BROADCAST flag). Relay ↔ server: unicast on UDP 67.">
+      <GuideSection id="dh-ideas" eyebrow="This lesson" title="Three ideas you need" tone="cyan">
+        <FlowSteps
+          steps={[
+            { title: "DHCP gives a host its settings", body: "An address and mask, a gateway (option 3), a DNS server (option 6) and a lease time. The host uses them exactly as given.", tone: "warning" },
+            { title: "A broadcast can't cross a router", body: "The laptop has no address yet, so it can only broadcast. A relay on the router forwards the request to a server in another subnet.", tone: "ip" },
+            { title: "DNS turns names into addresses", body: "The laptop asks the DNS server DHCP named. The answer comes with a TTL, and the laptop keeps it that long.", tone: "violet" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="dh-walk" eyebrow="This lesson" title="What you will watch, step by step" tone="warning">
+        <FlowSteps
+          steps={[
+            { title: "A shout for help", body: "The laptop broadcasts a DHCPDISCOVER from 0.0.0.0.", tone: "warning" },
+            { title: "The relay", body: "R1 turns the broadcast into a unicast to DHCP-SRV and stamps giaddr.", tone: "ip" },
+            { title: "Four messages", body: "Discover, Offer, Request, Ack: the lease is agreed.", tone: "success" },
+            { title: "The lease", body: "Address, mask, gateway, DNS server and a 24-hour lease.", tone: "cyan" },
+            { title: "A name", body: `${DNS_NAME} becomes ${DH_ADDR.WEB}, and is cached.`, tone: "violet" },
+            { title: "The incident", body: "Websites open by IP, never by name. You find out why and fix it.", tone: "danger" },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">The sections below walk through each step on this network, in the same order.</p>
+      </GuideSection>
+
+      <GuideSection id="dh-start" eyebrow="The problem" title="A laptop that knows nothing" tone="warning">
+        <p>
+          Freshly plugged in, the laptop has no IPv4 address, no idea which subnet it is on, no gateway and no DNS server. It can&apos;t ARP for a gateway it doesn&apos;t know, and it can&apos;t send to a server it can&apos;t name. All it can do is ask the whole LAN for help, and that is how DHCP starts. In the laptop&apos;s command prompt, <Mono>ipconfig /renew</Mono> sets the whole exchange off:
+        </p>
+        <CliPanel run={renewOk} caption="CLIENT · Windows" />
+      </GuideSection>
+
+      <GuideSection id="dh-boundary" eyebrow="The broadcast" title="Its first message is a broadcast" tone="ip">
+        <p>
+          The DHCPDISCOVER goes from 0.0.0.0 (no address yet) to 255.255.255.255, UDP port 68 to 67, inside an Ethernet broadcast. SW1 floods it to everyone on 10.10.10.0/24. But DHCP-SRV is on another subnet, and a router never forwards a broadcast. Without help, the request dies at R1.
+        </p>
+        <p>
+          The help is a <strong>relay agent</strong> on R1&apos;s LAN interface: <Mono>ip helper-address {DH_ADDR["DHCP-SRV"]}</Mono>. R1 picks up the broadcast and re-sends it as an ordinary unicast to the server:
+        </p>
+        <CliPanel run={helper} caption="R1 · Cisco IOS" />
+      </GuideSection>
+
+      <GuideSection id="dh-dora" eyebrow="DHCP" title="Discover, Offer, Request, Ack" tone="success">
+        <p>Four messages, all with the same transaction ID (xid), so the laptop can tell its answers from anyone else&apos;s:</p>
+        <DiagramFrame caption="The client's side is broadcast; between R1 and the server everything is unicast.">
           <DoraDiagram />
         </DiagramFrame>
-        <p>
-          The REQUEST carries Option 50 (the requested address, <Mono>{DH_ADDR.CLIENT}</Mono>) and Option 54 (the chosen server, <Mono>{DH_ADDR["DHCP-SRV"]}</Mono>). ciaddr stays 0.0.0.0 because nothing is bound yet.
-        </p>
+        <FieldTable
+          title="What each message does"
+          columns={["Message", "From → to", "Means"]}
+          rows={[
+            ["DHCPDISCOVER", "client → everyone (via relay)", "Is there a DHCP server?"],
+            ["DHCPOFFER", "server → client", "You can have 10.10.10.50, with these options"],
+            ["DHCPREQUEST", "client → everyone (via relay)", "I take that offer from that server (options 50 and 54)"],
+            ["DHCPACK", "server → client", "It's yours for 24 hours. Configure yourself"],
+          ]}
+        />
+        <p>The server&apos;s log records the same four steps, each one &quot;via 10.10.10.1&quot;: the relay that brought it:</p>
+        <CliPanel run={journal} caption="DHCP-SRV · Linux" />
       </GuideSection>
 
-      <GuideSection id="dh-giaddr" eyebrow="Relay" title="giaddr picks the pool" tone="warning">
-        <DiagramFrame caption="Only hops and giaddr change at the relay.">
+      <GuideSection id="dh-giaddr" eyebrow="The relay" title="The relay and giaddr: how the server picks the scope" tone="ip">
+        <p>
+          The server serves many subnets from one place. It knows which pool to use from the <strong>giaddr</strong> field the relay fills in: R1 writes its own LAN address, 10.10.10.1. The server looks for the scope that contains it and answers back to the relay, which delivers the reply to the laptop.
+        </p>
+        <DiagramFrame caption="The relay adds itself; the client's own fields and options are untouched.">
           <GiaddrDiagram />
         </DiagramFrame>
       </GuideSection>
 
-      <GuideSection id="dh-lease" eyebrow="Lease" title="What the ACK configures" tone="success">
-        <DiagramFrame caption="Every part of the client's IPv4 setup comes from the ACK.">
+      <GuideSection id="dh-lease" eyebrow="The lease" title="What the lease sets" tone="cyan">
+        <p>When the DHCPACK arrives, the laptop configures itself from it, field by field:</p>
+        <DiagramFrame caption="Every field of the Ack becomes a setting on the laptop.">
           <LeaseDiagram />
         </DiagramFrame>
+        <CliPanel run={allOk} caption="CLIENT · Windows · after the Ack" />
+        <p className="text-sm text-pv-text-muted">The lease runs {LEASE_SECONDS / 3600} hours. At half-time (T1) the laptop asks the same server directly to renew; only if that fails does it broadcast again near the end (T2). Give the address back with <Mono>ipconfig /release</Mono>.</p>
       </GuideSection>
 
-      <GuideSection id="dh-dns" eyebrow="Name resolution" title="A DNS query and response" tone="violet">
-        <DiagramFrame caption="The client asks the DNS server from Option 6.">
+      <GuideSection id="dh-dns" eyebrow="DNS" title="Then a name: the DNS lookup" tone="violet">
+        <p>
+          The user opens <Mono>{DNS_NAME}</Mono>. The laptop sends a DNS query (UDP to port 53) to the server its lease named in option 6, {DH_ADDR["DNS-SRV"]}. DNS-SRV is <strong>authoritative</strong> for packetverse.test: it holds the zone, so it answers from its own records.
+        </p>
+        <DiagramFrame caption="One query, one response, matched by the transaction ID.">
           <DnsDiagram />
         </DiagramFrame>
-        <Callout tone="cyan" title="Two different TTLs">
-          The answer&apos;s TTL ({DNS_RECORD_TTL}) is how many seconds the answer may be cached. The IPv4 TTL in the same packet (63 on arrival) is a router hop limit. Same name, unrelated meanings.
-        </Callout>
+        <CliPanel run={nsOk} caption="CLIENT · Windows" />
+        <p className="text-sm text-pv-text-muted">For names outside its own zones a DNS server works <strong>recursively</strong>: it asks the root, then the top-level domain, then the authoritative server, and returns the final answer. The Deep Dive follows that chain.</p>
       </GuideSection>
 
-      <GuideSection id="dh-incident" eyebrow="Troubleshooting" title="IP works, names don't" tone="danger">
-        <DiagramFrame caption="The client can only ask the DNS server its lease names.">
+      <GuideSection id="dh-cache" eyebrow="Caching" title="Answers are cached for their TTL" tone="violet">
+        <p>The answer carries a TTL ({DNS_RECORD_TTL} s here). The laptop keeps it that long and reuses it: the next lookup doesn&apos;t leave the laptop at all.</p>
+        <CliPanel run={cacheOk} caption="CLIENT · the DNS cache" />
+        <p>
+          Notice what the laptop takes on trust in this whole story: it asks whatever DNS server the lease names, and it never checks that a DNS server actually answers there. Keep that in mind: it is the key to the incident.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="dh-verify" eyebrow="Verification" title="What working looks like" tone="success">
+        <p>Each idea of this lesson has one place that proves it. The commands are only the way to ask; what matters is what each answer proves.</p>
+        <FieldTable
+          title="Read the lesson on the devices"
+          columns={["Question", "Where", "Command", "What the answer proves"]}
+          rows={[
+            ["What did DHCP give the laptop?", "CLIENT", <Mono key="1">ipconfig /all</Mono>, "Address, gateway, DNS server, lease, and which server granted it"],
+            ["Does the relay exist?", "R1", <Mono key="2">show running-config interface … · show configuration forwarding-options dhcp-relay</Mono>, "A helper address on the clients' interface"],
+            ["What did the server hand out?", "DHCP-SRV", <Mono key="3">journalctl -u isc-dhcp-server · dhcp-lease-list · cat /etc/dhcp/dhcpd.conf</Mono>, "The exchange, the leases, and the options it sends"],
+            ["Does DNS answer?", "CLIENT · DNS-SRV", <Mono key="4">nslookup · systemctl status named · cat /etc/bind/db.packetverse.test</Mono>, "The name resolves, from the server the lease named"],
+          ]}
+        />
+        <p>Healthy: the lease names {DH_ADDR["DNS-SRV"]} and that server answers (both shown above).</p>
+      </GuideSection>
+
+      <GuideSection id="dh-incident" eyebrow="Incident" title="The incident: names fail, IPs work" tone="danger">
+        <p>The user says: &quot;Websites don&apos;t open by name, but our IT person says pinging 203.0.113.80 works.&quot; The laptop has an address, and nothing reports an error except the lookups.</p>
+        <DiagramFrame caption={`The lease names ${DH_ADDR.WRONG_DNS}, an address nobody has. Every query goes there and dies.`}>
           <IncidentDiagram />
         </DiagramFrame>
         <CompareCards
           items={[
-            { title: "Healthy", tone: "success", tag: "evidence", points: ["Address, mask and gateway", "Routing to 10.20.20.0/24", "DNS-SRV answers direct queries"] },
-            { title: "Faulty", tone: "danger", tag: "cause", points: [`Option 6 = ${DH_ADDR.WRONG_DNS}`, "Nothing owns that address", "Changing the server doesn't change a lease the client already holds"] },
+            { title: "What should happen", tone: "success", tag: "normal", points: [`The lease names ${DH_ADDR["DNS-SRV"]} as DNS server`, "The query reaches DNS-SRV", "The answer comes back and is cached"] },
+            { title: "What happens", tone: "danger", tag: "incident", points: [`The lease names ${DH_ADDR.WRONG_DNS}`, "Every query goes to an address nobody owns", "The laptop gets no answer and gives up"] },
+          ]}
+        />
+        <CompareCards
+          items={[
+            { title: "Why it fails", tone: "danger", tag: "cause", points: [`The DHCP server's option 6 says ${DH_ADDR.WRONG_DNS}`, "Every client that takes a lease inherits the wrong DNS server", "DNS-SRV itself is fine: nobody asks it"] },
+            { title: "What it can't be", tone: "warning", tag: "red herrings", points: ["Routing or the gateway: ping by IP works", "DHCP itself: the laptop has a valid lease", "The DNS zone: DNS-SRV would answer if asked"] },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="dh-verify" eyebrow="Verification" title="Fix, renew, resolve" tone="success">
-        <FlowSteps
+      <GuideSection id="dh-investigate" eyebrow="Investigation" title="Which DNS server was asked?" tone="danger">
+        <TroubleshootingFlow
           steps={[
-            { title: "Correct the scope", body: <>Option 6 → <Mono>{DH_ADDR["DNS-SRV"]}</Mono>. The client still holds its old lease.</>, tone: "warning" },
-            { title: "Renew the lease", body: "The client unicasts a DHCPREQUEST (ciaddr set) straight to the server. It's routed, not relayed.", tone: "cyan" },
-            { title: "Receive the new option", body: `The unicast DHCPACK carries Option 6 = ${DH_ADDR["DNS-SRV"]}.`, tone: "violet" },
-            { title: "Resolve again", body: `${DNS_NAME} → ${DH_ADDR.WEB}, with a matching Transaction ID.`, tone: "success" },
+            { question: "By IP, or by name?", look: "ping by IP answers; ping by name can't find the host. The path is fine: the problem is the lookup." },
+            { question: "Which DNS server did the laptop ask?", look: `nslookup times out against ${DH_ADDR.WRONG_DNS}; ipconfig /all confirms that is the DNS server the lease gave.` },
+            { question: "Who told it that?", look: "The DHCP server's configuration: option domain-name-servers is wrong." },
+          ]}
+        />
+        <CliPanel run={pingIp} caption="CLIENT · by IP" />
+        <CliPanel run={pingName} caption="CLIENT · by name" />
+        <CliPanel run={nsBad} caption="CLIENT · the lookup itself" />
+        <CliPanel run={{ ...allBad, output: pickLines(allBad.output, /IPv4|Gateway|DHCP Server|DNS Servers/) }} caption="CLIENT · what the lease said" />
+        <CliPanel run={{ ...confBad, output: pickLines(confBad.output, /subnet 10\.10|range|option|lease|^\}/) }} caption="DHCP-SRV · the source of the wrong value" />
+      </GuideSection>
+
+      <GuideSection id="dh-repair" eyebrow="Repair" title="Repair at the source, then renew" tone="success">
+        <p>
+          Fixing the laptop by hand would leave every other client broken. Fix the scope on DHCP-SRV: <Mono>option domain-name-servers {DH_ADDR["DNS-SRV"]};</Mono> in <Mono>/etc/dhcp/dhcpd.conf</Mono>, then restart the service. Clients pick the new value up at their next renewal; on the laptop, <Mono>ipconfig /renew</Mono> does it now:
+        </p>
+        <CliPanel run={{ ...allFixed, output: pickLines(allFixed.output, /IPv4|Gateway|DHCP Server|DNS Servers/) }} caption="CLIENT · after the renewal" />
+        <CliPanel run={nsFixed} caption="CLIENT · the lookup again" />
+        <ChecklistCard
+          tone="success"
+          title="The proof"
+          mark="✓"
+          items={[
+            `ipconfig /all shows DNS Servers ${DH_ADDR["DNS-SRV"]}`,
+            `nslookup ${DNS_NAME} answers ${DH_ADDR.WEB}, from ${DH_ADDR["DNS-SRV"]}`,
+            "The website opens by name",
+            "Other clients get the right value at their next renewal",
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="dh-model" eyebrow="Mental model" title="A welcome pack and a phone book" tone="cyan">
-        <p>DHCP is the welcome pack handed out at the door: your address, the exit (gateway), and which phone book (DNS server) to use. DNS is the phone book. If the pack lists the wrong phone book, the building and exits work fine, but you can&apos;t look anyone up. A corrected pack only reaches you when you collect a new one: the renewal.</p>
+      <GuideSection id="dh-other" eyebrow="Troubleshooting" title="Other ways it breaks" tone="warning">
+        <p>The wrong option 6 is one way to break the boot-to-name chain. The lab&apos;s tickets add five more, each with its own evidence; the Deep Dive walks through all six with real output from every device.</p>
+        <CompareCards
+          items={[
+            { title: "No relay", tone: "danger", tag: "169.254.x.x", points: ["The laptop self-assigns a 169.254 address", "R1 has no helper address", "The server's log is empty: it never heard a thing"] },
+            { title: "Pool exhausted", tone: "warning", tag: "new laptops only", points: ["Old leases keep working", "dhcp-lease-list: 0 addresses free", "The log says no free leases"] },
+            { title: "Wrong gateway (option 3)", tone: "danger", tag: "an address, no internet", points: ["The lease names a gateway nobody has", "Nothing outside the subnet works, by name or IP", "The laptop's own address reports the failure"] },
+            { title: "DNS service stopped", tone: "violet", tag: "refused at once", points: ["The DNS server answers ping, not DNS", "nslookup: connection refused", "named inactive, nothing on UDP 53"] },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">The sixth, a stale cache, is the subtle one: the record changed on the server, but the laptop still holds the old answer until its TTL runs out.</p>
+      </GuideSection>
+
+      <GuideSection id="dh-model" eyebrow="Mental model" title="The reception desk and the phone book" tone="cyan">
+        <p>
+          A newcomer walks into a building with no badge and shouts &quot;Can anyone help me?&quot;. The receptionist on this floor (the relay) phones the HR office upstairs (DHCP) and passes on the shout, saying which floor it came from. HR issues a temporary badge with everything printed on it: a desk number, the way out (gateway), and which phone book to use (DNS). The newcomer trusts that badge completely. Print the wrong phone book on it and they can walk anywhere they know the room number of, yet can&apos;t find anyone by name.
+        </p>
       </GuideSection>
 
       <GuideSection id="dh-glossary" eyebrow="Glossary" title="Terms used in this lesson" tone="violet">
         <Glossary
           items={[
-            { term: "DHCPDISCOVER / OFFER / REQUEST / ACK", def: "The four messages of a new lease (the 'DORA' mnemonic)." },
-            { term: "xid", def: "Transaction ID shared by the messages of one exchange." },
-            { term: "giaddr", def: "Relay (gateway) address. Tells the server which subnet to serve." },
-            { term: "Option 6", def: "Domain Name Server list handed to the client." },
-            { term: "Lease", def: "Time-limited use of an address and its options." },
-            { term: "A record", def: "DNS record mapping a name to an IPv4 address." },
-            { term: "Transaction ID (DNS)", def: "Pairs a DNS response with its query." },
-            { term: "Observation point", def: "A place where you can see traffic or state: a host's capture, a switch mirror port, a router interface, a server log." },
-            { term: "Mirror (SPAN) port", def: "A switch feature that copies one port's traffic to an analyser, because a switch can't capture by itself." },
-            { term: "ICMP port unreachable", def: "The answer from a host that is up but has nothing listening on that UDP port: host up, service down." },
-            { term: "Incomplete ARP entry", def: "The device asked “who has this IP?” and nobody answered, so it can't send anything there." },
+            { term: "DHCP", def: "Dynamic Host Configuration Protocol: leases a host its address and options. UDP 67 (server) and 68 (client)." },
+            { term: "Lease", def: "An address and its options, granted for a limited time and renewed at T1." },
+            { term: "Scope", def: "A server's pool of addresses for one subnet, with that subnet's options." },
+            { term: "Relay agent", def: "A router feature (ip helper-address) that forwards DHCP broadcasts to a server as unicast." },
+            { term: "giaddr", def: "The relay's address, written into the request; the server uses it to choose the scope." },
+            { term: "Option 3 / Option 6", def: "The default gateway and the DNS server the client should use." },
+            { term: "Authoritative server", def: "The DNS server that holds a zone's records and answers for it." },
+            { term: "TTL", def: "How long a DNS answer may be cached before it must be asked again." },
           ]}
         />
       </GuideSection>
 
       <GuideSection id="dh-recap" eyebrow="Recap" title="What you can now explain" tone="success">
-        <ChecklistCard tone="cyan" title="DHCP + DNS" mark="→" items={["A new client broadcasts from 0.0.0.0 on UDP 68 → 67", "A relay stamps giaddr and unicasts to the server", "Offer/Request/Ack share the xid; Request names the chosen server", "The lease sets address, mask, gateway and DNS", "DNS query UDP → 53, answer back with the same ID", "Fixing a DHCP option needs a lease renewal to reach clients", "Each observation point proves one step; follow a message until the evidence stops", "Traffic reaching a server doesn't prove its service works"]} />
+        <ChecklistCard
+          tone="cyan"
+          title="DHCP & DNS in this lesson"
+          mark="→"
+          items={[
+            "The laptop starts with nothing and broadcasts a DHCPDISCOVER",
+            "R1's relay forwards it as unicast, with giaddr naming the client subnet",
+            "Discover, Offer, Request, Ack: one xid, one lease",
+            "The lease sets the address, mask, gateway (option 3) and DNS server (option 6)",
+            "A name is resolved by the DNS server in option 6, and cached for its TTL",
+            "Names fail but IPs work: check which DNS server the lease named, and fix it at the DHCP server",
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="dh-practice" eyebrow="Practice" title="Practice it" tone="cyan">
+        <p>You now know what each device should do between plug-in and the first page, and how to prove it. The DHCP & DNS Lab gives you this network with a Windows client, Linux servers and Cisco or Junos on R1:</p>
+        <FlowSteps
+          steps={[
+            { title: "Learn (7 levels)", body: "See the story, who does what, where to look, read evidence, follow the traffic, troubleshoot, and build it yourself.", tone: "violet" },
+            { title: "Build it", body: "Configure the scope on DHCP-SRV, the relay on R1 and the zone on DNS-SRV, then prove a new laptop gets everything.", tone: "warning" },
+            { title: "Troubleshoot (6 tickets)", body: "This lesson's incident and the five other faults above, reported as users report them.", tone: "danger" },
+          ]}
+        />
+        <PresentationBridge>Watch the broadcast, the relay, the four DHCP messages and the DNS lookup animated in the DHCP & DNS presentation.</PresentationBridge>
+        <LessonLabBridge />
+        <p className="text-sm text-pv-text-muted">For the full course (the client state machine, T1 and T2, multiple offers, recursion vs authority, the DNS message, real output for every ticket, a knowledge check), open the Deep Dive tab.</p>
       </GuideSection>
     </div>
   );

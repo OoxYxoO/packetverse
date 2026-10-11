@@ -1,13 +1,14 @@
 import type { ReactNode } from "react";
-import { Callout, ChecklistCard, CompareCards, DiagramFrame, FailureSignatures, FlowSteps, GuideSection, Misconceptions, Mono, PacketAnatomy, StateTransition, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DiagramFrame, FailureSignatures, FieldTable, FlowSteps, GuideSection, Misconceptions, Mono, PacketAnatomy, StateTransition, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
+import { FailureWalk } from "@/components/lesson/GuideCli";
 import { ExplainIt, KnowledgeCheck, KnowledgeQuiz, PracticeBridge, type KnowledgeQuestion } from "@/components/lesson/GuideInteractive";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { executeCli } from "@/lib/cli/parser";
 import type { CliVendor } from "@/lib/cli/types";
-import { createArpNet, planArp, type ArpNetState } from "@/lib/sim-engine/scenarios/arpNet";
+import { applyArp, ARP_OLD_MAC, createArpNet, HOSTS, planArp, runAll, type ArpAction, type ArpHost, type ArpNetState, type ArpTicketId } from "@/lib/sim-engine/scenarios/arpNet";
 import { ADDR, DEVICE_HOSTNAME, SUBNETS } from "@/lib/sim-engine/scenarios/firstConnection";
 import { type FirstConnectionCliDevice } from "@/components/connection-network/cliAdapter";
-import { arpR1Sets, arpSwSets, type ArpCliApi } from "./arp-lab/arpNetCli";
+import { arpHostSet, arpR1Sets, arpSwSets, type ArpCliApi } from "./arp-lab/arpNetCli";
 import { C } from "@/components/connection-network/guideSvg";
 
 /**
@@ -17,11 +18,11 @@ import { C } from "@/components/connection-network/guideSvg";
  * sample below is generated from the ARP Lab model through the real CLI
  * adapter, so the guide, the lesson and the lab cannot drift apart.
  *
- * Progression: Foundation → The exchange → Using the result →
- * Operations → Advanced (optional) → Master it.
+ * Progression: Foundation → The exchange → Using the result → Operations →
+ * Troubleshooting → Beyond this lesson → Master it.
  */
 
-const G = { foundation: "Foundation", exchange: "The exchange", using: "Using the result", ops: "Operations", advanced: "Advanced", master: "Master it" };
+const G = { foundation: "Foundation", exchange: "The exchange", using: "Using the result", ops: "Operations", trouble: "Troubleshooting", beyond: "Beyond this lesson", master: "Master it" };
 
 export const ARP_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "d-problem", label: "The problem ARP solves", group: G.foundation },
@@ -39,16 +40,19 @@ export const ARP_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "d-second-hop", label: "At the router: ARP is hop-local", group: G.using },
   { id: "d-local", label: "Local vs remote destination", group: G.using },
   { id: "d-cache", label: "ARP cache and reuse", group: G.using },
+  { id: "d-entries", label: "Incomplete, stale and static", group: G.using },
+  { id: "d-walk", label: "End-to-end packet walk", group: G.using },
   { id: "d-cli", label: "Cisco and Juniper CLI", group: G.ops },
   { id: "d-before-after", label: "Before and after, on the CLI", group: G.ops },
-  { id: "d-troubleshoot", label: "Troubleshooting step by step", group: G.ops },
-  { id: "d-failures", label: "Failure signatures", group: G.ops },
-  { id: "d-myths", label: "Common misconceptions", group: G.ops },
-  { id: "d-gratuitous", label: "Gratuitous ARP", group: G.advanced },
-  { id: "d-proxy", label: "Proxy ARP", group: G.advanced },
-  { id: "d-security", label: "ARP security", group: G.advanced },
-  { id: "d-ipv6", label: "IPv6 uses ND, not ARP", group: G.advanced },
-  { id: "d-walk", label: "End-to-end packet walk", group: G.master },
+  { id: "d-failures", label: "Failure signatures", group: G.trouble },
+  { id: "d-troubleshoot", label: "Troubleshooting step by step", group: G.trouble },
+  { id: "d-faults", label: "The five faults, step by step", group: G.trouble },
+  { id: "d-prove", label: "Proving a repair", group: G.trouble },
+  { id: "d-gratuitous", label: "Gratuitous ARP", group: G.beyond },
+  { id: "d-proxy", label: "Proxy ARP", group: G.beyond },
+  { id: "d-security", label: "ARP security", group: G.beyond },
+  { id: "d-ipv6", label: "IPv6 uses ND, not ARP", group: G.beyond },
+  { id: "d-myths", label: "Common misconceptions", group: G.master },
   { id: "d-quiz", label: "Knowledge check", group: G.master },
   { id: "d-explain", label: "Can you explain it?", group: G.master },
   { id: "d-practice", label: "Practice in the ARP Lab", group: G.master },
@@ -79,6 +83,32 @@ function cliOutput(state: ArpNetState, device: FirstConnectionCliDevice, vendor:
 }
 
 // ------------------------------------------------------------------ local visual helpers
+
+// The lab's five tickets, reproduced as reported, and the repairs the lab accepts.
+const PCB_IP = HOSTS.pcb.cfg.ip;
+const PCB_MAC = HOSTS.pcb.mac;
+const PCC_IP = HOSTS.pcc.cfg.ip;
+const OLD_MAC = ARP_OLD_MAC;
+const pingOnce = (src: ArpHost, dst: string): ArpAction => ({ type: "ping", src, dst, count: 1 });
+const ticket = (id: ArpTicketId, after: ArpAction[]) => runAll(applyArp(createArpNet(), { type: "ticket", id }), after);
+const F_GATEWAY = ticket("gateway", [pingOnce("laptop", SERVER.ip)]);
+const F_GATEWAY_FIX = runAll(F_GATEWAY, [{ type: "host-cfg", host: "laptop", cfg: { ip: LAPTOP.ip, prefix: 24, gw: GW.ip } }, pingOnce("laptop", SERVER.ip)]);
+const F_MASK = ticket("mask", [pingOnce("laptop", PCB_IP)]);
+const F_STATIC = ticket("static", [pingOnce("laptop", PCB_IP)]);
+const F_STATIC_FIX = runAll(F_STATIC, [{ type: "clear-cache", owner: "laptop", ip: PCB_IP }, pingOnce("laptop", PCB_IP)]);
+const F_DUP = ticket("dupip", [pingOnce("laptop", PCB_IP)]);
+const F_PORT = ticket("port", [pingOnce("laptop", PCB_IP)]);
+const LIN_FAILED = runAll(createArpNet(), [pingOnce("pcb", "192.168.10.99")]);
+
+/** Any lab terminal (hosts, SW1, R1) against a lab state; a ping typed there runs on a copy of that state. */
+function labRun(state: ArpNetState, dev: ArpHost | "sw1" | "r1", vendor: CliVendor, command: string) {
+  const api: ArpCliApi = { view: state, act: (a) => (Array.isArray(a) ? runAll(state, a) : applyArp(state, a)), sw: { cisco: { kind: "exec" }, setCisco: () => undefined, junosEdit: false, setJunosEdit: () => undefined, cand: [], setCand: () => undefined } };
+  const set = dev === "r1" ? arpR1Sets(api)[vendor] : dev === "sw1" ? arpSwSets(api)[vendor] : arpHostSet(api, dev);
+  const r = executeCli(set, command);
+  return { prompt: set.prompt, command, output: r.kind === "ok" ? r.output : "" };
+}
+/** Keep only the lines that make the point. */
+const only = (r: { prompt: string; command: string; output: string }, match: RegExp) => ({ ...r, output: r.output.split("\n").filter((l) => match.test(l)).join("\n") });
 
 const Strong = ({ children }: { children: ReactNode }) => <b className="text-pv-text">{children}</b>;
 
@@ -740,11 +770,11 @@ const QUIZ: KnowledgeQuestion[] = [
   { id: "k3", prompt: "In the ARP Request, why is the Target MAC 00:00:00:00:00:00?", options: [{ id: "u", label: "It is unknown — that is what ARP is asking" }, { id: "b", label: "It means broadcast" }, { id: "e", label: "It is an error value" }, { id: "s", label: "It is the switch’s MAC" }], correctId: "u", explanation: "The whole point of the request is that the sender doesn’t know the target’s MAC yet. Broadcast delivery is the job of the Ethernet destination, not this field." },
   { id: "k4", prompt: "What makes the ARP Request reach every device on the LAN?", options: [{ id: "eth", label: "Ethernet destination FF:FF:FF:FF:FF:FF" }, { id: "op", label: "ARP operation 1" }, { id: "tpa", label: "The Target IP field" }, { id: "router", label: "R1 forwards it" }], correctId: "eth", explanation: "Switches flood broadcast frames out every other port in the VLAN. ARP fields are only read by the receivers." },
   { id: "k5", prompt: `What does ${SW} learn from the ARP Reply entering Fa0/2?`, options: [{ id: "a", label: `${GW.mac} → Fa0/2` }, { id: "b", label: `${GW.ip} → ${GW.mac}` }, { id: "c", label: `${LAPTOP.mac} → Fa0/2` }, { id: "d", label: "Nothing" }], correctId: "a", explanation: "Source MAC learning again: the reply’s Ethernet source is R1’s MAC, arriving on Fa0/2. The IP-to-MAC mapping is for the Laptop’s ARP cache, not the switch." },
-  { id: "k6", prompt: "Which table answers “which switch port leads to this MAC?”", options: [{ id: "mac", label: "The switch MAC (CAM) table" }, { id: "arp", label: "The ARP table" }, { id: "rt", label: "The routing table" }, { id: "dns", label: "The DNS cache" }], correctId: "mac", explanation: "MAC table: MAC → port (switches). ARP table: IPv4 → MAC (hosts and routers)." },
+  { id: "k6", prompt: <>The Laptop can ping PC-B but not the Server. netsh … show neighbors lists 192.168.10.254 as Unreachable. What is wrong?</>, options: [{ id: "gw", label: "The Laptop's default gateway is set to an address nobody owns" }, { id: "r1", label: "R1 is down" }, { id: "srv", label: "The Server doesn't answer ARP" }, { id: "sw", label: "SW1 drops broadcasts" }], correctId: "gw", explanation: <>The Laptop ARPs for its configured gateway, never for the Server. An unanswered request for .254 means that is the gateway it was given; R1 ({GW.ip}) was never even asked.</> },
   { id: "k7", prompt: <>The Laptop sends its first packet to {SERVER.ip}. Ethernet destination / IPv4 destination?</>, options: [{ id: "a", label: `${GW.mac} / ${SERVER.ip}` }, { id: "b", label: `Server MAC / ${SERVER.ip}` }, { id: "c", label: `${GW.mac} / ${GW.ip}` }, { id: "d", label: `FF:FF:FF:FF:FF:FF / ${SERVER.ip}` }], correctId: "a", explanation: "Next-hop MAC, final-destination IP. The IP header never changes to the gateway’s address." },
   { id: "k8", prompt: "Does the Server receive the Laptop’s ARP Request for the gateway?", options: [{ id: "n", label: "No — R1 terminates the broadcast domain" }, { id: "y", label: "Yes — R1 floods it onward" }, { id: "s", label: "Only if the switch knows the Server" }], correctId: "n", explanation: `Routers don’t forward ordinary Layer-2 broadcasts into another subnet. The request stays in ${SUBNETS.lan.network}.` },
   { id: "k9", prompt: "The Laptop sends a second packet to the Server a moment later. Does it ARP again?", options: [{ id: "n", label: "Normally no — it reuses the cached gateway entry" }, { id: "y", label: "Yes, ARP runs for every packet" }, { id: "s", label: "Yes, but for the Server this time" }], correctId: "n", explanation: "Resolved mappings are cached and reused until they age out or are revalidated. Exact timers and states vary by operating system and vendor." },
-  { id: "k10", prompt: "Which protocol does IPv6 use instead of ARP?", options: [{ id: "nd", label: "Neighbor Discovery (ICMPv6)" }, { id: "rarp", label: "RARP" }, { id: "arp6", label: "ARPv6" }, { id: "dhcp", label: "DHCPv6" }], correctId: "nd", explanation: "IPv6 resolves link-layer addresses with Neighbor Solicitation/Advertisement messages, carried in ICMPv6." },
+  { id: "k10", prompt: <>arp -a on the Laptop shows {PCB_IP} as static with a MAC PC-B doesn’t have. PC-C reaches PC-B fine. Why doesn’t the Laptop fix itself?</>, options: [{ id: "s", label: "A static entry is never refreshed, so the Laptop never sends a request for PC-B" }, { id: "t", label: "It will, once the entry ages out" }, { id: "sw", label: "SW1 still has PC-B's old MAC" }], correctId: "s", explanation: "Static entries don't age and are never revalidated. Until someone deletes it, the Laptop keeps sending to a MAC no card accepts." },
   { id: "k11", prompt: "The Laptop has a correct ARP entry for its gateway, but the website still fails. What does that tell you?", options: [{ id: "up", label: "Local Layer-2 resolution works — look higher: routing, firewall, transport, application" }, { id: "arp", label: "ARP must be broken anyway" }, { id: "sw", label: "The switch is the problem" }], correctId: "up", explanation: "ARP proves only that the next hop on this link is reachable at Layer 2. Everything after R1 is a different question." },
 ];
 
@@ -755,7 +785,7 @@ export function ArpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
   return (
     <>
       <Callout tone="cyan" title="One network, start to finish" icon="i">
-        Everything in this guide uses the network from the lesson and the ARP Lab: Laptop <Mono>{LAPTOP.ip}/24</Mono> → {SW} → {R1} (<Mono>{GW.ip}</Mono> | <Mono>{R1_SERVER_IP}</Mono>) → Server <Mono>{SERVER.ip}</Mono>. The core ends at “ARP table vs MAC table”; sections marked <b>Advanced</b> are optional.
+        Everything in this guide uses the network from the lesson and the ARP Lab: Laptop <Mono>{LAPTOP.ip}/24</Mono> → {SW} → {R1} (<Mono>{GW.ip}</Mono> | <Mono>{R1_SERVER_IP}</Mono>) → Server <Mono>{SERVER.ip}</Mono>. The ARP Lab adds PC-B and PC-C on the same switch. Sections under <b>Beyond this lesson</b> are optional.
       </Callout>
 
       {/* ============================== FOUNDATION */}
@@ -1015,6 +1045,53 @@ export function ArpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
         />
       </GuideSection>
 
+      <GuideSection id="d-entries" eyebrow="Using the result" title="Complete, incomplete, stale and static entries" tone="warning">
+        <p>An ARP cache holds more than answers. Each kind of entry tells you something different about the last question a host asked:</p>
+        <FieldTable
+          title="What an entry can be"
+          columns={["Entry", "How it got there", "What it means", "How it ends"]}
+          rows={[
+            ["Complete (dynamic)", "A reply arrived", "The neighbor answered: frames can be built", "Ages out; the next packet asks again"],
+            ["Incomplete", "A request went out, nothing came back", "Nobody owns that address, or the question can't reach it", "Retries, then gives up; packets waiting for it are dropped"],
+            ["Stale", "A complete entry the neighbor no longer matches", "The MAC changed (new card, failover) but the cache hasn't", "Ages out, is revalidated, or a gratuitous ARP replaces it"],
+            ["Static", "Typed by an administrator", "Never asked, never refreshed", "Only when someone deletes it"],
+          ]}
+        />
+        <p>Windows and Linux print an incomplete entry differently. The Laptop asked for an address nobody has, and so did PC-B:</p>
+        <div className="grid gap-2 lg:grid-cols-2">
+          <CliPanel {...labRun(F_GATEWAY, "laptop", "cisco", "netsh interface ipv4 show neighbors")} />
+          <CliPanel {...labRun(LIN_FAILED, "pcb", "cisco", "ip neigh")} />
+        </div>
+        <p className="text-sm text-pv-text-muted">
+          Note that <Mono>arp -a</Mono> on Windows hides incomplete entries entirely: it only lists answers. When a Windows host &quot;has no entry&quot;, ask <Mono>netsh interface ipv4 show neighbors</Mono> whether it tried.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="d-walk" eyebrow="Using the result" title="The end-to-end packet walk" tone="violet">
+        <p>Your master mental model. Each step is one decision by one device:</p>
+        <FlowSteps
+          steps={[
+            { title: "Compare", body: <>The Laptop compares <Mono>{SERVER.ip}</Mono> with its <Mono>/24</Mono>.</>, tone: "cyan" },
+            { title: "Remote", body: "The destination is not on the local subnet.", tone: "cyan" },
+            { title: "Choose the next hop", body: <>Default gateway <Mono>{GW.ip}</Mono>.</>, tone: "cyan" },
+            { title: "Check the cache", body: "No ARP entry for the gateway.", tone: "arp" },
+            { title: "ARP Request", body: `Broadcast: who has ${GW.ip}? Tell ${LAPTOP.ip}.`, tone: "arp" },
+            { title: `${SW} learns`, body: <><Mono>{LAPTOP.mac} → Fa0/1</Mono> from the source MAC.</>, tone: "ethernet" },
+            { title: `${SW} floods`, body: "Broadcast out Fa0/2 toward R1.", tone: "ethernet" },
+            { title: "R1 recognizes the target", body: <><Mono>{GW.ip}</Mono> is its own interface.</>, tone: "ip" },
+            { title: "R1 learns the sender", body: <Mono>{`${LAPTOP.ip} → ${LAPTOP.mac}`}</Mono>, tone: "ip" },
+            { title: "ARP Reply", body: `Unicast: ${GW.ip} is at ${GW.mac}.`, tone: "arp" },
+            { title: `${SW} learns R1`, body: <><Mono>{GW.mac} → Fa0/2</Mono> from the source MAC.</>, tone: "ethernet" },
+            { title: `${SW} forwards the reply`, body: "Known unicast out Fa0/1.", tone: "ethernet" },
+            { title: "Laptop caches", body: <Mono>{`${GW.ip} → ${GW.mac}`}</Mono>, tone: "success" },
+            { title: "Build the IP packet", body: <>IPv4 destination <Mono>{SERVER.ip}</Mono>.</>, tone: "ip" },
+            { title: "Build the Ethernet frame", body: <>Ethernet destination <Mono>{GW.mac}</Mono> (R1).</>, tone: "arp" },
+            { title: `${SW} known-unicast`, body: "Forwards out Fa0/2 to R1 — no flooding.", tone: "ethernet" },
+            { title: "R1 decides the next hop", body: <>Route lookup for <Mono>{SUBNETS.server.network}</Mono>; ARP there only if the Server’s MAC isn’t cached.</>, tone: "ip" },
+          ]}
+        />
+      </GuideSection>
+
       {/* ============================== OPERATIONS */}
       <GuideSection id="d-cli" eyebrow="Operations" title="Real device CLI — Cisco and Juniper" tone="cyan">
         <p>Different syntax, same engineering question. These outputs show this network once the Laptop has resolved its gateway — printed by the ARP Lab’s own terminals from the lab’s model.</p>
@@ -1032,34 +1109,130 @@ export function ArpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
         </PracticeBridge>
       </GuideSection>
 
-      <GuideSection id="d-troubleshoot" eyebrow="Operations" title="Troubleshooting ARP step by step" tone="warning">
+      {/* ============================== TROUBLESHOOTING */}
+      <GuideSection id="d-failures" eyebrow="Troubleshooting" title="Failure signatures" tone="warning">
+        <p>Where the exchange stops tells you what to investigate:</p>
+        <FailureCards />
+      </GuideSection>
+
+      <GuideSection id="d-troubleshoot" eyebrow="Troubleshooting" title="Troubleshooting ARP step by step" tone="warning">
         <p>
-          A user says: <Strong>“I cannot reach my gateway.”</Strong> Don’t start by memorising commands — start with questions, in order. Each one tells you where to look next:
+          A user says: <Strong>&quot;I cannot reach it.&quot;</Strong> Don&apos;t start by memorizing commands: start with questions, in order. Each one tells you where to look next:
         </p>
         <TroubleshootFlow />
       </GuideSection>
 
-      <GuideSection id="d-failures" eyebrow="Operations" title="Failure signatures" tone="warning">
-        <p>Where the exchange stops tells you what to investigate:</p>
-        <FailureCards />
-        <p>Five failures you can reproduce in the ARP Lab — each looks like &quot;can&apos;t reach it&quot;, and each leaves different evidence:</p>
-        <CompareCards
+      <GuideSection id="d-faults" eyebrow="Troubleshooting" title="The five faults of the lab, step by step" tone="danger">
+        <p>Each fault below is one of the ARP Lab&apos;s tickets, reproduced by the lab&apos;s own model; every output is what that device prints at that moment. The first is the lesson&apos;s incident, seen from R1&apos;s side.</p>
+        <FailureWalk
+          title="1 · A wrong default gateway"
+          normal={<>The Laptop&apos;s gateway is {GW.ip}: it ARPs for R1 and reaches the Server.</>}
+          change={<>The Laptop&apos;s default gateway is typed as <Mono>192.168.10.254</Mono>, an address nobody on the LAN owns.</>}
+          evidence={
+            <>
+              <p>Local hosts work, everything remote fails, with the error coming from the Laptop&apos;s own address. R1 never hears from the Laptop: its table has no entry for {LAPTOP.ip}, because nobody asked R1 anything.</p>
+              <CliPanel {...labRun(F_GATEWAY, "r1", "cisco", "show ip arp")} />
+            </>
+          }
+          next={<>On the host: <Mono>ipconfig</Mono> (gateway) and <Mono>netsh interface ipv4 show neighbors</Mono> (what it asked for). An Unreachable entry for the configured gateway is the whole story.</>}
+          fix={<>Set the Laptop&apos;s default gateway to <Mono>{GW.ip}</Mono> in its network settings.</>}
+          proof={
+            <>
+              <p>The next ping to the Server makes the Laptop ARP for R1, and R1 learns the Laptop from that request:</p>
+              <CliPanel {...only(labRun(F_GATEWAY_FIX, "r1", "cisco", "show ip arp"), /Protocol|192\.168\.10\.10/)} />
+            </>
+          }
+        />
+        <FailureWalk
+          tone="warning"
+          title="2 · A wrong mask"
+          normal={<>With /24, PC-B ({PCB_IP}) is local: the Laptop ARPs for PC-B and sends to PC-B&apos;s MAC.</>}
+          change={<>The Laptop&apos;s mask becomes 255.255.255.240 (/28). Its network is now 192.168.10.0–15, so PC-B looks remote.</>}
+          evidence={
+            <>
+              <p>The ping to PC-B works, but through R1: the Laptop sends it to the gateway. R1 has to resolve PC-B itself to deliver it:</p>
+              <CliPanel {...only(labRun(F_MASK, "laptop", "cisco", "ipconfig"), /IPv4|Subnet|Gateway/)} />
+              <CliPanel {...only(labRun(F_MASK, "r1", "cisco", "show ip arp"), /Protocol|192\.168\.10\.(10|20)\b/)} />
+            </>
+          }
+          next={<>When R1 holds an ARP entry for a host that should talk only locally, check the sender&apos;s mask. PC-B, still on /24, replies directly, so the two directions take different paths.</>}
+          fix={<>Set the Laptop&apos;s mask back to 255.255.255.0 (/24).</>}
+          proof={<>The next echo to PC-B carries PC-B&apos;s MAC as its destination, and R1&apos;s counters stop moving for that traffic.</>}
+        />
+        <FailureWalk
+          title="3 · A static entry with an old MAC"
+          normal={<>The Laptop learns PC-B&apos;s MAC by ARP and relearns it whenever the entry ages out.</>}
+          change={<>Someone pinned <Mono>{PCB_IP}</Mono> to <Mono>{OLD_MAC.toLowerCase().replace(/:/g, "-")}</Mono> on the Laptop. Then PC-B&apos;s network card was replaced.</>}
+          evidence={
+            <>
+              <p>Only the Laptop fails to reach PC-B; PC-C is fine. The Laptop never sends a request for PC-B, so it never learns the new card:</p>
+              <CliPanel {...labRun(F_STATIC, "laptop", "cisco", "arp -a")} />
+            </>
+          }
+          next={<>The Type column says <Strong>static</Strong>. Compare the MAC with the one PC-B really has (<Mono>ip addr</Mono> on PC-B: {PCB_MAC.toLowerCase()}).</>}
+          fix={<>On the Laptop: <Mono>arp -d {PCB_IP}</Mono>.</>}
+          proof={
+            <>
+              <p>The next ping asks, and learns the real MAC as a dynamic entry:</p>
+              <CliPanel {...labRun(F_STATIC_FIX, "laptop", "cisco", "arp -a")} />
+            </>
+          }
+        />
+        <FailureWalk
+          title="4 · A duplicate IP address"
+          normal={<>Only PC-B owns {PCB_IP}, so only PC-B answers a request for it.</>}
+          change={<>PC-C is reinstalled with {PCB_IP} as its address. Now two hosts answer the same question.</>}
+          evidence={
+            <>
+              <p>The ping to {PCB_IP} works, yet PC-B&apos;s capture never sees the Laptop. The Laptop cached whichever answer arrived last, and that MAC is on PC-C&apos;s port:</p>
+              <CliPanel {...labRun(F_DUP, "laptop", "cisco", "arp -a")} />
+              <CliPanel {...only(labRun(F_DUP, "sw1", "cisco", "show mac address-table"), /Vlan|----|0030|0020/)} />
+            </>
+          }
+          next={<>Follow the cached MAC to a switch port. If it is not the port of the host that should own the IP, two hosts claim the address. Windows usually warns about the conflict on the newcomer.</>}
+          fix={<>Give PC-C back its own address, {PCC_IP}, then clear the stale entry on the Laptop (<Mono>arp -d {PCB_IP}</Mono>).</>}
+          proof={<>The next request gets one answer, from {PCB_MAC}, and PC-B&apos;s capture shows the Laptop&apos;s echoes.</>}
+        />
+        <FailureWalk
+          title="5 · A switch port shut down"
+          normal={<>SW1 Fa0/3 is up, and PC-B receives every broadcast on the LAN.</>}
+          change={<>Fa0/3 is shut down on SW1. PC-B&apos;s own settings are unchanged, and it is powered on.</>}
+          evidence={
+            <>
+              <p>Nobody reaches PC-B. Every sender&apos;s request goes unanswered, because it never reaches PC-B. The port says why:</p>
+              <CliPanel {...only(labRun(F_PORT, "sw1", "cisco", "show interfaces status"), /Port|Fa0\/3/)} />
+              <CliPanel {...only(labRun(F_PORT, "sw1", "juniper", "show interfaces terse"), /Interface|ge-0\/0\/3/)} />
+            </>
+          }
+          next={<>Unreachable entries for one host on <em>every</em> sender point at that host&apos;s link. <Mono>disabled</Mono> (Cisco) or Admin <Mono>down</Mono> (Junos) means a configuration change, not a cable.</>}
+          fix={<>Cisco <Mono>interface FastEthernet0/3</Mono>, <Mono>no shutdown</Mono> · Junos <Mono>delete interfaces ge-0/0/3 disable</Mono>, <Mono>commit</Mono>.</>}
+          proof={<>A fresh ping to PC-B: the request reaches it, the reply comes back, and the sender&apos;s entry is complete.</>}
+        />
+        <PracticeBridge label="Troubleshoot them in the ARP Lab" onPractice={onOpenLab}>
+          The five tickets, reported as users report them. Reproduce, gather this evidence, repair, and prove it.
+        </PracticeBridge>
+      </GuideSection>
+
+      <GuideSection id="d-prove" eyebrow="Troubleshooting" title="Proving an ARP repair" tone="success">
+        <p>An ARP fault is fixed when a fresh question gets the right answer, not when a setting looks right. Four checks, every time:</p>
+        <ChecklistCard
+          tone="success"
+          title="The proof"
+          mark="✓"
           items={[
-            { title: "Wrong default gateway", tone: "danger", tag: "remote fails, local works", points: ["The ARP target is an address nobody owns", "Entry stays incomplete; Windows: “Destination host unreachable” from its own IP", "Fix the gateway, ping again"] },
-            { title: "Wrong mask", tone: "warning", tag: "works, but via the router", points: ["A local host is judged remote: the ARP target is the gateway", "Echo frames carry R1’s MAC with PC-B’s IP; replies come back directly", "Fix the mask; the next echo goes to PC-B’s MAC"] },
-            { title: "Wrong static entry", tone: "danger", tag: "one host can’t reach one neighbor", points: ["arp -a shows the entry as static, with a MAC the target doesn’t have", "No ARP is ever sent; the frames are flooded and discarded", "Delete the entry; the next packet ARPs and learns the real MAC"] },
-            { title: "Duplicate IP", tone: "warning", tag: "replies from the wrong host", points: ["Two replies to one request; the last one wins the cache", "The cached MAC sits on the wrong switch port", "Fix the duplicate, clear the stale entry, verify on the right host"] },
-            { title: "Layer-2 path down", tone: "danger", tag: "nobody reaches the host", points: ["The request never reaches the target (its capture is empty)", "Switch port disabled or not connected", "Restore the port, then verify the reply arrives"] },
+            "The host asks for the right IP: the next hop its address, mask and gateway say it should use",
+            "One reply comes back, from the MAC of the device that really owns the address (follow it to its switch port)",
+            "The cache holds a complete, dynamic entry with that MAC",
+            "The original traffic works, and the right host's capture shows it",
           ]}
         />
+        <Callout tone="cyan" title="Clear first, then test" icon="→">
+          A cached answer can hide a fix that didn&apos;t work, or a fault that came back. Before the proving ping, delete the entry (<Mono>arp -d</Mono>, <Mono>ip neigh flush</Mono>, <Mono>clear ip arp</Mono>) so you watch the question being asked again.
+        </Callout>
       </GuideSection>
 
-      <GuideSection id="d-myths" eyebrow="Operations" title="Common mistakes and misconceptions" tone="danger">
-        <Myths />
-      </GuideSection>
-
-      {/* ============================== ADVANCED */}
-      <GuideSection id="d-gratuitous" eyebrow="Advanced" title="Gratuitous ARP" tone="violet">
+      {/* ============================== BEYOND THIS LESSON */}
+      <GuideSection id="d-gratuitous" eyebrow="Beyond this lesson" title="Gratuitous ARP" tone="violet">
         <p>
           A <Strong>gratuitous ARP</Strong> is an ARP message about the sender’s <em>own</em> IPv4 address (sender IP and target IP are the same), sent without anyone asking. Depending on the implementation it is used to:
         </p>
@@ -1072,7 +1245,7 @@ export function ArpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
         <p className="text-xs text-pv-text-faint">There isn’t one universal packet form: implementations send it as a request or a reply, for different reasons.</p>
       </GuideSection>
 
-      <GuideSection id="d-proxy" eyebrow="Advanced" title="Proxy ARP" tone="violet">
+      <GuideSection id="d-proxy" eyebrow="Beyond this lesson" title="Proxy ARP" tone="violet">
         <p>
           Normally a router answers ARP only for its <Strong>own</Strong> interface addresses — exactly what R1 did. With <Strong>Proxy ARP</Strong> enabled, a router may answer an ARP request for some <em>other</em> IPv4 address, with its own MAC, according to its routing and interface configuration. The host then sends that traffic to the router as if it were the destination.
         </p>
@@ -1081,7 +1254,7 @@ export function ArpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
         </Callout>
       </GuideSection>
 
-      <GuideSection id="d-security" eyebrow="Advanced" title="ARP security" tone="danger">
+      <GuideSection id="d-security" eyebrow="Beyond this lesson" title="ARP security" tone="danger">
         <p>
           ARP has <Strong>no built-in authentication</Strong>. A receiver can’t verify that whoever answers for <Mono>{GW.ip}</Mono> really owns it, so a device on the LAN can advertise false IP-to-MAC information. This is called <Strong>ARP spoofing</Strong> or <Strong>ARP poisoning</Strong>, and it can cause traffic redirection, man-in-the-middle interception or denial of service.
         </p>
@@ -1106,7 +1279,7 @@ export function ArpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
         />
       </GuideSection>
 
-      <GuideSection id="d-ipv6" eyebrow="Advanced" title="ARP is IPv4 only — IPv6 uses ND" tone="violet">
+      <GuideSection id="d-ipv6" eyebrow="Beyond this lesson" title="ARP is IPv4 only — IPv6 uses ND" tone="violet">
         <CompareCards
           items={[
             { title: "IPv4 · ARP", tone: "arp", tag: "EtherType 0x0806", points: ["Its own protocol, directly inside Ethernet", "ARP Request / ARP Reply", "Request sent to the broadcast MAC", "Results stored in the ARP cache"] },
@@ -1117,29 +1290,8 @@ export function ArpDeepDiveContent({ onOpenLab }: { onOpenLab?: () => void }) {
       </GuideSection>
 
       {/* ============================== MASTER IT */}
-      <GuideSection id="d-walk" eyebrow="Master it" title="The end-to-end packet walk" tone="violet">
-        <p>Your master mental model. Each step is one decision by one device:</p>
-        <FlowSteps
-          steps={[
-            { title: "Compare", body: <>The Laptop compares <Mono>{SERVER.ip}</Mono> with its <Mono>/24</Mono>.</>, tone: "cyan" },
-            { title: "Remote", body: "The destination is not on the local subnet.", tone: "cyan" },
-            { title: "Choose the next hop", body: <>Default gateway <Mono>{GW.ip}</Mono>.</>, tone: "cyan" },
-            { title: "Check the cache", body: "No ARP entry for the gateway.", tone: "arp" },
-            { title: "ARP Request", body: `Broadcast: who has ${GW.ip}? Tell ${LAPTOP.ip}.`, tone: "arp" },
-            { title: `${SW} learns`, body: <><Mono>{LAPTOP.mac} → Fa0/1</Mono> from the source MAC.</>, tone: "ethernet" },
-            { title: `${SW} floods`, body: "Broadcast out Fa0/2 toward R1.", tone: "ethernet" },
-            { title: "R1 recognizes the target", body: <><Mono>{GW.ip}</Mono> is its own interface.</>, tone: "ip" },
-            { title: "R1 learns the sender", body: <Mono>{`${LAPTOP.ip} → ${LAPTOP.mac}`}</Mono>, tone: "ip" },
-            { title: "ARP Reply", body: `Unicast: ${GW.ip} is at ${GW.mac}.`, tone: "arp" },
-            { title: `${SW} learns R1`, body: <><Mono>{GW.mac} → Fa0/2</Mono> from the source MAC.</>, tone: "ethernet" },
-            { title: `${SW} forwards the reply`, body: "Known unicast out Fa0/1.", tone: "ethernet" },
-            { title: "Laptop caches", body: <Mono>{`${GW.ip} → ${GW.mac}`}</Mono>, tone: "success" },
-            { title: "Build the IP packet", body: <>IPv4 destination <Mono>{SERVER.ip}</Mono>.</>, tone: "ip" },
-            { title: "Build the Ethernet frame", body: <>Ethernet destination <Mono>{GW.mac}</Mono> (R1).</>, tone: "arp" },
-            { title: `${SW} known-unicast`, body: "Forwards out Fa0/2 to R1 — no flooding.", tone: "ethernet" },
-            { title: "R1 decides the next hop", body: <>Route lookup for <Mono>{SUBNETS.server.network}</Mono>; ARP there only if the Server’s MAC isn’t cached.</>, tone: "ip" },
-          ]}
-        />
+      <GuideSection id="d-myths" eyebrow="Master it" title="Common mistakes and misconceptions" tone="danger">
+        <Myths />
       </GuideSection>
 
       <GuideSection id="d-quiz" eyebrow="Master it" title="Knowledge check" tone="violet">
