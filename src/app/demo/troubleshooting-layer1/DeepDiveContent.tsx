@@ -1,19 +1,40 @@
-import { Callout, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DNode, DPill, FlowSteps, Glossary, GuideSection } from "@/components/lesson/GuideBlocks";
+import { Callout, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DNode, DPill, FailureSignatures, FieldTable, FlowSteps, Glossary, GuideSection, Misconceptions, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { DTable } from "@/components/lesson/FundamentalsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { LadderDiagram } from "@/components/lesson/TroubleshootingGuideSvg";
+import { ExplainIt, KnowledgeQuiz, PracticeBridge, type KnowledgeQuestion } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPanel, FailureWalk } from "@/components/lesson/GuideCli";
+import { UPLINK, WINDOW_CRC_FAULT, WINDOW_PKTS, WINDOW_S } from "@/lib/sim-engine/scenarios/troubleshootingLayer1";
+import { l1Apply, type L1Action, type L1State } from "@/lib/sim-engine/scenarios/l1Net";
+import { L1Delta, L1G, L1Result, L1_FIX, L1_INC, l1Cli, l1Only, l1TicketRun } from "./LessonGuideContent";
 
+const G2 = { foundation: "Foundation", light: "Light", frames: "Frames and counters", copper: "Copper and negotiation", trouble: "Troubleshooting", master: "Master it" };
 export const L1_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "l1d-state", label: "Admin vs operational" },
-  { id: "l1d-media", label: "Copper and fiber" },
-  { id: "l1d-budget", label: "Optics & power budget" },
-  { id: "l1d-crc", label: "CRC / FCS" },
-  { id: "l1d-errors", label: "Errors vs drops" },
-  { id: "l1d-duplex", label: "Speed, duplex, autonegotiation" },
-  { id: "l1d-deltas", label: "Counter deltas" },
-  { id: "l1d-intermittent", label: "Intermittent faults & baselines" },
-  { id: "l1d-ladder", label: "Layer 1 ladder" },
-  { id: "l1d-glossary", label: "Glossary" },
+  { id: "ld-why", label: "Why the physical layer first", group: G2.foundation },
+  { id: "ld-media", label: "Copper and fiber", group: G2.foundation },
+  { id: "ld-states", label: "Admin and operational state", group: G2.foundation },
+  { id: "ld-budget", label: "The light budget", group: G2.light },
+  { id: "ld-dom", label: "Reading optics (DOM)", group: G2.light },
+  { id: "ld-dirt", label: "Dirt, breaks and loss of signal", group: G2.light },
+  { id: "ld-crc", label: "How CRC catches damage", group: G2.frames },
+  { id: "ld-errors", label: "Every error counter", group: G2.frames },
+  { id: "ld-rates", label: "From snapshots to rates", group: G2.frames },
+  { id: "ld-intermittent", label: "Intermittent faults", group: G2.frames },
+  { id: "ld-autoneg", label: "Auto-negotiation", group: G2.copper },
+  { id: "ld-mismatch", label: "Duplex mismatch", group: G2.copper },
+  { id: "ld-downshift", label: "Downshift and TDR", group: G2.copper },
+  { id: "ld-flaps", label: "Flaps and logs", group: G2.copper },
+  { id: "ld-signatures", label: "Failure signatures", group: G2.trouble },
+  { id: "ld-ladder", label: "The troubleshooting ladder", group: G2.trouble },
+  { id: "ld-tickets", label: "Five faults, evidence to proof", group: G2.trouble },
+  { id: "ld-myths", label: "Common misconceptions", group: G2.master },
+  { id: "ld-quiz", label: "Knowledge check", group: G2.master },
+  { id: "ld-explain", label: "Can you explain it?", group: G2.master },
+  { id: "ld-glossary", label: "Glossary", group: G2.master },
+  { id: "ld-mental", label: "Mental model", group: G2.master },
+  { id: "ld-practice", label: "Practice in the lab", group: G2.master },
 ];
 
 function StateMachine() {
@@ -204,68 +225,191 @@ function IntermittentDiagram() {
   );
 }
 
+
+const run = (s: L1State, ...a: L1Action[]) => a.reduce((acc, x) => l1Apply(acc, x), s);
+const T = { duplex: l1TicketRun("duplex"), admin: l1TicketRun("admin"), los: l1TicketRun("los"), copper: run(l1TicketRun("copper"), { type: "tdr", dev: "ACCESS-SW" }) };
+const F = {
+  duplex: run(T.duplex, { type: "cfg", dev: "ACCESS-SW", cfg: { ifs: { "ge-0/0/1": {}, [UPLINK]: {} } }, text: "restore auto-negotiation" }, { type: "iperf" }),
+  admin: run(T.admin, { type: "cfg", dev: "DIST-SW", cfg: { ifs: { "ge-0/0/2": {}, [UPLINK]: {} } }, text: "enable ge-0/0/2" }, { type: "ping", count: 4 }),
+  los: run(T.los, { type: "phys", id: "cord" }, { type: "ping", count: 4 }),
+  copper: run(T.copper, { type: "phys", id: "cable-c" }, { type: "iperf", reverse: true }),
+};
+
+function LabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the Layer 1 Lab" onPractice={openLab}>
+      Every link&apos;s state and negotiation, both ends&apos; optics, counters with snapshots, ping and iperf3, a field kit, Junos EX and Linux consoles — your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
+
+const QUIZ: KnowledgeQuestion[] = [
+  { id: "q-updown", prompt: "An interface shows Admin up, Link down. First place to look?", options: [{ id: "a", label: "The physical path: cable, optic, light levels, the far end" }, { id: "b", label: "The configuration — it was disabled" }, { id: "c", label: "The routing table" }], correctId: "a", explanation: "Admin up means the configuration wants it; link down means no usable signal." },
+  { id: "q-rx", prompt: "ACCESS Rx is low; DIST Tx is normal; DIST Rx is normal. Where is the light lost?", options: [{ id: "a", label: "On the DIST → ACCESS path (strand, connector or ACCESS receiver)" }, { id: "b", label: "In DIST-SW's laser" }, { id: "c", label: "In both directions" }], correctId: "a", explanation: "My Rx is the peer's Tx minus the strand: normal Tx and low Rx put the loss in between." },
+  { id: "q-delta", prompt: "CRC/Align errors reads 3,912. What do you do?", options: [{ id: "a", label: "Take two snapshots with traffic in between and compare" }, { id: "b", label: "Replace the optic" }, { id: "c", label: "Nothing — fiber never has CRC errors" }], correctId: "a", explanation: "A lifetime total says nothing about now; a delta over a known interval does." },
+  { id: "q-up", prompt: "Can a link stay up while it corrupts frames?", options: [{ id: "a", label: "Yes — marginal light holds the link while some bits are misread" }, { id: "b", label: "No — any physical fault brings it down" }, { id: "c", label: "Only on copper" }], correctId: "a", explanation: "Link detection needs much less signal than error-free decoding." },
+  { id: "q-dup", prompt: "The switch port is forced to 100/full, the host negotiates. Result?", options: [{ id: "a", label: "Host 100/half: late collisions on the host, CRC errors and runts on the switch" }, { id: "b", label: "Both run 100/full" }, { id: "c", label: "The link stays down" }], correctId: "a", explanation: "Without negotiation the host can detect the speed but must assume half duplex." },
+  { id: "q-dsh", prompt: "A gigabit link comes up at 100 Mb/s full duplex with no errors. Most likely?", options: [{ id: "a", label: "A damaged pair: the PHYs downshifted — run a TDR test" }, { id: "b", label: "A duplex mismatch" }, { id: "c", label: "A dirty fiber" }], correctId: "a", explanation: "1000BASE-T needs all four pairs; 100BASE-TX only two." },
+];
+
 export function L1DeepDiveContent() {
   return (
     <div className="space-y-12">
-      <GuideSection id="l1d-state" eyebrow="Interface state" title="Admin vs operational" tone="ethernet">
-        <DiagramFrame caption="Configuration intent vs hardware reality.">
-          <StateMachine />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l1d-media" eyebrow="Media" title="Copper and fiber" tone="cyan">
-        <DiagramFrame caption="Fiber's directions are physically separate.">
-          <MediaDiagram />
-        </DiagramFrame>
+      <GuideSection id="ld-why" eyebrow="Foundation" title="Why the physical layer first" tone="cyan">
+        <p>
+          Every higher layer assumes bits arrive as they were sent. When they don&apos;t, the symptoms appear far above — retransmissions, slow transfers, flaky applications — and send people hunting in DNS, firewalls and servers. The physical layer is cheap to measure and its evidence is unambiguous: states, light levels, error counters, negotiated speed and duplex.
+        </p>
         <CompareCards
           items={[
-            { title: "Copper", tone: "cyan", tag: "1000BASE-T", points: ["Cable tests: length, pairs, crosstalk", "Errors often from bad terminations or EMI", "Duplex mismatch possible"] },
-            { title: "Fiber", tone: "warning", tag: "1000BASE-LX/SX", points: ["DOM reports Tx/Rx power", "Dirty connectors are the #1 cause", "Clean before you replace"] },
+            { title: "State", tone: "cyan", tag: "is it up?", points: ["admin and link", "carrier transitions", "last flapped"] },
+            { title: "Signal", tone: "violet", tag: "is it clean?", points: ["Tx/Rx at both ends", "CRC and runts, as deltas"] },
+            { title: "Negotiation", tone: "success", tag: "do they agree?", points: ["speed and duplex", "auto-negotiation at both ends"] },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="l1d-budget" eyebrow="Optics" title="Power budget" tone="warning">
-        <DiagramFrame caption="Every connector, splice and kilometer costs light (illustrative values).">
+      <GuideSection id="ld-media" eyebrow="Foundation" title="Copper and fiber" tone="cyan">
+        <DiagramFrame caption="Copper shares pairs in both directions; duplex fiber has one strand per direction.">
+          <MediaDiagram />
+        </DiagramFrame>
+        <p>
+          1000BASE-T copper sends in both directions on all four pairs at once (echo cancellation keeps them apart), so a damaged pair affects the whole link. Duplex fiber uses one strand per direction — each direction can fail on its own, which is why you always read both ends. The optic identifies itself:
+        </p>
+        <CliPanel run={l1Only(L1G.healthy, "ACCESS-SW", "show chassis pic fpc-slot 0 pic-slot 0", /Type|Port|47 /)} caption="Junos · ACCESS-SW — port 47 holds an SFP-LX10: 1000BASE-LX, single-mode, 1310 nm" />
+      </GuideSection>
+
+      <GuideSection id="ld-states" eyebrow="Foundation" title="Admin and operational state" tone="violet">
+        <DiagramFrame caption="Admin down forces link down; admin up leaves it to the signal.">
+          <StateMachine />
+        </DiagramFrame>
+        <CliPanel run={l1Only(T.admin, "DIST-SW", "show interfaces ge-0/0/2", /Physical interface|Interface flags|Active alarms/)} caption="Junos · DIST-SW — Administratively down: a configuration fact, no alarm" />
+        <CliPanel run={l1Only(T.los, "DIST-SW", `show interfaces ${UPLINK}`, /Physical interface|Interface flags|Active alarms/)} caption="Junos · DIST-SW — Enabled, link Down, LINK alarm: a physical fact" />
+      </GuideSection>
+
+      <GuideSection id="ld-budget" eyebrow="Light" title="The light budget" tone="ip">
+        <DiagramFrame caption="Transmit power minus every loss on the way equals receive power.">
           <BudgetDiagram />
         </DiagramFrame>
-        <Callout tone="warning" title="Read thresholds from the optic">
-          The receiver sensitivity and alarm/warning thresholds come from the transceiver&apos;s DOM data and datasheet. Compare a reading with the SAME optic&apos;s baseline, not with a number from another vendor.
+        <FieldTable
+          title="The uplink's budget (from the lab)"
+          accent="ip"
+          columns={["direction", "Tx", "Rx", "loss"]}
+          rows={[
+            ["ACCESS → DIST, healthy", "−5.00 dBm", "−6.20 dBm", "1.2 dB"],
+            ["DIST → ACCESS, healthy", "−5.10 dBm", "−6.30 dBm", "1.2 dB"],
+            ["DIST → ACCESS, dirty connector", "−5.10 dBm", "−19.80 dBm", "14.7 dB"],
+            ["DIST → ACCESS, after cleaning", "−5.10 dBm", "−6.40 dBm", "1.3 dB"],
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">dB adds along the path: each mated connector costs a fraction of a dB, a kilometre of single-mode fiber about 0.35 dB at 1310 nm, a dirty end-face can cost 10 dB or more on its own.</p>
+      </GuideSection>
+
+      <GuideSection id="ld-dom" eyebrow="Light" title="Reading optics (DOM)" tone="ip">
+        <p>Digital optical monitoring reports bias current, transmit and receive power, temperature and voltage, plus alarm and warning flags against thresholds programmed into the module.</p>
+        <CliPanel run={l1Cli(L1_INC, "ACCESS-SW", `show interfaces diagnostics optics ${UPLINK}`)} caption="Junos · ACCESS-SW during the incident — Rx below the low-warning threshold, above the low-alarm threshold" />
+        <Callout tone="cyan" title="Warning and alarm" icon="i">
+          The warning threshold (−14 dBm here) says the margin is gone; the alarm threshold (−22 dBm) says the signal is unusable. Between them the link usually stays up while bits get misread — the most deceptive place for a link to be.
         </Callout>
       </GuideSection>
 
-      <GuideSection id="l1d-crc" eyebrow="Integrity" title="CRC / FCS" tone="ethernet">
-        <DiagramFrame caption="Detected at the receiver; never corrected by Ethernet.">
+      <GuideSection id="ld-dirt" eyebrow="Light" title="Dirt, breaks and loss of signal" tone="warning">
+        <CompareCards
+          items={[
+            { title: "Dirty end-face", tone: "warning", tag: "marginal", points: ["Rx down 10+ dB", "link up, CRC errors", "clean, then reseat"] },
+            { title: "Broken strand", tone: "danger", tag: "no light", points: ["Rx loss-of-signal alarm", "remote fault: both ends down", "replace the cord"] },
+            { title: "Failing laser", tone: "violet", tag: "low Tx", points: ["its own Tx is low", "far Rx low too", "replace that optic"] },
+          ]}
+        />
+        <CliPanel run={l1Only(T.los, "DIST-SW", `show interfaces ${UPLINK} extensive`, /Physical interface|Remote fault|Carrier transitions/)} caption="Junos · DIST-SW — its own light arrives fine, but ACCESS-SW signals remote fault: the link goes down here too" />
+        <p className="text-sm text-pv-text-muted">Inspect and clean before replacing: most fiber problems are dirty connectors, and a new optic plugged into a dirty cord stays dirty.</p>
+      </GuideSection>
+
+      <GuideSection id="ld-crc" eyebrow="Frames and counters" title="How CRC catches damage" tone="cyan">
+        <DiagramFrame caption="The sender appends CRC-32; the receiver recomputes it over what arrived.">
           <CrcDiagram />
         </DiagramFrame>
+        <p>CRC-32 detects every single-bit and double-bit error and every burst up to 32 bits. A failed check is final: Ethernet has no retransmission, so the frame simply vanishes and the receiving interface counts it. The sender never learns — only TCP&apos;s timers or a missing ping reply reveal the loss.</p>
       </GuideSection>
 
-      <GuideSection id="l1d-errors" eyebrow="Counters" title="Input/output errors vs drops" tone="danger">
-        <DiagramFrame caption="Corruption and congestion leave different fingerprints.">
+      <GuideSection id="ld-errors" eyebrow="Frames and counters" title="Every error counter" tone="cyan">
+        <DiagramFrame caption="What each counter means.">
           <ErrorsTable />
         </DiagramFrame>
+        <FieldTable
+          title="Where to read them"
+          accent="cyan"
+          columns={["Meaning", "Junos (show interfaces … extensive)", "Linux"]}
+          rows={[
+            ["Frames with a bad FCS", <Mono key="1">CRC/Align errors · Framing errors</Mono>, <Mono key="1l">rx_crc_errors (ethtool -S)</Mono>],
+            ["Fragments shorter than 64 bytes", <Mono key="2">Runts · Fragment frames</Mono>, <Mono key="2l">rx_length_errors</Mono>],
+            ["Collisions after the first 64 bytes", "— (full-duplex side)", <Mono key="3l">tx_abort_late_coll · collisions</Mono>],
+            ["Link up/down events", <Mono key="4">Carrier transitions</Mono>, <Mono key="4l">ip -s link: carrier · dmesg</Mono>],
+            ["Frames dropped for lack of buffer", <Mono key="5">Drops · FIFO errors</Mono>, <Mono key="5l">rx_missed_errors</Mono>],
+          ]}
+        />
       </GuideSection>
 
-      <GuideSection id="l1d-duplex" eyebrow="Negotiation" title="Speed, duplex and autonegotiation" tone="violet">
-        <DiagramFrame caption="Know what your media actually negotiates.">
-          <DuplexDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l1d-deltas" eyebrow="Method" title="Counter deltas" tone="ip">
-        <DiagramFrame caption="A rate is evidence; a total is history.">
+      <GuideSection id="ld-rates" eyebrow="Frames and counters" title="From snapshots to rates" tone="violet">
+        <DiagramFrame caption="Two snapshots make a rate.">
           <RateDiagram />
         </DiagramFrame>
-        <p>Clearing counters is a measurement convenience, not a repair — and it destroys history you may need later. Many teams prefer taking two snapshots over clearing.</p>
+        <L1Delta s={L1_INC} title="The incident's snapshot pair" />
+        <p>
+          CRC +{WINDOW_CRC_FAULT} in {WINDOW_S} s is about {(WINDOW_CRC_FAULT / WINDOW_S).toFixed(1)} errors per second; against about {WINDOW_PKTS.toLocaleString("en-US")} frames that is {((100 * WINDOW_CRC_FAULT) / WINDOW_PKTS).toFixed(2)}% — small enough that ping “mostly works”, large enough to wreck TCP throughput in that direction. <Mono>clear interfaces statistics</Mono> gives the same baseline on the device itself; a snapshot pair doesn&apos;t destroy the history.
+        </p>
       </GuideSection>
 
-      <GuideSection id="l1d-intermittent" eyebrow="Intermittent faults" title="Baselines turn 'flaky' into numbers" tone="warning">
-        <DiagramFrame caption="Intermittent faults need measurements over time.">
+      <GuideSection id="ld-intermittent" eyebrow="Frames and counters" title="Intermittent faults" tone="warning">
+        <DiagramFrame caption="CRC errors per interval over time.">
           <IntermittentDiagram />
         </DiagramFrame>
+        <p className="text-sm text-pv-text-muted">An intermittent fault needs repeated intervals: one clean window proves little if the problem comes and goes. Watch the rate over several windows, correlate it with temperature, load or someone touching a patch panel.</p>
       </GuideSection>
 
-      <GuideSection id="l1d-ladder" eyebrow="Ladder" title="A Layer 1 checklist" tone="cyan">
+      <GuideSection id="ld-autoneg" eyebrow="Copper and negotiation" title="Auto-negotiation" tone="success">
+        <DiagramFrame caption="What negotiation decides, and what a mismatch looks like.">
+          <DuplexDiagram />
+        </DiagramFrame>
+        <p>
+          With auto-negotiation on, both copper ends advertise their abilities and pick the best common speed and duplex. If one end doesn&apos;t negotiate, the other can still detect the speed from the signal (parallel detection) — but not the duplex, so it must assume <b className="text-pv-text">half</b>. 1000BASE-T can&apos;t work without negotiation at all; 1000BASE-X fiber negotiates only duplex, pause and remote fault.
+        </p>
+        <CliPanel run={l1Only(L1G.healthy, "CLIENT", "ethtool eth0", /Advertised auto|Link partner advertised auto|Speed|Duplex|Auto-negotiation/)} caption="Linux · CLIENT — healthy: both ends negotiate, 1000 Mb/s full" />
+      </GuideSection>
+
+      <GuideSection id="ld-mismatch" eyebrow="Copper and negotiation" title="Duplex mismatch" tone="danger">
+        <p>The full-duplex end transmits whenever it likes; the half-duplex end treats that as a collision, aborts its own frame mid-way (a late collision) and retries. The aborted fragments arrive at the full-duplex end as runts with a bad FCS.</p>
+        <CliPanel run={l1Only(T.duplex, "ACCESS-SW", "show interfaces ge-0/0/1 extensive", /Link-mode|Framing errors|CRC\/Align|Fragment frames/)} caption="Junos · ACCESS-SW ge-0/0/1 — forced full duplex: CRC errors and fragments arrive" />
+        <CliPanel run={l1Only(T.duplex, "CLIENT", "ethtool -S eth0", /collisions|late_coll/)} caption="Linux · CLIENT — the half-duplex side counts late collisions" />
+        <L1Result s={T.duplex} title="The lab: a duplex mismatch under load" />
+      </GuideSection>
+
+      <GuideSection id="ld-downshift" eyebrow="Copper and negotiation" title="Downshift and TDR" tone="violet">
+        <p>Gigabit Ethernet over copper needs all four pairs; 100BASE-TX uses two. When a pair is open or shorted, the PHYs try gigabit, fail, and settle for 100 Mb/s — <b className="text-pv-text">downshift</b>. There are no errors, just a ceiling. A time-domain reflectometer (TDR) sends a pulse down each pair and times the reflection to find opens and shorts.</p>
+        <CliPanel run={l1Cli(T.copper, "ACCESS-SW", "show diagnostics tdr interface ge-0/0/1")} caption="Junos · ACCESS-SW — TDR: pair 4-5 open at 12 m" />
+        <CliPanel run={l1Only(T.copper, "CLIENT", "sudo dmesg", /SmartSpeed|100 Mbps/)} caption="Linux · CLIENT — the driver reports the downgraded speed" />
+      </GuideSection>
+
+      <GuideSection id="ld-flaps" eyebrow="Copper and negotiation" title="Flaps and logs" tone="cyan">
+        <p>Every link change increments the carrier-transitions counter and writes a log line on both ends. A count that keeps rising points at a loose connector, a failing optic or a cable under stress; an expected flap (a reseat, a TDR test) shows up too — so correlate with what you did.</p>
+        <CliPanel run={l1Only(L1_FIX, "ACCESS-SW", "show log messages", /ge-0\/0\/47/)} caption="Junos · ACCESS-SW — the reseat: link down, link up" />
+        <CliPanel run={l1Only(L1_FIX, "ACCESS-SW", `show interfaces ${UPLINK} extensive`, /Last flapped|Carrier transitions/)} caption="Junos · ACCESS-SW — carrier transitions 2 → 4" />
+      </GuideSection>
+
+      <GuideSection id="ld-signatures" eyebrow="Troubleshooting" title="Failure signatures" tone="danger">
+        <FailureSignatures
+          items={[
+            { tag: "DIRT", title: "Marginal light", tone: "danger", points: ["link up, Rx low on one end", "CRC delta on that end only", "direction-dependent slowness"] },
+            { tag: "LOS", title: "No light", tone: "danger", points: ["Rx loss-of-signal alarm", "both ends down (remote fault)"] },
+            { tag: "ADM", title: "Disabled", tone: "warning", points: ["admin down on the switch", "no alarm; far end no link"] },
+            { tag: "DUP", title: "Duplex mismatch", tone: "danger", points: ["full vs half", "CRC + runts vs late collisions"] },
+            { tag: "DSH", title: "Downshift", tone: "violet", points: ["100 Mb/s, no errors", "TDR names the pair"] },
+            { tag: "FLAP", title: "Unstable link", tone: "warning", points: ["carrier transitions rising", "log: down/up pairs"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ld-ladder" eyebrow="Troubleshooting" title="The troubleshooting ladder" tone="danger">
         <DiagramFrame caption="Bottom rung first when the symptom is loss on one link.">
           <DiagramSvg h={170} label="Layer 1 ladder: state, flaps, counters as deltas, optics per direction, media and negotiation, cleaning before replacing">
             <LadderDiagram
@@ -280,6 +424,16 @@ export function L1DeepDiveContent() {
             />
           </DiagramSvg>
         </DiagramFrame>
+        <TroubleshootingFlow
+          steps={[
+            { question: "What does the user see — loss, slowness, nothing?", look: "ping -c 100 -q · iperf3 both directions" },
+            { question: "Is every link admin up and link up?", look: "show interfaces terse · ethtool eth0" },
+            { question: "Is the light normal at both ends?", look: "show interfaces diagnostics optics" },
+            { question: "Are errors rising now — where?", look: "two snapshots with traffic; CRC, runts, carrier" },
+            { question: "Do speed and duplex agree?", look: "ethtool · show interfaces <if>" },
+            { question: "Repair one thing, then measure again", look: "the same tests, a fresh interval" },
+          ]}
+        />
         <FlowSteps
           steps={[
             { title: "Measure", body: "State, two counter snapshots, both optics.", tone: "cyan" },
@@ -290,16 +444,65 @@ export function L1DeepDiveContent() {
         />
       </GuideSection>
 
-      <GuideSection id="l1d-glossary" eyebrow="Glossary" title="Terms" tone="cyan">
-        <Glossary
+      <GuideSection id="ld-tickets" eyebrow="Troubleshooting" title="Five faults, evidence to proof" tone="danger">
+        <FailureWalk title="1 · Downloads from SERVER crawl" normal="ACCESS Rx −6.30 dBm, CRC +0 per 30 s." change="A dirty connector at the ACCESS end of the DIST → ACCESS strand." evidence={<L1Delta s={L1_INC} title="Snapshot pair" />} next="ACCESS Rx −19.80 dBm while DIST Tx is normal: the DIST → ACCESS path." fix={<Mono>Field work: clean and reseat the uplink fiber at ACCESS-SW ge-0/0/47</Mono>} proof={<L1Result s={L1_FIX} from={L1_INC.tests.length} title="100 fresh pings" />} />
+        <FailureWalk title="2 · CLIENT's port was “tuned”" normal="1000/full, auto-negotiated at both ends." change="ACCESS-SW ge-0/0/1: speed 100m, link-mode full-duplex, no-auto-negotiation." evidence={<CliPanel run={l1Only(T.duplex, "CLIENT", "ethtool eth0", /Speed|Duplex/)} caption="Linux · CLIENT — 100 Mb/s half" />} next="Switch full, host half: CRC + runts on ACCESS-SW, late collisions on CLIENT." fix={<Mono>ACCESS-SW: delete interfaces ge-0/0/1 speed · link-mode · ether-options no-auto-negotiation → commit</Mono>} proof={<L1Result s={F.duplex} from={T.duplex.tests.length} title="A fresh upload test" />} />
+        <FailureWalk title="3 · SERVER vanished after the maintenance window" normal="DIST-SW ge-0/0/2 up / up." change="set interfaces ge-0/0/2 disable was committed." evidence={<CliPanel run={l1Only(T.admin, "DIST-SW", "show interfaces terse", /Interface|ge-0\/0\/2 /)} caption="Junos · DIST-SW — down / down" />} next="Administratively down: a configuration fact, not the cable." fix={<Mono>DIST-SW: delete interfaces ge-0/0/2 disable → commit</Mono>} proof={<L1Result s={F.admin} from={T.admin.tests.length} title="A fresh ping" />} />
+        <FailureWalk title="4 · Everything behind DIST-SW is gone" normal="Light −6.3 / −6.2 dBm, uplink up." change="The cabling crew broke the DIST → ACCESS strand." evidence={<CliPanel run={l1Only(T.los, "ACCESS-SW", `show interfaces diagnostics optics ${UPLINK}`, /Receiver signal|rx power low alarm  /)} caption="Junos · ACCESS-SW — no light, LOS alarm" />} next="DIST Tx is normal; both ends down because ACCESS signals remote fault. Cleaning won't restore a broken strand." fix={<Mono>Field work: replace the uplink fiber patch cord</Mono>} proof={<L1Result s={F.los} from={T.los.tests.length} title="A fresh ping" />} />
+        <FailureWalk title="5 · Capped at 94 Mbit/s after the desk move" tone="warning" normal="1000/full, ≈ 941 Mbit/s." change="CLIENT's cable crushed: pair 4-5 open." evidence={<CliPanel run={l1Only(T.copper, "ACCESS-SW", "show diagnostics tdr interface ge-0/0/1", /4-5|Open|12 Meters|Downshift/)} caption="Junos · ACCESS-SW — TDR" />} next="No errors, exactly 100 Mb/s: downshift. Forcing speed 1g only takes the link down." fix={<Mono>Field work: replace CLIENT&apos;s patch cable</Mono>} proof={<L1Result s={F.copper} from={T.copper.tests.length} title="A fresh download test" />} />
+      </GuideSection>
+
+      <GuideSection id="ld-myths" eyebrow="Master it" title="Common misconceptions" tone="warning">
+        <Misconceptions
           items={[
-            { term: "Receiver sensitivity", def: "The lowest input power at which the receiver still meets its specified error rate." },
-            { term: "Power budget", def: "Transmit power minus receiver sensitivity: the loss a link can tolerate." },
-            { term: "Runt / giant", def: "A frame shorter than 64 bytes / longer than the configured maximum." },
-            { term: "Late collision", def: "A collision after the first 64 bytes — the classic duplex-mismatch symptom." },
-            { term: "Error ratio", def: "Errored frames divided by frames received in the same interval." },
+            { myth: "The link is up, so Layer 1 is fine.", correction: "Up means signal detected. Marginal light keeps it up while bits are misread." },
+            { myth: "A high CRC count means an active fault.", correction: "Counters are lifetime totals; only a delta with traffic shows now." },
+            { myth: "Clearing the counters fixes errors.", correction: "It resets numbers, not light. They climb again." },
+            { myth: "Forcing speed and duplex is safer.", correction: "Forcing one end makes the other assume half duplex. Force both or neither." },
+            { myth: "Low Rx means the local optic is bad.", correction: "Rx is the peer's light after the strand — check the far Tx and the path first." },
           ]}
         />
+      </GuideSection>
+
+      <GuideSection id="ld-quiz" eyebrow="Master it" title="Knowledge check" tone="cyan">
+        <KnowledgeQuiz questions={QUIZ} />
+      </GuideSection>
+
+      <GuideSection id="ld-explain" eyebrow="Master it" title="Can you explain it?" tone="violet">
+        <ExplainIt
+          items={[
+            { q: "Why did only downloads crawl?", a: "Only the DIST → ACCESS strand lost light. Download data crossed it and was corrupted and retransmitted; uploads only sent small ACKs over it." },
+            { q: "Why were CRC errors only on ACCESS-SW?", a: "A receiver counts the frames it fails to read. ACCESS-SW was the receiver with the low light." },
+            { q: "Why isn't 3,912 CRC errors evidence of the incident?", a: "It is a lifetime total. Two snapshots 30 s apart with traffic showed +0 on the healthy network and +127 during the incident." },
+            { q: "What does a duplex mismatch look like from each end?", a: "The half-duplex end counts late collisions; the full-duplex end counts CRC errors and runts." },
+            { q: "Why do both switches go down when one strand breaks?", a: "The receiver without light signals remote fault through 1000BASE-X negotiation; the other end takes the link down too." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ld-glossary" eyebrow="Master it" title="Glossary" tone="cyan">
+        <Glossary
+          items={[
+            { term: "DOM / DDM", def: "Digital optical monitoring: an optic's Tx/Rx power, bias, temperature, voltage and alarms." },
+            { term: "Light budget", def: "Tx power minus all losses on the path; what is left must exceed the receiver's sensitivity." },
+            { term: "Runt", def: "A frame shorter than 64 bytes — usually a collision fragment." },
+            { term: "Late collision", def: "A collision after the first 64 bytes: on modern networks, the sign of a duplex mismatch." },
+            { term: "Parallel detection", def: "Detecting a non-negotiating peer's speed from its signal; duplex defaults to half." },
+            { term: "Downshift", def: "Falling back to a lower speed when a cable can't carry the negotiated one." },
+            { term: "TDR", def: "Time-domain reflectometry: locating opens and shorts on copper pairs by timing reflections." },
+            { term: "Remote fault", def: "A 1000BASE-X signal telling the peer that the local receiver has no usable signal." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ld-mental" eyebrow="Master it" title="Mental model" tone="violet">
+        <p>A phone call on a bad line: “connected” is the link state; whether you hear every word is signal quality. Count the words lost in the next minute, not last week; find out which direction crackles before replacing anyone&apos;s phone.</p>
+      </GuideSection>
+
+      <GuideSection id="ld-practice" eyebrow="Master it" title="Practice in the lab" tone="violet">
+        <p>Six Learn levels, then the workspace: link states and negotiation, both ends&apos; optics, counters with snapshots, ping and iperf3, a field kit, Junos EX and Linux consoles, five challenges and the five tickets above.</p>
+        <LabBridge />
+        <PresentationBridge>Rewatch the Layer 1 presentation.</PresentationBridge>
       </GuideSection>
     </div>
   );

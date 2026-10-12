@@ -13,10 +13,12 @@ import { explainPa, paTables } from "./explain";
 import { CapturePanel } from "./CapturePanel";
 import { PA_LESSON_SECTIONS, PaLessonGuideContent } from "./LessonGuideContent";
 import { PA_DEEP_DIVE_SECTIONS, PaDeepDiveContent } from "./DeepDiveContent";
+import { PaPresentation } from "./PaPresentation";
+import { PaLabWorkspace } from "./pa-lab/PaLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "CLIENT · SW1 · R1 · SERVER — three capture points, a baseline, and a slow TCP open", sections: PA_LESSON_SECTIONS, content: <PaLessonGuideContent /> },
-  { id: "deep", label: "Packet Analysis Deep Dive", hint: "Capture points, five-tuples, flags, retransmission, RST vs silence, timing", sections: PA_DEEP_DIVE_SECTIONS, content: <PaDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "One TCP/443 service, five capture points, a slow open — located, repaired and proven with real tcpdump output", sections: PA_LESSON_SECTIONS, content: <PaLessonGuideContent /> },
+  { id: "deep", label: "Packet Analysis Deep Dive", hint: "Capture methods, TCP from the wire, loss vs refusal, bracketing, counters, capture pitfalls", sections: PA_DEEP_DIVE_SECTIONS, content: <PaDeepDiveContent /> },
 ];
 
 const TCP_HEX = "#34d399";
@@ -124,6 +126,12 @@ const config: FundamentalsLessonConfig<PaState> = {
       <EvidenceNotebook entries={s.notebook} />
     </div>
   ),
+  practiceLab: {
+    entry: { title: "Packet Analysis Lab", buttonLabel: "Practice Packet Analysis", description: "The lesson's network with five live capture points: run connection tests, read tcpdump and Junos monitor output, compare captures frame by frame, read R1's counters and queues, stop services, add firewall rules, break the mirror; open every device (Junos on SW1/R1, Linux on the hosts) and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["compare-captures", "r1-counters", "diagnostic-layers", "predict-cause", "repair-challenge"].includes(stepId) ? "Want to capture and compare it yourself?" : undefined),
+    render: ({ open, onClose }) => <PaLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "Packet analysis", render: (p) => <PaPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read the evidence", message: "Capture points, five-tuples, flags, sequence arithmetic and retransmissions — and a silent loss located between two captures, confirmed by a counter, repaired and proven with a new capture." },
 };
 

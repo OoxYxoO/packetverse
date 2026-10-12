@@ -13,10 +13,12 @@ import { explainL3, l3Tables } from "./explain";
 import { L3Panel } from "./L3Panel";
 import { L3_LESSON_SECTIONS, L3LessonGuideContent } from "./LessonGuideContent";
 import { L3_DEEP_DIVE_SECTIONS, L3DeepDiveContent } from "./DeepDiveContent";
+import { L3Presentation } from "./L3Presentation";
+import { L3LabWorkspace } from "./l3-lab/L3LabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "CLIENT · SW1 · R1 · R2 · two servers — one reachable, one not", sections: L3_LESSON_SECTIONS, content: <L3LessonGuideContent /> },
-  { id: "deep", label: "Layer 3 Deep Dive", hint: "Connected routes, local vs remote, ARP, LPM, masks, TTL, ICMP, asymmetry", sections: L3_DEEP_DIVE_SECTIONS, content: <L3DeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "One server reachable, one not — CLIENT's own routing decision found, repaired and proven with real Linux and Junos output", sections: L3_LESSON_SECTIONS, content: <L3LessonGuideContent /> },
+  { id: "deep", label: "Layer 3 Deep Dive", hint: "Connected and default routes, longest prefix, ARP, TTL and traceroute, ICMP errors, return paths, loops", sections: L3_DEEP_DIVE_SECTIONS, content: <L3DeepDiveContent /> },
 ];
 
 function l3Callout(p: PacketVisual, s: L3State): PacketCallout3D {
@@ -123,6 +125,12 @@ const config: FundamentalsLessonConfig<L3State> = {
       <EvidenceNotebook entries={s.notebook} />
     </div>
   ),
+  practiceLab: {
+    entry: { title: "Layer 3 Lab", buttonLabel: "Practice Layer 3", description: "The lesson's network live: CLIENT's routing decision for each destination, every ARP cache, both routers' tables, ping and traceroute walked hop by hop with real TTLs and ICMP errors; open every device (Junos on R1 and R2, Linux on the hosts), break masks, gateways and routes, and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["inc-decision", "inc-arp-fail", "inc-r1-stats", "inc-client-config", "diagnostic-layers", "predict-cause", "repair-challenge"].includes(stepId) ? "Want to follow the packet yourself?" : undefined),
+    render: ({ open, onClose }) => <L3LabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "Layer 3 troubleshooting", render: (p) => <L3Presentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read a host's routing decision", message: "Connected vs default routes, ARP for the next hop, gateway MAC with remote IP, TTL at routers only — and a wrong mask that made a remote server look local, fixed on the client and proven by the packet it never used to send." },
 };
 
