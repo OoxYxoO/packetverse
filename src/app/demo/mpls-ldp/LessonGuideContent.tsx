@@ -1,24 +1,64 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DLink, DNode, DPill, DRegion, DiagramFrame, DiagramSvg, FieldTable, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DLink, DNode, DPill, DRegion, DiagramFrame, DiagramSvg, FailureSignatures, FieldTable, FlowSteps, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { DStack } from "@/components/lesson/MplsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPair, CliPanel, runGuideCli } from "@/components/lesson/GuideCli";
+import type { CliVendor } from "@/lib/cli/types";
+import { createMpNet, mpApply, type MpAction, type MpOs, type MpR, type MpState } from "@/lib/sim-engine/scenarios/mplsNet";
+import { mpSets, mpStaticApi } from "./mpls-lab/mpCli";
 
 export const LDP_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "ll-mission", label: "The mission" },
-  { id: "ll-topology", label: "Topology & roles" },
-  { id: "ll-fec", label: "FEC 4.4.4.4/32" },
-  { id: "ll-ldp", label: "LDP: discovery → session" },
-  { id: "ll-labels", label: "Labels flow upstream" },
-  { id: "ll-lfib", label: "LIB vs LFIB" },
-  { id: "ll-walk", label: "One packet, three routers" },
-  { id: "ll-shim", label: "The shim header" },
-  { id: "ll-php", label: "implicit-null & PHP" },
-  { id: "ll-planes", label: "Control vs data plane" },
-  { id: "ll-fault", label: "The P1 ↔ P2 fault" },
+  { id: "ll-mission", label: "What this lesson teaches" },
+  { id: "ll-network", label: "The network of this lesson" },
+  { id: "ll-ideas", label: "Three ideas you need" },
+  { id: "ll-watch", label: "What you will watch" },
+  { id: "ll-problem", label: "A core that can't route customers" },
+  { id: "ll-fec", label: "One FEC, one label per router" },
+  { id: "ll-ldp", label: "LDP: discovery, then a session" },
+  { id: "ll-mapping", label: "Labels flow upstream" },
+  { id: "ll-tables", label: "LIB and LFIB" },
+  { id: "ll-walk", label: "Push, swap, pop" },
+  { id: "ll-php", label: "Why P2 pops" },
+  { id: "ll-planes", label: "Control plane vs data plane" },
+  { id: "ll-working", label: "What working looks like" },
+  { id: "ll-incident", label: "The incident" },
+  { id: "ll-investigate", label: "Walk the chain" },
+  { id: "ll-repair", label: "Repair and prove it" },
+  { id: "ll-other", label: "Other ways MPLS breaks" },
+  { id: "ll-model", label: "Mental model" },
   { id: "ll-glossary", label: "Glossary" },
-  { id: "ll-recap", label: "Mental model" },
+  { id: "ll-recap", label: "Recap" },
+  { id: "ll-practice", label: "Practice it" },
 ];
 
-function TopologyDiagram() {
+/**
+ * The lesson's network from the MPLS + LDP Lab's own model, with the lab's backup path (P3–P4) switched off: exactly
+ * CE1 — PE1 — P1 — P2 — PE2 — CE2. Every CLI sample on this page is the lab's IOS XR / Junos command set run against it.
+ */
+const run = (s: MpState, as: MpAction[]) => as.reduce((acc, a) => mpApply(acc, a), s);
+const line = (os: MpOs) => run(createMpNet(0, os), [{ type: "link", link: "PE1-P3", up: false }, { type: "link", link: "P3-P4", up: false }, { type: "link", link: "P4-PE2", up: false }]);
+const breakIt = (s: MpState) => mpApply(s, { type: "set", text: "P1: LDP removed from ge-0/0/1", changes: [{ dev: "P1", f: (r) => void (r.ifs["ge-0/0/1"]!.ldp = false) }] });
+export const LINE = line("xr");
+export const LINE_JN = line("junos");
+export const LINE_BROKEN = breakIt(LINE);
+const LINE_BROKEN_JN = breakIt(LINE_JN);
+const LINE_FIXED = mpApply(LINE_BROKEN, { type: "set", text: "P1: LDP back on ge-0/0/1", changes: [{ dev: "P1", f: (r) => void (r.ifs["ge-0/0/1"]!.ldp = true) }] });
+export function lineCli(s: MpState, r: MpR, vendor: CliVendor, command: string) {
+  return runGuideCli(mpSets(mpStaticApi(s, r), r)[vendor], command);
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the MPLS + LDP Lab" onPractice={openLab}>
+      The same routers plus a backup path (P3–P4), IOS XR or Junos, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
+
+export function TopologyDiagram() {
   const nodes: [string, number, string, string][] = [
     ["CE1", 50, "10.1.1.10", D.ip],
     ["PE1", 160, "1.1.1.1 · LER", D.mpls],
@@ -29,7 +69,7 @@ function TopologyDiagram() {
   ];
   return (
     <DiagramSvg h={150} label="CE1, PE1, P1, P2, PE2, CE2 in a line; PE1 to PE2 is the MPLS domain">
-      <DRegion x={108} y={14} w={430} h={96} label="MPLS domain (OSPF + LDP)" color={D.mpls} />
+      <DRegion x={108} y={14} w={430} h={96} label="MPLS domain (IS-IS + LDP)" color={D.mpls} />
       {nodes.slice(0, -1).map(([id, x], i) => (
         <DLink key={id} x1={x + 40} y1={66} x2={nodes[i + 1][1] - 40} y2={66} color={i === 0 || i === 4 ? D.line : D.mpls} />
       ))}
@@ -43,7 +83,7 @@ function TopologyDiagram() {
   );
 }
 
-function LdpSequenceDiagram() {
+export function LdpSequenceDiagram() {
   return (
     <DiagramSvg h={230} label="PE1 and P1 exchange Hellos over UDP, then P1 opens a TCP 646 session, then label mappings flow">
       <DNode x={110} y={30} label="PE1" sub="1.1.1.1:0" accent={D.mpls} />
@@ -58,7 +98,7 @@ function LdpSequenceDiagram() {
   );
 }
 
-function DistributionDiagram() {
+export function DistributionDiagram() {
   const r: [string, number][] = [
     ["PE1", 110],
     ["P1", 250],
@@ -84,7 +124,7 @@ function DistributionDiagram() {
   );
 }
 
-function WalkDiagram() {
+export function WalkDiagram() {
   const n: [string, number][] = [
     ["CE1", 40],
     ["PE1", 155],
@@ -122,7 +162,7 @@ function WalkDiagram() {
   );
 }
 
-function PhpDiagram() {
+export function PhpDiagram() {
   return (
     <DiagramSvg h={170} label="Without PHP the egress PE does two lookups; with PHP it receives plain IP and does one">
       <text x={20} y={30} fill={D.danger} fontSize={10.5} fontWeight={700}>
@@ -149,177 +189,259 @@ function PhpDiagram() {
   );
 }
 
+
+function BgpFreeDiagram() {
+  return (
+    <DiagramSvg h={190} label="PE1 and PE2 know the customer prefixes through BGP; P1 and P2 only know loopbacks through IS-IS; a plain IP packet for 10.2.2.20 dies at P1">
+      <DRegion x={108} y={14} w={430} h={110} label="core: IS-IS only — no customer routes" color={D.mpls} />
+      <DNode x={50} y={70} label="CE1" sub="10.1.1.10" accent={D.ip} w={80} />
+      <DNode x={160} y={70} label="PE1" sub="BGP: 10.2.2.0/24 → 4.4.4.4" accent={D.success} w={120} />
+      <DNode x={320} y={70} label="P1" sub="10.2.2.20 → ?" accent={D.danger} w={96} />
+      <DNode x={470} y={70} label="P2" sub="loopbacks only" accent={D.mpls} w={96} />
+      <DNode x={592} y={70} label="PE2" sub="4.4.4.4" accent={D.success} w={80} />
+      <DLink x1={90} y1={70} x2={100} y2={70} />
+      <DArrow x1={222} y1={70} x2={270} y2={70} color={D.ip} label="IP" />
+      <DLink x1={368} y1={70} x2={422} y2={70} color={D.mpls} />
+      <DLink x1={518} y1={70} x2={552} y2={70} color={D.mpls} />
+      <text x={320} y={150} textAnchor="middle" fill={D.danger} fontSize={10.5} fontWeight={700}>
+        Without labels: P1 has no route to 10.2.2.20 → dropped
+      </text>
+      <text x={320} y={170} textAnchor="middle" fill={D.muted} fontSize={10}>
+        With a label meaning “toward 4.4.4.4”, P1 only needs its IS-IS route to PE2
+      </text>
+    </DiagramSvg>
+  );
+}
+
 export function LdpLessonGuideContent() {
   return (
-    <>
-      <GuideSection id="ll-mission" eyebrow="Introduction" title="The mission: label-switch one packet across the core" tone="mpls">
+    <div className="space-y-12">
+      <GuideSection id="ll-mission" eyebrow="This lesson" title="What this lesson teaches" tone="mpls">
         <p>
-          CE1 (<Mono>10.1.1.10</Mono>) sends to CE2 (<Mono>10.2.2.20</Mono>) across a provider core. Without MPLS, every router does a full IP lookup on every hop. In this lesson you bring up <b className="text-pv-text">LDP</b>, watch it distribute labels for one FEC, then follow one packet through <b className="text-pv-text">PUSH → SWAP → POP</b>.
+          PE1 and PE2 sit at the edge of a provider core and know each other&apos;s customer networks through BGP. The core routers P1 and P2 run only IS-IS — they know every loopback and no customer route. So how does CE1&apos;s packet for CE2 get across? This lesson builds the answer: <b className="text-pv-text">MPLS</b> labels, distributed by <b className="text-pv-text">LDP</b>.
         </p>
-        <Callout tone="cyan" title="Scope of this simulation" icon="i">
-          Transport labels only: one FEC (<Mono>4.4.4.4/32</Mono>), one LSP, no VPNs and no traffic engineering. OSPF is already converged and is not re-taught here. TC/QoS behavior is left for later.
-        </Callout>
-        <Callout tone="warning" title="MPLS isn't about speed" icon="!">
-          Label lookups aren&apos;t inherently faster than IP lookups on modern hardware. MPLS is valuable because it classifies once at the edge and then lets the core forward, engineer and layer services on labels.
-        </Callout>
+        <p>You will watch LDP find neighbors and spread labels upstream from PE2, then follow one customer packet as it is pushed, swapped and popped across the core. Then one interface stops running LDP: every loopback still answers, and the customers are cut off. You find out why, fix it and prove it.</p>
+        <ChecklistCard
+          tone="violet"
+          title="By the end of this lesson you can"
+          mark="→"
+          items={["explain why a BGP-free core needs labels", "describe LDP discovery and the session between loopbacks", "follow a label mapping upstream from the egress", "read a LIB and an LFIB and tell them apart", "walk a packet through push, swap and pop (and say why the penultimate hop pops)", "prove an LSP with LSP ping, and find why IP works while labels don't"]}
+        />
       </GuideSection>
 
-      <GuideSection id="ll-topology" eyebrow="Setup" title="Topology and roles" tone="cyan">
-        <DiagramFrame caption="PE1 and PE2 are the Label Edge Routers; P1 and P2 are Label Switching Routers.">
+      <GuideSection id="ll-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="CE1 and CE2 are customer hosts; PE1–P1–P2–PE2 is the provider's MPLS core, running IS-IS and LDP.">
           <TopologyDiagram />
         </DiagramFrame>
         <FieldTable
-          title="Who does what"
+          title="Who knows what"
           accent="mpls"
-          columns={["Router", "Role", "Loopback"]}
+          columns={["Router", "Loopback (LDP router ID)", "Routes it has", "Role"]}
           rows={[
-            ["CE1 / CE2", "Customer Edge: outside MPLS, plain IP only", "—"],
-            ["PE1", "Ingress LER: pushes the first label", <Mono key="a">1.1.1.1</Mono>],
-            ["P1, P2", "LSRs: switch labels, never read the customer IP header", <Mono key="b">2.2.2.2 · 3.3.3.3</Mono>],
-            ["PE2", "Egress LER: owns the FEC", <Mono key="c">4.4.4.4</Mono>],
+            ["PE1", <Mono key="1">1.1.1.1</Mono>, "IS-IS loopbacks + BGP 10.2.2.0/24 via 4.4.4.4", "ingress: pushes the first label"],
+            ["P1", <Mono key="2">2.2.2.2</Mono>, "IS-IS loopbacks only", "core: swaps labels"],
+            ["P2", <Mono key="3">3.3.3.3</Mono>, "IS-IS loopbacks only", "penultimate hop: pops"],
+            ["PE2", <Mono key="4">4.4.4.4</Mono>, "IS-IS loopbacks + BGP 10.1.1.0/24 via 1.1.1.1", "egress: routes plain IP to CE2"],
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">The IGP is IS-IS — the previous lesson — and the PEs&apos; BGP routes come from the BGP lesson. The MPLS + LDP Lab adds P3 and P4 as a backup path; the outputs on this page come from the lab&apos;s model with that path switched off.</p>
+      </GuideSection>
+
+      <GuideSection id="ll-ideas" eyebrow="This lesson" title="Three ideas you need" tone="violet">
+        <CompareCards
+          items={[
+            { title: "A BGP-free core", tone: "cyan", tag: "why", points: ["only the PEs know customer prefixes", "the core forwards toward the BGP next hop: PE2's loopback"] },
+            { title: "A label means a FEC", tone: "violet", tag: "what", points: ["“everything for 4.4.4.4/32”", "each router picks its own label number for it"] },
+            { title: "LDP rides on the IGP", tone: "success", tag: "how", points: ["sessions run between loopbacks", "labels follow the IGP next hop"] },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="ll-fec" eyebrow="Concept" title="The FEC: what a label stands for" tone="mpls">
+      <GuideSection id="ll-watch" eyebrow="This lesson" title="What you will watch" tone="cyan">
+        <FlowSteps
+          steps={[
+            { title: "The problem", body: "A plain IP packet dies at P1.", tone: "danger" },
+            { title: "LDP", body: "Hellos, then TCP sessions between loopbacks.", tone: "mpls" },
+            { title: "Labels", body: "Mappings for 4.4.4.4/32 flow upstream from PE2.", tone: "violet" },
+            { title: "Forwarding", body: "PUSH at PE1, SWAP at P1, POP at P2.", tone: "success" },
+            { title: "The incident", body: "LDP off on one link: IP works, customers don't.", tone: "danger" },
+            { title: "Repair", body: "Restore LDP, prove the LSP and the customer path.", tone: "success" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ll-problem" eyebrow="Why MPLS" title="A core that can't route customers" tone="warning">
+        <DiagramFrame caption="The core is BGP-free on purpose: no customer routes, small and stable.">
+          <BgpFreeDiagram />
+        </DiagramFrame>
         <p>
-          A label isn&apos;t tied to a customer, a flow or a session. It stands for a <b className="text-pv-text">Forwarding Equivalence Class</b>: a set of packets forwarded the same way. Here the FEC is &quot;reach PE2&apos;s loopback <Mono>4.4.4.4/32</Mono>&quot;, a prefix OSPF already reaches.
+          Keeping customer routes out of the core is a design choice: the core stays small, converges fast and never feels a customer&apos;s routing churn. The price is that a core router can&apos;t forward a packet by its customer destination. PE1 must hand the core something it <b className="text-pv-text">can</b> forward: a label that means &quot;toward 4.4.4.4&quot;.
         </p>
-        <Callout tone="mpls" title="Labels are locally significant" icon="#">
-          A label value only means something between two neighbors. P1&apos;s <Mono>102</Mono> and P2&apos;s <Mono>203</Mono> both mean &quot;toward 4.4.4.4/32&quot;, each on its own link.
+      </GuideSection>
+
+      <GuideSection id="ll-fec" eyebrow="The idea" title="One FEC, one label per router" tone="violet">
+        <p>
+          A <b className="text-pv-text">Forwarding Equivalence Class</b> groups packets that are forwarded the same way. Every customer packet whose BGP next hop is 4.4.4.4 belongs to the FEC <Mono>4.4.4.4/32</Mono>. For that FEC each router chooses a label of its own and tells its neighbors: &quot;send me packets for 4.4.4.4 with this label&quot;. The number only means something to the router that chose it.
+        </p>
+        <Callout tone="cyan" title="The numbers on this page" icon="i">
+          The guided walkthrough uses short labels so you can follow them: P1 = <b>102</b>, P2 = <b>203</b>. Real routers allocate from large ranges, so the lab&apos;s P1 uses <b>24102</b> and P2 <b>24203</b> on IOS XR (299878 and 299979 on Junos). The meaning is identical: whoever receives the packet chose the label.
         </Callout>
       </GuideSection>
 
-      <GuideSection id="ll-ldp" eyebrow="Control plane" title="LDP: discovery first, then a session" tone="mpls">
-        <DiagramFrame caption="Hellos only find neighbors. Label information needs the TCP session.">
+      <GuideSection id="ll-ldp" eyebrow="LDP" title="LDP: discovery, then a session" tone="mpls">
+        <DiagramFrame caption="Hellos discover; the TCP session between loopbacks carries the labels.">
           <LdpSequenceDiagram />
         </DiagramFrame>
-        <FlowSteps
-          steps={[
-            { title: "DOWN → HELLO", body: "Routers multicast LDP Hellos on UDP 646 to find LDP speakers on directly connected links.", tone: "mpls" },
-            { title: "HELLO → SESSION", body: "One side opens a TCP 646 connection; Initialization and KeepAlive messages negotiate the session.", tone: "violet" },
-            { title: "SESSION → OPERATIONAL", body: "The session is up and can carry Label Mapping messages.", tone: "success" },
-          ]}
-        />
-        <p>PE1↔P1 is shown in detail; P1↔P2 and P2↔PE2 run the identical sequence independently.</p>
+        <p>
+          Each LDP interface sends <b className="text-pv-text">Hellos</b> (UDP 646 to 224.0.0.2) carrying the router&apos;s transport address — its loopback. Two routers that hear each other then open <b className="text-pv-text">TCP 646</b> between their loopbacks; that needs IS-IS routes to them. After Initialization and Keepalive, the session is Operational and label mappings can flow.
+        </p>
+        <CliPanel run={lineCli(LINE, "P1", "cisco", "show mpls ldp neighbor brief")} caption="IOS XR · P1 — two LDP sessions" />
       </GuideSection>
 
-      <GuideSection id="ll-labels" eyebrow="Control plane" title="Labels flow upstream, traffic flows downstream" tone="violet">
-        <DiagramFrame caption="Each router picks its own local label and tells its upstream neighbor.">
+      <GuideSection id="ll-mapping" eyebrow="LDP" title="Labels flow upstream" tone="violet">
+        <DiagramFrame caption="Label mappings travel against the direction the traffic will take.">
           <DistributionDiagram />
         </DiagramFrame>
-        <FlowSteps
-          steps={[
-            { title: "PE2 owns the FEC", body: <>It&apos;s the last hop, so it advertises <Mono>implicit-null</Mono> to P2: &quot;pop before sending to me.&quot;</>, tone: "violet" },
-            { title: "P2 allocates 203", body: "…advertises it to P1, and learns its own action toward PE2.", tone: "violet" },
-            { title: "P1 allocates 102", body: "…advertises it to PE1, and learns its own action: 102 in, 203 out.", tone: "violet" },
-            { title: "PE1 builds its LFIB", body: "IGP reachability plus P1's label gives: unlabeled in → PUSH 102 → P1.", tone: "success" },
-          ]}
-        />
+        <p>
+          PE2 owns 4.4.4.4 and advertises <b className="text-pv-text">implicit-null</b> for it: &quot;don&apos;t put a label on packets you send me&quot;. P2 then advertises its own label to P1, and P1 its own label to PE1. Each router advertises to <b className="text-pv-text">every</b> LDP neighbor, without being asked (downstream unsolicited).
+        </p>
+        <CliPanel run={lineCli(LINE, "P1", "cisco", "show mpls ldp bindings 4.4.4.4/32")} caption="IOS XR · P1 — its own label and the ones it heard" />
       </GuideSection>
 
-      <GuideSection id="ll-lfib" eyebrow="Tables" title="LIB vs LFIB" tone="violet">
+      <GuideSection id="ll-tables" eyebrow="Two tables" title="LIB and LFIB" tone="cyan">
         <CompareCards
           items={[
-            { title: "LIB", tone: "violet", tag: "control plane", points: ["Every binding heard from every LDP neighbor", "Kept even if not currently used", "Bookkeeping, not forwarding"] },
-            { title: "LFIB", tone: "success", tag: "data plane", points: ["Only bindings from the IGP next hop", "Used to switch real packets", "In label → action → out label"] },
+            { title: "LIB", tone: "violet", tag: "control plane", points: ["every binding heard from every LDP neighbor", "kept even when not used (liberal retention)"] },
+            { title: "LFIB", tone: "success", tag: "data plane", points: ["in label → out label, next hop", "uses only the binding from the IGP next hop"] },
           ]}
         />
-        <FieldTable
-          title="The LFIB this lesson builds for 4.4.4.4/32"
-          accent="mpls"
-          columns={["Router", "In", "Action", "Out", "Next hop"]}
-          rows={[
-            ["PE1", "unlabeled", "PUSH", <Mono key="1">102</Mono>, "P1"],
-            ["P1", <Mono key="2">102</Mono>, "SWAP", <Mono key="3">203</Mono>, "P2"],
-            ["P2", <Mono key="4">203</Mono>, "POP", "— (imp-null)", "PE2"],
-          ]}
-        />
+        <CliPanel run={lineCli(LINE, "P1", "cisco", "show mpls forwarding prefix 4.4.4.4/32")} caption="IOS XR · P1's LFIB entry — in 24102, out 24203 toward P2" />
       </GuideSection>
 
-      <GuideSection id="ll-walk" eyebrow="Data plane" title="One packet, three label operations" tone="success">
-        <DiagramFrame caption="The stack under each link is what's on the wire there. Only one label, so it is always the bottom one (S=1).">
+      <GuideSection id="ll-walk" eyebrow="Forwarding" title="Push, swap, pop" tone="success">
+        <DiagramFrame caption="The packet carries one label across the core and none on either side of it.">
           <WalkDiagram />
         </DiagramFrame>
         <p>
-          P1 decides using only the incoming label and its LFIB. It never reads the customer&apos;s IP destination. That same property is what later lets P routers carry VPN traffic without any customer routes.
+          PE1 resolves 10.2.2.20 → BGP next hop 4.4.4.4 → P1&apos;s label, and <b className="text-pv-text">pushes</b> it. P1 reads only the label and <b className="text-pv-text">swaps</b> it for P2&apos;s. P2 <b className="text-pv-text">pops</b>, and PE2 routes the plain IP packet to CE2. No core router ever looks up 10.2.2.20.
         </p>
+        <CliPanel run={lineCli(LINE, "PE1", "cisco", "traceroute 10.2.2.20")} caption="IOS XR · PE1 — each hop reports the label it received" />
       </GuideSection>
 
-      <GuideSection id="ll-shim" eyebrow="On the wire" title="The 32-bit shim header" tone="mpls">
-        <FieldTable
-          title="MPLS shim (open it in the Packet Inspector)"
-          accent="mpls"
-          columns={["Field", "Bits", "Meaning"]}
-          rows={[
-            ["Label", "20", "The forwarding value the next router looks up"],
-            ["TC", "3", "Traffic Class (QoS marking); not used in this lesson"],
-            ["S", "1", "Bottom of Stack: 1 on the last label before the payload"],
-            ["TTL", "8", "Loop protection, like the IP TTL"],
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="ll-php" eyebrow="Egress" title="implicit-null and penultimate hop popping" tone="mpls">
-        <p>
-          <Mono>implicit-null</Mono> (value 3) is a <b className="text-pv-text">signaling value</b>. It&apos;s never written into a packet. When PE2 advertises it, the router one hop before (the penultimate hop, P2) removes the label, so PE2 receives plain IP.
-        </p>
-        <DiagramFrame caption="PHP moves the last label removal one hop earlier so the egress PE does only one lookup.">
+      <GuideSection id="ll-php" eyebrow="Forwarding" title="Why P2 pops" tone="warning">
+        <DiagramFrame caption="Penultimate-hop popping: the egress does one lookup instead of two.">
           <PhpDiagram />
         </DiagramFrame>
+        <p>Without PHP, PE2 would look up the label only to learn &quot;this is for me&quot;, then look up the IP header. Implicit-null lets P2 remove the label instead. If the egress needs to see a label (for example to keep the traffic-class bits), it advertises explicit-null (label 0) — you can try it in the lab.</p>
       </GuideSection>
 
-      <GuideSection id="ll-planes" eyebrow="Big picture" title="Control plane vs data plane" tone="violet">
+      <GuideSection id="ll-planes" eyebrow="The big picture" title="Control plane vs data plane" tone="violet">
         <CompareCards
           items={[
-            { title: "Control plane", tone: "violet", tag: "builds state", points: ["OSPF: how to reach 4.4.4.4/32", "LDP: which label means that FEC on each link", "Never touches a customer packet"] },
-            { title: "Data plane", tone: "success", tag: "uses state", points: ["PUSH at PE1, SWAP at P1, POP at P2", "Uses only the LFIB", "Never runs OSPF or LDP per packet"] },
+            { title: "Control plane", tone: "violet", tag: "builds state", points: ["IS-IS: how to reach 4.4.4.4/32", "LDP: which label means that FEC on each link", "BGP (on the PEs): which customer prefixes sit behind 4.4.4.4"] },
+            { title: "Data plane", tone: "success", tag: "uses state", points: ["PUSH at PE1, SWAP at P1, POP at P2", "uses only the FIB / LFIB", "never runs a protocol per packet"] },
           ]}
         />
-        <Callout tone="warning" title="LDP depends on the IGP" icon="!">
-          LDP only labels FECs the IGP says are reachable. Keep that dependency in mind for the prediction about a disappearing OSPF route.
-        </Callout>
+        <p className="text-sm text-pv-text-muted">LDP only labels FECs the IGP can reach. If IS-IS loses 4.4.4.4, the labels for it are withdrawn too.</p>
       </GuideSection>
 
-      <GuideSection id="ll-fault" eyebrow="Troubleshooting" title="The P1 ↔ P2 fault" tone="danger">
-        <p>
-          After the break, the complaint is: &quot;PE1 can reach PE2&apos;s loopback by IP, but the LSP is broken.&quot; OSPF looks healthy.
-        </p>
-        <ChecklistCard
-          tone="danger"
-          mark="→"
-          title="How to reason about it (no spoilers)"
-          items={[
-            "Confirm IP reachability to 4.4.4.4/32 through the core.",
-            "Compare the IGP adjacency with the LDP adjacency on each link.",
-            "Look for the router whose LIB or LFIB is missing an entry for the FEC.",
-            "Pick the repair that fixes that layer, not a bigger hammer (reboots, unrelated knobs).",
+      <GuideSection id="ll-working" eyebrow="Evidence" title="What working looks like" tone="success">
+        <FieldTable
+          title="Healthy, in five questions"
+          accent="success"
+          columns={["Question", "IOS XR", "Healthy answer"]}
+          rows={[
+            ["LDP session on every core link?", <Mono key="1">show mpls ldp neighbor brief</Mono>, "P1 sees 1.1.1.1:0 and 3.3.3.3:0"],
+            ["Which label did each neighbor give?", <Mono key="2">show mpls ldp bindings 4.4.4.4/32</Mono>, "P2 gave 24203 to P1"],
+            ["What does P1 do with label 24102?", <Mono key="3">show mpls forwarding</Mono>, "swap to 24203 toward P2"],
+            ["What does PE1 push?", <Mono key="4">show cef 10.2.2.20</Mono>, "labels imposed {24102}"],
+            ["Does the LSP work end to end?", <Mono key="5">ping mpls ipv4 4.4.4.4/32</Mono>, "!!!!!"],
           ]}
         />
+        <CliPanel run={lineCli(LINE, "PE1", "cisco", "show cef 10.2.2.20")} caption="IOS XR · PE1 — the BGP route resolves through 4.4.4.4 and gets label 24102" />
+        <CliPair cisco={lineCli(LINE, "PE1", "cisco", "ping mpls ipv4 4.4.4.4/32")} junos={lineCli(LINE_JN, "PE1", "juniper", "ping mpls ldp 4.4.4.4")} ciscoCaption="IOS XR · PE1" junosCaption="Junos · PE1" />
+      </GuideSection>
+
+      <GuideSection id="ll-incident" eyebrow="Incident" title="The incident" tone="danger">
+        <p>After a change on P1, customers report that CE1 can no longer reach CE2. The NOC checks the core: every router answers pings on its loopback, and IS-IS is perfectly converged. Somebody removed LDP from P1&apos;s interface toward P2.</p>
+        <CompareCards
+          items={[
+            { title: "What it is", tone: "danger", tag: "cause", points: ["no LDP on P1–P2: no discovery, no session", "P1 has no label from P2 for 4.4.4.4", "on IOS XR, P1 removes the label and hands P2 plain IP for 10.2.2.20 — P2 has no route for it"] },
+            { title: "What it can't be", tone: "success", tag: "ruled out", points: ["IS-IS: every loopback is reachable", "BGP: PE1 still has 10.2.2.0/24 via 4.4.4.4", "the link: IS-IS runs over it"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ll-investigate" eyebrow="Incident" title="Walk the chain" tone="danger">
+        <TroubleshootingFlow
+          steps={[
+            { question: "Does IP work in the core?", look: "PE1 pings 4.4.4.4: yes. The IGP is fine; the problem is in MPLS." },
+            { question: "Does the LSP work?", look: "LSP ping to 4.4.4.4/32 fails with B — a hop had to forward without a label." },
+            { question: "Which hop?", look: "P1 has no LDP session with P2; its LFIB says Unlabelled toward P2." },
+            { question: "Why no session?", look: "P1's interface toward P2 isn't an LDP interface any more: no Hellos, no discovery." },
+          ]}
+        />
+        <CliPanel run={lineCli(LINE_BROKEN, "PE1", "cisco", "ping 4.4.4.4")} caption="IOS XR · PE1 — plain IP to the loopback still works" />
+        <CliPanel run={lineCli(LINE_BROKEN, "PE1", "cisco", "ping mpls ipv4 4.4.4.4/32")} caption="IOS XR · PE1 — the LSP doesn't (B = unlabeled output interface)" />
+        <CliPanel run={lineCli(LINE_BROKEN, "P1", "cisco", "show mpls ldp neighbor brief")} caption="IOS XR · P1 — only PE1 left" />
+        <CliPanel run={lineCli(LINE_BROKEN, "P1", "cisco", "show mpls forwarding prefix 4.4.4.4/32")} caption="IOS XR · P1 — Unlabelled toward P2" />
+        <Callout tone="warning" title="The same fault on Junos" icon="!">
+          Junos uses ordered label control: P1 never advertises a label for 4.4.4.4 it didn&apos;t receive, so PE1 has no LDP route to 4.4.4.4 in <Mono>inet.3</Mono>, its BGP route to 10.2.2.0/24 becomes hidden, and PE1 drops the traffic itself. Same cause, different place to look.
+        </Callout>
+        <CliPanel run={lineCli(LINE_BROKEN_JN, "PE1", "juniper", "show route 10.2.2.20 hidden")} caption="Junos · PE1 — the BGP route is unusable" />
+      </GuideSection>
+
+      <GuideSection id="ll-repair" eyebrow="Incident" title="Repair and prove it" tone="success">
+        <p>Put P1&apos;s interface back into LDP and commit:</p>
+        <CliPanel run={{ prompt: "RP/0/RP0/CPU0:P1(config)#", command: "mpls ldp", output: "RP/0/RP0/CPU0:P1(config-ldp)#interface GigabitEthernet0/0/0/1\nRP/0/RP0/CPU0:P1(config-ldp-if)#commit\nRP/0/RP0/CPU0:P1(config-ldp-if)#end" }} caption="IOS XR · P1" />
+        <CliPanel run={lineCli(LINE_FIXED, "P1", "cisco", "show mpls forwarding prefix 4.4.4.4/32")} caption="IOS XR · P1 — swapping to P2's label again" />
+        <ChecklistCard tone="success" title="Proved, not assumed" mark="✓" items={["LDP session P1–P2 Operational", "P1's LFIB swaps 24102 → 24203 toward P2", "LSP ping to 4.4.4.4/32 succeeds", "a fresh CE1 → CE2 ping succeeds"]} />
+      </GuideSection>
+
+      <GuideSection id="ll-other" eyebrow="Beyond this incident" title="Other ways MPLS breaks" tone="warning">
+        <FailureSignatures
+          items={[
+            { tag: "TA", title: "Transport address unreachable", tone: "warning", points: ["Hellos heard, no session", "a loopback missing from the IGP"] },
+            { tag: "MTU", title: "No room for the label", tone: "danger", points: ["small packets work, 1500-byte ones don't", "a core link with a 1500-byte MTU"] },
+            { tag: "1W", title: "One direction unlabeled", tone: "violet", points: ["LSPs are one-way: each direction needs its own labels", "a PE without LDP breaks the return path"] },
+            { tag: "BKP", title: "Backup path without LDP", tone: "warning", points: ["fine until a failure moves the IGP", "fixed by LDP everywhere, or LDP–IGP sync"] },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Each is a ticket in the MPLS + LDP Lab.</p>
+      </GuideSection>
+
+      <GuideSection id="ll-model" eyebrow="Mental model" title="Mental model" tone="cyan">
+        <p>
+          Picture a parcel system where only the depots at the edge read addresses. PE1 looks at CE2&apos;s address once and puts the parcel in a bag tagged &quot;to depot PE2&quot;. Every sorting center in between reads only the tag, swaps it for its neighbor&apos;s tag for the same depot, and passes the bag on. The tags were agreed in advance, neighbor by neighbor (LDP), along the roads the map already shows (IS-IS).
+        </p>
+        <Callout tone="cyan" title="When it breaks, ask in this order" icon="→">
+          Does IP reach the loopbacks (IGP)? Is there an LDP session on every link the IGP uses? Did the next hop give a label? What does the LFIB do with it? Does the LSP work end to end (LSP ping)?
+        </Callout>
       </GuideSection>
 
       <GuideSection id="ll-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
         <Glossary
           items={[
-            { term: "LER / PE", def: "Label Edge Router: pushes the first label (ingress) or handles the last hop (egress)." },
-            { term: "LSR / P", def: "Label Switching Router: swaps labels in the core." },
-            { term: "FEC", def: "Forwarding Equivalence Class: packets forwarded identically; here 4.4.4.4/32." },
-            { term: "LSP", def: "Label Switched Path: PE1 → P1 → P2 → PE2 for this FEC." },
-            { term: "LDP", def: "Label Distribution Protocol: discovers neighbors (UDP 646) and exchanges label mappings (TCP 646)." },
-            { term: "LIB", def: "Every label binding heard from every neighbor." },
-            { term: "LFIB", def: "The bindings actually used to forward: in label → action → out label." },
-            { term: "implicit-null", def: "Signaling value 3: pop before sending to me. Never on the wire." },
-            { term: "PHP", def: "Penultimate Hop Popping: the hop before the egress removes the label." },
-            { term: "S bit", def: "Bottom of Stack: 1 only on the last label before the payload." },
+            { term: "FEC", def: "Forwarding Equivalence Class: the packets forwarded the same way — here, everything for 4.4.4.4/32." },
+            { term: "LSP", def: "Label Switched Path: the one-way path labeled packets take for a FEC." },
+            { term: "LDP", def: "Label Distribution Protocol: Hellos (UDP 646) discover, a TCP 646 session between loopbacks carries label mappings." },
+            { term: "LIB / LFIB", def: "Every label heard / the labels actually used for forwarding." },
+            { term: "Implicit-null", def: "Label 3, advertised by the egress: “pop before you send it to me”." },
+            { term: "PHP", def: "Penultimate-hop popping: the router before the egress removes the label." },
+            { term: "LER / LSR", def: "Label Edge Router (push/pop at the edge) / Label Switching Router (swap in the core)." },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="ll-recap" eyebrow="Recap" title="Mental model" tone="mpls">
-        <div className="rounded-2xl border border-pv-mpls/30 bg-gradient-to-br from-pv-mpls/10 to-pv-violet/5 p-5 text-sm leading-relaxed text-pv-text">
-          OSPF says where 4.4.4.4/32 is. LDP gives that FEC a label on every link, flowing upstream from PE2. The LFIB turns that into PUSH 102 at PE1, SWAP 102 → 203 at P1 and POP at P2, so PE2 receives plain IP. If a single LDP session is down, IP still works but the LSP is broken at that link.
-        </div>
+      <GuideSection id="ll-recap" eyebrow="Reference" title="Recap" tone="success">
+        <ChecklistCard tone="success" title="You can now" mark="✓" items={["explain why a BGP-free core needs labels", "describe LDP discovery and sessions between loopbacks", "follow labels upstream and packets downstream", "read the LIB and the LFIB", "walk push, swap and pop and explain PHP", "find why IP works but customers don't — and prove the repair"]} />
       </GuideSection>
-    </>
+
+      <GuideSection id="ll-practice" eyebrow="Next" title="Practice it" tone="violet">
+        <p>The Deep Dive tab teaches MPLS and LDP in full: the shim header and label stacks, reserved labels, LDP sessions and modes, independent vs ordered control, LDP–IGP sync, MTU, LSP ping and every failure signature with real evidence. The lab lets you operate it.</p>
+        <LessonLabBridge />
+        <PresentationBridge>Rewatch the MPLS presentation.</PresentationBridge>
+      </GuideSection>
+    </div>
   );
 }

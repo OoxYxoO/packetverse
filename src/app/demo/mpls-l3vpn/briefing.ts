@@ -19,7 +19,7 @@ export const L3VPN_BRIEFING_PHASES: BriefingPhaseDef[] = [
 export const L3VPN_BRIEFING_NOTES: Partial<Record<string, BriefingStepNote>> = {
   intro: { doingNow: "The core carries many customers and must not hold their routes." },
   "predict-problem": { doingNow: "Consider what must be kept separate, and where." },
-  prerequisites: { doingNow: "OSPF, LDP and the PE1 → PE2 transport LSP already work.", takeaway: "Transport is solved; this lesson adds the VPN layer on top." },
+  prerequisites: { doingNow: "IS-IS, LDP and the PE1 → PE2 transport LSP already work.", takeaway: "Transport is solved; this lesson adds the VPN layer on top." },
   "vrf-intro": { doingNow: "PE1 has a global table and a separate VRF CUST-A." },
   "predict-vrf": { doingNow: "Ask which table the provider core's routers use." },
   "overlap-intro": { doingNow: "Customer B uses the same 10.1.1.0/24 in its own VRF." },

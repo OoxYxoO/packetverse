@@ -17,7 +17,7 @@ import type { CliQuestion } from "./dhcpBuildCli";
  * errors, bash "command not found", Windows "is not recognized".
  */
 
-export type ConsoleOs = "ios" | "junos" | "linux" | "windows";
+export type ConsoleOs = "ios" | "iosxr" | "junos" | "linux" | "windows";
 export interface ConsoleLine {
   kind: "in" | "out" | "err" | "note" | "sys";
   text: string;
@@ -33,6 +33,7 @@ export const EMPTY_SESSION: ConsoleSession = { lines: [], history: [] };
 
 const BANNER: Record<ConsoleOs, (host: string) => string[]> = {
   ios: (h) => [`Connected to ${h} (console, 9600 8N1).`, "", `${h} con0 is now available`, "", "Press RETURN to get started.", ""],
+  iosxr: (h) => [`Connected to ${h} (console, 9600 8N1).`, "", `User Access Verification`, "", `${h} con0/RP0/CPU0 is now available`, ""],
   junos: (h) => [`Connected to ${h} (console, 9600 8N1).`, "", `--- JUNOS ${h} console ---`, ""],
   linux: (h) => [`Connected to ${h.toLowerCase()} (ssh admin@${h.toLowerCase()}).`, "Welcome to Ubuntu 22.04 LTS (GNU/Linux x86_64)", ""],
   windows: () => ["Microsoft Windows [Version 10.0.22631]", "(c) Microsoft Corporation. All rights reserved.", ""],
@@ -115,6 +116,7 @@ export function ConsoleTerminal({
   question,
   pipeCtx,
   className,
+  vendorLabels,
 }: {
   sets: Partial<Record<CliVendor, CliCommandSet>>;
   vendor: CliVendor;
@@ -133,6 +135,8 @@ export function ConsoleTerminal({
   /** What the pipes need to know about this device (Junos: its configurations, for compare). */
   pipeCtx?: Pick<PipeCtx, "config" | "rollbacks">;
   className?: string;
+  /** Names on the vendor switch (default IOS / Junos). */
+  vendorLabels?: Partial<Record<CliVendor, string>>;
 }) {
   const set = sets[vendor] ?? Object.values(sets)[0]!;
   const input = useRef<HTMLInputElement>(null);
@@ -141,12 +145,12 @@ export function ConsoleTerminal({
   const [caret, setCaret] = useState(0);
   const [hIdx, setHIdx] = useState<number | null>(null);
   const [focused, setFocused] = useState(false);
-  const network = os === "ios" || os === "junos";
+  const network = os === "ios" || os === "iosxr" || os === "junos";
   // Junos shows where you are in the hierarchy above the configuration-mode prompt.
   const editMode = os === "junos" && set.prompt.trim().endsWith("#");
   const prompt = question?.prompt ?? (editMode ? `[edit]\n${set.prompt}` : set.prompt);
   // Network OSes take output modifiers after a | (include/section… on IOS; match/display set/compare… on Junos).
-  const pos: PipeOs | undefined = os === "ios" ? "ios" : os === "junos" ? "junos" : undefined;
+  const pos: PipeOs | undefined = os === "ios" ? "ios" : os === "iosxr" ? "iosxr" : os === "junos" ? "junos" : undefined;
   const ctxFor = (left: string): PipeCtx => ({ os: pos!, left, edit: editMode, ...pipeCtx });
   const isShow = (l: string) => /^\s*((do|run)\s+)?show\b/i.test(l);
   const lines = session.lines.length ? session.lines : BANNER[os](host).map((t) => ({ kind: "sys" as const, text: t }));
@@ -217,7 +221,7 @@ export function ConsoleTerminal({
       // Output modifiers belong to show commands; anywhere else the | is a syntax error at that position, and the
       // command before it does not run.
       const caret = `${" ".repeat(set.prompt.length + sp!.at)}^`;
-      return push([echo, { kind: "err", text: pos === "ios" ? `${caret}\n% Invalid input detected at '^' marker.` : `${caret}\nsyntax error, expecting <command>.` }]);
+      return push([echo, { kind: "err", text: pos !== "junos" ? `${caret}\n% Invalid input detected at '^' marker.` : `${caret}\nsyntax error, expecting <command>.` }]);
     }
     const r = executeCli(set, piped ? sp!.cmd : typed);
     if (r.kind === "clear") return setSession((s) => ({ ...s, lines: [{ kind: "sys", text: "" }] }));
@@ -278,7 +282,7 @@ export function ConsoleTerminal({
       else if (network) {
         let t = contextHelp(set, line);
         // A complete show command can also take output modifiers: say so, as the real CLI does.
-        if (isShow(line) && /<cr>|<\[Enter\]>/.test(t)) t += pos === "ios" ? `\n  ${"|".padEnd(20)}Output modifiers` : `\n  ${"|".padEnd(20)}Pipe through a command`;
+        if (isShow(line) && /<cr>|<\[Enter\]>/.test(t)) t += pos !== "junos" ? `\n  ${"|".padEnd(20)}Output modifiers` : `\n  ${"|".padEnd(20)}Pipe through a command`;
         help = { kind: "out", text: t };
       } else help = hostHelp(set, line, host, Math.floor((screen.current?.clientWidth ?? 640) / 7.3));
       return push([{ kind: "in", prompt, text: `${line}?` }, help]);
@@ -316,13 +320,13 @@ export function ConsoleTerminal({
       <div className="flex items-center gap-2 border-b border-[#1f2a37] bg-[#111821] px-2 py-1 text-[11px]">
         <span className="h-2 w-2 rounded-full bg-pv-success" aria-hidden />
         <span className="pv-mono text-[#c8d3df]">
-          {host} · {os === "ios" ? "Cisco IOS" : os === "junos" ? "Junos" : os === "linux" ? "bash" : "cmd.exe"}
+          {host} · {os === "ios" ? "Cisco IOS" : os === "iosxr" ? "Cisco IOS XR" : os === "junos" ? "Junos" : os === "linux" ? "bash" : "cmd.exe"}
         </span>
         {setVendor && Object.keys(sets).length > 1 && (
           <span className="ml-1 flex gap-0.5 rounded border border-[#1f2a37] p-0.5" role="radiogroup" aria-label="Operating system view">
             {(["cisco", "juniper"] as CliVendor[]).map((v) => (
               <button key={v} type="button" role="radio" aria-checked={vendor === v} onClick={() => setVendor(v)} className={clsx("rounded px-1.5", vendor === v ? "bg-[#1f2a37] text-white" : "text-[#7d8a99] hover:text-white")}>
-                {v === "cisco" ? "IOS" : "Junos"}
+                {vendorLabels?.[v] ?? (v === "cisco" ? "IOS" : "Junos")}
               </button>
             ))}
           </span>

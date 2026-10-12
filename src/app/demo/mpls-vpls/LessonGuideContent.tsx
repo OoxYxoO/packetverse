@@ -1,29 +1,79 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DLink, DNode, DPill, DiagramFrame, DiagramSvg, FieldTable, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DLink, DNode, DPill, DiagramFrame, DiagramSvg, FailureSignatures, FieldTable, FlowSteps, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { DStack } from "@/components/lesson/MplsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPair, CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import type { CliVendor } from "@/lib/cli/types";
+import { createVsNet, vsApply, vsTicket, vsTicketState, type VsCe, type VsOs, type VsR, type VsState } from "@/lib/sim-engine/scenarios/vsNet";
+import { vsSets, vsStaticApi } from "./vs-lab/vsCli";
 
 export const VPLS_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "pl-mission", label: "The mission" },
-  { id: "pl-topology", label: "Sites and PEs" },
-  { id: "pl-bridge", label: "The VPLS bridge context" },
-  { id: "pl-transport", label: "Transport first" },
+  { id: "pl-mission", label: "What this lesson teaches" },
+  { id: "pl-network", label: "The network of this lesson" },
+  { id: "pl-ideas", label: "Three ideas you need" },
+  { id: "pl-watch", label: "What you will watch" },
+  { id: "pl-bridge", label: "Each PE is a bridge" },
   { id: "pl-mesh", label: "The pseudowire full mesh" },
   { id: "pl-labels", label: "Six directional labels" },
-  { id: "pl-empty", label: "Ready, but empty" },
-  { id: "pl-learn", label: "Source-MAC learning" },
-  { id: "pl-unknown", label: "Unknown unicast" },
-  { id: "pl-replicas", label: "Two replicas, two stacks" },
-  { id: "pl-remote", label: "Remote learning" },
-  { id: "pl-split", label: "PW split horizon" },
-  { id: "pl-bum", label: "Broadcast and BUM" },
+  { id: "pl-learn", label: "Learning and flooding" },
   { id: "pl-known", label: "Known unicast" },
-  { id: "pl-aging", label: "Aging and MAC moves" },
-  { id: "pl-planes", label: "Control vs data plane" },
-  { id: "pl-fault", label: "The CE1 ↔ CE3 incident" },
-  { id: "pl-challenge", label: "The engineer challenge" },
+  { id: "pl-split", label: "Split horizon" },
+  { id: "pl-aging", label: "Aging and moves" },
+  { id: "pl-working", label: "What working looks like" },
+  { id: "pl-incident", label: "The incident" },
+  { id: "pl-investigate", label: "Walk the evidence" },
+  { id: "pl-fix", label: "Repair and prove it" },
+  { id: "pl-other", label: "Other ways a VPLS fails" },
+  { id: "pl-model", label: "Mental model" },
   { id: "pl-glossary", label: "Glossary" },
-  { id: "pl-recap", label: "Mental model" },
+  { id: "pl-recap", label: "Recap" },
+  { id: "pl-practice", label: "Practice it" },
 ];
+
+/**
+ * Every CLI sample and ping result on this page comes from the VPLS Lab's model and its IOS XR / Junos command sets:
+ * the healthy network (and its MAC tables after real pings) and the lab's "mesh" ticket — the guided lesson's incident
+ * (the PE1–PE3 pseudowire is down: PE3 no longer lists PE1 as a neighbor).
+ */
+export const VS_HEALTHY: VsState = createVsNet(0);
+export const VS_HEALTHY_JN: VsState = createVsNet(0, "junos");
+const ping = (s: VsState, from: VsCe, dst: string) => vsApply(s, { type: "test", from, dst });
+/** After CE1 → CE3 once: every table has learned what that exchange taught it. */
+export const VS_LEARNED = ping(VS_HEALTHY, "CE1", "192.168.100.3");
+export const VS_LEARNED_JN = ping(VS_HEALTHY_JN, "CE1", "192.168.100.3");
+const VS_AGAIN = ping(VS_LEARNED, "CE1", "192.168.100.3");
+const fault = (os: VsOs) => vsTicket("mesh").repro.reduce((acc, a) => vsApply(acc, a), vsTicketState("mesh", 0, os));
+const VS_FAULT = fault("xr");
+const VS_FAULT_JN = fault("junos");
+const VS_FAULT_OK = ping(VS_FAULT, "CE1", "192.168.100.2");
+const VS_FIXED = ping(vsApply(VS_FAULT, { type: "set", text: "PE3: neighbor 1.1.1.1 pw-id 500 back in the VFI", changes: [{ dev: "PE3", f: (c) => void c.bd!.nbrs.push({ ip: "1.1.1.1", pwid: 500 }) }] }), "CE1", "192.168.100.3");
+export function vsCli(s: VsState, r: VsR, vendor: CliVendor, command: string) {
+  return runGuideCli(vsSets(vsStaticApi(s, r), r)[vendor], command);
+}
+export function vsOnly(s: VsState, r: VsR, vendor: CliVendor, command: string, match: RegExp, keep = 0) {
+  const x = vsCli(s, r, vendor, command);
+  return { ...x, output: pickLines(x.output, match, keep) };
+}
+/** One customer ping, as the lab reports it. */
+export function PingResult({ s, title }: { s: VsState; title: string }) {
+  const t = s.tests[s.tests.length - 1];
+  return (
+    <Callout tone={t.ok ? "success" : "danger"} title={title} icon={t.ok ? "✓" : "!"}>
+      {t.from} → {t.dst}: {t.ok ? `delivered to ${t.reached}, and the reply came back — ${t.flooded ? "some frames flooded" : "every frame unicast"}` : t.why}
+    </Callout>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the VPLS Lab" onPractice={openLab}>
+      Three PEs bridging one customer LAN, real MAC tables, IOS XR or Junos, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
 
 const PE: Record<string, [number, number]> = { PE1: [150, 110], PE2: [480, 45], PE3: [480, 175] };
 
@@ -159,175 +209,213 @@ function FaultDiagram() {
 
 export function VplsLessonGuideContent() {
   return (
-    <>
-      <GuideSection id="pl-mission" eyebrow="Introduction" title="The mission: one virtual LAN for three sites" tone="mpls">
+    <div className="space-y-12">
+      <GuideSection id="pl-mission" eyebrow="This lesson" title="What this lesson teaches" tone="mpls">
         <p>
-          CE1, CE2 and CE3 (<Mono>192.168.100.1–3</Mono>, VLAN <Mono>100</Mono>) must share one Ethernet broadcast domain, as if plugged into the same switch. A point-to-point VPWS can&apos;t do that. This lesson builds <Mono>CUST-A-VPLS</Mono>: a mesh of pseudowires with a virtual bridge on every PE.
+          Customer A has three sites — CE1, CE2 and CE3 behind PE1, PE2 and PE3 — and wants them on one Ethernet segment, <Mono>192.168.100.0/24</Mono>, as if plugged into the same switch. A VPWS wire has only two ends. This lesson builds a <b className="text-pv-text">Virtual Private LAN Service</b> (VPLS): the PEs become one distributed Ethernet switch, joined by a full mesh of pseudowires.
         </p>
-        <Callout tone="cyan" title="Scope of this simulation" icon="i">
-          Traditional LDP-signaled VPLS with three PEs, one AC each. Targeted LDP is modeled as one shared mesh-wide state. BGP-VPLS, H-VPLS and EVPN are later lessons. LDP MAC Address Withdrawal is named, not simulated.
+        <p>You will watch the mesh come up, the MAC tables start empty, the first frame flood and the reply teach the bridges where everyone lives. You will see why a frame from one pseudowire may never leave on another — and what happens when one pseudowire of the mesh is missing: CE1 and CE3 lose each other while every other pair works.</p>
+        <ChecklistCard
+          tone="violet"
+          title="By the end of this lesson you can"
+          mark="→"
+          items={["explain why multipoint Ethernet needs bridging at the PEs", "describe the full mesh and count its pseudowires", "follow MAC learning, flooding and known unicast", "explain split horizon and why it forces a full mesh", "read the six directional labels", "find a missing mesh member from evidence, fix it and prove it"]}
+        />
+      </GuideSection>
+
+      <GuideSection id="pl-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="Three PEs, three pseudowires; the P routers carry the LSPs underneath.">
+          <MeshDiagram />
+        </DiagramFrame>
+        <FieldTable
+          title="Who is who"
+          accent="mpls"
+          columns={["Site", "MAC", "Attached to"]}
+          rows={[
+            ["CE1 · 192.168.100.1", <Mono key="1">00:11:11:11:11:11</Mono>, "PE1 (1.1.1.1)"],
+            ["CE2 · 192.168.100.2", <Mono key="2">00:22:22:22:22:22</Mono>, "PE2 (2.2.2.2)"],
+            ["CE3 · 192.168.100.3", <Mono key="3">00:33:33:33:33:33</Mono>, "PE3 (3.3.3.3)"],
+          ]}
+        />
+        <Callout tone="cyan" title="The lab uses the same network" icon="i">
+          P1 (10.10.10.1) connects PE1 to P2 (toward PE2) and P3 (toward PE3); VLAN 100, VPLS ID 500. The guided lesson names the attachment circuits <Mono>ge-0/0/0.100</Mono>; in the lab ge-0/0/0 faces the core, so they are <Mono>ge-0/0/1.100</Mono> — and a fourth site, CE4, waits unconnected on PE2. Every output on this page comes from the lab.
         </Callout>
       </GuideSection>
 
-      <GuideSection id="pl-topology" eyebrow="Setup" title="Sites and PEs" tone="cyan">
-        <FieldTable
-          title="CUST-A sites"
-          accent="ip"
-          columns={["Site", "MAC", "PE / AC"]}
-          rows={[
-            ["CE1", <Mono key="1">00:11:11:11:11:11</Mono>, "PE1 (1.1.1.1) ge-0/0/0.100"],
-            ["CE2", <Mono key="2">00:22:22:22:22:22</Mono>, "PE2 (2.2.2.2) ge-0/0/0.100"],
-            ["CE3", <Mono key="3">00:33:33:33:33:33</Mono>, "PE3 (3.3.3.3) ge-0/0/0.100"],
+      <GuideSection id="pl-ideas" eyebrow="This lesson" title="Three ideas you need" tone="violet">
+        <CompareCards
+          items={[
+            { title: "Bridge at each PE", tone: "cyan", tag: "data plane", points: ["ports: the AC and one pseudowire per other PE", "learn, forward, flood"] },
+            { title: "Full mesh", tone: "violet", tag: "control plane", points: ["a pseudowire between every pair of PEs", "same VPLS ID everywhere"] },
+            { title: "Split horizon", tone: "danger", tag: "loop prevention", points: ["pseudowire → pseudowire is forbidden", "so nobody relays"] },
           ]}
         />
-        <p>P1 (10.10.10.1) branches to P2 and P3; the P routers are transport-only transit and hold no VPLS state.</p>
       </GuideSection>
 
-      <GuideSection id="pl-bridge" eyebrow="Service" title="The VPLS bridge context (VSI)" tone="violet">
-        <p>
-          Each PE runs a per-service virtual Ethernet bridge. Some vendors call it a <b className="text-pv-text">VSI</b>; PacketVerse calls it a &quot;VPLS bridge context&quot;. Its ports are the local <b className="text-pv-text">AC</b> plus one <b className="text-pv-text">PW port</b> per remote PE. The service identity <Mono>VPLS-500</Mono> is shared mesh-wide and is different from any single PW and from VLAN 100.
-        </p>
+      <GuideSection id="pl-watch" eyebrow="This lesson" title="What you will watch" tone="cyan">
+        <FlowSteps
+          steps={[
+            { title: "The mesh", body: "Three pseudowires, six labels.", tone: "violet" },
+            { title: "Empty tables", body: "Nobody knows anybody yet.", tone: "cyan" },
+            { title: "Flood", body: "The first frame goes everywhere.", tone: "warning" },
+            { title: "Learn", body: "Replies teach the bridges.", tone: "success" },
+            { title: "The incident", body: "PE1–PE3 is down; one pair breaks.", tone: "danger" },
+            { title: "Repair", body: "Complete the mesh, prove it.", tone: "success" },
+          ]}
+        />
       </GuideSection>
 
-      <GuideSection id="pl-transport" eyebrow="Prerequisite" title="Transport first" tone="mpls">
-        <p>IGP, then hop-by-hop LDP, then LSPs between every PE loopback, exactly as in VPWS. P1 advertises <Mono>102</Mono> toward PE2 and <Mono>103</Mono> toward PE3; P2 advertises <Mono>201</Mono> toward PE1.</p>
+      <GuideSection id="pl-bridge" eyebrow="Service" title="Each PE is a bridge" tone="violet">
+        <p>For this one customer, every PE runs an Ethernet bridge — IOS XR calls it a <b className="text-pv-text">bridge domain</b> (with a <b className="text-pv-text">VFI</b> holding the pseudowires), Junos a routing instance of type <b className="text-pv-text">vpls</b>. Its ports are the local attachment circuit and one pseudowire to every other PE. It forwards by MAC address, nothing else.</p>
+        <CliPair cisco={vsCli(VS_HEALTHY, "PE1", "cisco", "show l2vpn bridge-domain")} junos={vsCli(VS_HEALTHY_JN, "PE1", "juniper", "show configuration routing-instances")} ciscoCaption="IOS XR · PE1 — one AC, a VFI with two pseudowires" junosCaption="Junos · PE1 — the VPLS instance: interface, vpls-id, neighbors" />
       </GuideSection>
 
       <GuideSection id="pl-mesh" eyebrow="Control plane" title="The pseudowire full mesh" tone="violet">
-        <DiagramFrame caption="Three PEs, three pseudowires: PE1–PE2, PE1–PE3, PE2–PE3.">
-          <MeshDiagram />
-        </DiagramFrame>
-        <p>Each pair gets its own pseudowire, signaled over targeted LDP between the PE loopbacks. You&apos;ll see why every pair needs one in the split-horizon section.</p>
+        <p>Every pair of PEs signals its own pseudowire, each over its own targeted LDP session between loopbacks, all with the same PW ID — the <b className="text-pv-text">VPLS ID 500</b>. Three PEs make three pseudowires; N PEs would make N(N−1)/2.</p>
+        <CliPair cisco={vsOnly(VS_HEALTHY, "PE1", "cisco", "show mpls ldp discovery", /Targeted|->|LDP Id: [23]/)} junos={vsCli(VS_HEALTHY_JN, "PE1", "juniper", "show ldp neighbor")} ciscoCaption="IOS XR · PE1 — targeted hellos to both other PEs, answered" junosCaption="Junos · PE1 — two targeted neighbors on lo0.0" />
       </GuideSection>
 
       <GuideSection id="pl-labels" eyebrow="Control plane" title="Six directional labels" tone="mpls">
+        <p>Each PE allocates one receive label per neighbor, and the neighbor pushes it. Because the label differs per neighbor, the receiving PE knows which pseudowire — which bridge port — a frame arrived on, which is exactly what MAC learning and split horizon need.</p>
         <FieldTable
-          title="Receive labels (the receiver owns them)"
+          title="Receive labels (IOS XR numbering, the guided lesson's)"
           accent="mpls"
-          columns={["Pseudowire", "Label the receiver advertised", "Used by the sender"]}
+          columns={["PE", "from PE1", "from PE2", "from PE3"]}
           rows={[
-            ["PE1 → PE2", <Mono key="a">25021</Mono>, "PE1 pushes it toward PE2"],
-            ["PE2 → PE1", <Mono key="b">24012</Mono>, "PE2 pushes it toward PE1"],
-            ["PE1 → PE3", <Mono key="c">26031</Mono>, "PE1 pushes it toward PE3"],
-            ["PE3 → PE1", <Mono key="d">24013</Mono>, "PE3 pushes it toward PE1"],
-            ["PE2 → PE3", <Mono key="e">26032</Mono>, "PE2 pushes it toward PE3"],
-            ["PE3 → PE2", <Mono key="f">25023</Mono>, "PE3 pushes it toward PE2"],
+            ["PE1", "—", <Mono key="1">24012</Mono>, <Mono key="2">24013</Mono>],
+            ["PE2", <Mono key="3">25021</Mono>, "—", <Mono key="4">25023</Mono>],
+            ["PE3", <Mono key="5">26031</Mono>, <Mono key="6">26032</Mono>, "—"],
           ]}
         />
-      </GuideSection>
-
-      <GuideSection id="pl-empty" eyebrow="State" title="Ready, but empty" tone="cyan">
-        <p>Transport UP, targeted LDP OPERATIONAL, three PWs UP, three ACs UP, and every FDB completely empty. The bridge exists but knows nothing yet.</p>
-      </GuideSection>
-
-      <GuideSection id="pl-learn" eyebrow="Data plane" title="Source-MAC learning" tone="success">
-        <p>Every PE learns the <b className="text-pv-text">source</b> MAC of every frame it receives, on the port it arrived on (AC or PW), before making any forwarding decision.</p>
-        <DiagramFrame caption="Three frames, three FDB snapshots: learning comes from the traffic itself.">
-          <LearningDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="pl-unknown" eyebrow="Data plane" title="Unknown unicast" tone="warning">
-        <p>
-          The first frame is CE1 → <Mono>00:22:22:22:22:22</Mono>. PE1 has never seen that MAC, so it&apos;s <b className="text-pv-text">unknown unicast</b>. PE1 replicates it to every eligible bridge port except the one it arrived on: PW: PE2 and PW: PE3. Ingress was the AC, so split horizon doesn&apos;t limit it.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="pl-replicas" eyebrow="Data plane" title="Two replicas, two label stacks" tone="warning">
-        <DiagramFrame caption="Flooding in VPLS is ingress replication: one labeled copy per remote PE, never a shared multicast label.">
+        <DiagramFrame caption="Flooding: one replica per pseudowire, each with that neighbor's label.">
           <ReplicaDiagram />
         </DiagramFrame>
-        <p>The copy to PE2 goes PE1 → P1 → P2 (PHP) → PE2; the copy to PE3 goes PE1 → P1 → P3 (PHP) → PE3. P routers act only on the outer label.</p>
+        <Callout tone="cyan" title="The numbers on this page" icon="i">
+          The PW labels are the same in the guided lesson and the lab. For transport the guided lesson uses short labels (P1 = 102 toward PE2, 103 toward PE3); the lab allocates like IOS XR: P1 = 24103 and 24104, P2 = 24204, P3 = 24306. Junos numbers everything from 299776.
+        </Callout>
+        <CliPanel run={vsOnly(VS_HEALTHY, "PE1", "cisco", "show l2vpn bridge-domain detail", /PW: neighbor|MPLS  |Label  /)} caption="IOS XR · PE1 — receives on 24012 / 24013, pushes 25021 / 26031" />
       </GuideSection>
 
-      <GuideSection id="pl-remote" eyebrow="Data plane" title="Remote learning" tone="success">
-        <p>
-          PE2 resolves <Mono>25021</Mono> → CUST-A-VPLS, arriving on PW: PE1, and learns <Mono>00:11:11:11:11:11 → PW: PE1</Mono>. PE3 does the same. CE2 accepts the frame; CE3 discards it (wrong destination MAC).
-        </p>
-      </GuideSection>
-
-      <GuideSection id="pl-split" eyebrow="Loop prevention" title="Pseudowire split horizon" tone="danger">
-        <DiagramFrame caption="A frame received on a mesh PW may go to local ACs, never to another mesh PW.">
-          <SplitDiagram />
+      <GuideSection id="pl-learn" eyebrow="Data plane" title="Learning and flooding" tone="warning">
+        <DiagramFrame caption="A PE learns the source MAC on the port the frame arrived on.">
+          <LearningDiagram />
         </DiagramFrame>
-        <ChecklistCard
-          tone="danger"
-          mark="!"
-          title="Scope of the rule (flat VPLS)"
-          items={["Applies to frames that ARRIVED on a mesh PW.", "Frames arriving on a local AC may be flooded to every PW.", "It is why the mesh must be full: no PE can rely on another to relay.", "It is not IP distance-vector split horizon."]}
-        />
-      </GuideSection>
-
-      <GuideSection id="pl-bum" eyebrow="Data plane" title="Broadcast and BUM" tone="warning">
-        <p>
-          CE1&apos;s ARP request to <Mono>ff:ff:ff:ff:ff:ff</Mono> is <b className="text-pv-text">broadcast</b>: no lookup, always replicated to PW: PE2 and PW: PE3; each of them floods to its AC only. <b className="text-pv-text">BUM</b> (broadcast, unknown unicast, multicast) all get this same service-aware replication, subject to split horizon.
-        </p>
+        <p>The tables start empty. CE1 broadcasts an ARP request for 192.168.100.3. PE1 learns CE1&apos;s MAC on its attachment circuit and floods the broadcast over both pseudowires; PE2 and PE3 learn CE1 behind their pseudowire to PE1 and deliver it locally. CE3&apos;s reply is unicast — PE3 already knows where CE1 is — so PE1 learns CE3 behind PE3, and PE2 never hears of CE3.</p>
+        <CliPair cisco={vsCli(VS_LEARNED, "PE1", "cisco", "show l2vpn forwarding bridge-domain mac-address location 0/0/CPU0")} junos={vsCli(VS_LEARNED_JN, "PE1", "juniper", "show vpls mac-table")} ciscoCaption="IOS XR · PE1 after one ping — CE1 on the AC, CE3 behind (3.3.3.3, 500)" junosCaption="Junos · PE1 — CE3 behind the lsi interface toward PE3" />
+        <CliPanel run={vsOnly(VS_LEARNED, "PE2", "cisco", "show l2vpn forwarding bridge-domain mac-address location 0/0/CPU0", /Mac Address|----|dynamic/)} caption="IOS XR · PE2 — only CE1: CE3's reply never passed here" />
       </GuideSection>
 
       <GuideSection id="pl-known" eyebrow="Data plane" title="Known unicast" tone="success">
-        <FlowSteps
-          steps={[
-            { title: "CE2 replies to CE1", body: <>PE2 learns CE2 → AC and already knows CE1 → PW: PE1: one copy with <Mono>201 S0 / 24012 S1</Mono>.</>, tone: "success" },
-            { title: "PE1 learns CE2", body: "The core forwards via P2 → P1 (PHP at P1); PE1 learns CE2 → PW: PE2.", tone: "success" },
-            { title: "CE1 → CE2 again", body: <>Known unicast: one copy <Mono>102 S0 / 25021 S1</Mono> to PE2. PE3 sees nothing.</>, tone: "cyan" },
-          ]}
-        />
+        <p>Ping again: CE1 has CE3 in its ARP cache and PE1 knows CE3 is behind PE3, so every frame goes over that one pseudowire. Flooding is how a VPLS discovers; learning is how it stops.</p>
+        <PingResult s={VS_LEARNED} title="The lab: the first ping CE1 → CE3" />
+        <PingResult s={VS_AGAIN} title="The lab: the same ping again" />
       </GuideSection>
 
-      <GuideSection id="pl-aging" eyebrow="Operations" title="Aging and MAC moves" tone="cyan">
-        <p>
-          When PE1 ages out CE2&apos;s entry, the next frame is unknown again and floods. When CE2 reappears behind PE3, PE1 simply relearns the MAC on the new port (PW: PE3). Traditional VPLS has no sequence numbers: the most recently observed source wins.
-        </p>
+      <GuideSection id="pl-split" eyebrow="Loop prevention" title="Split horizon" tone="danger">
+        <DiagramFrame caption="A frame from a pseudowire goes only to local attachment circuits.">
+          <SplitDiagram />
+        </DiagramFrame>
+        <p>The three pseudowires form a triangle. If PE2 forwarded PE1&apos;s broadcast to PE3 and PE3 back to PE1, the frame would circle forever — Ethernet has no TTL. So a frame received on a pseudowire is <b className="text-pv-text">never</b> sent out another pseudowire. Nobody relays; therefore every PE needs a direct pseudowire to every other PE — the full mesh.</p>
       </GuideSection>
 
-      <GuideSection id="pl-planes" eyebrow="Big picture" title="Control plane vs data plane" tone="violet">
+      <GuideSection id="pl-aging" eyebrow="Operations" title="Aging and moves" tone="cyan">
         <CompareCards
           items={[
-            { title: "Control plane", tone: "violet", tag: "builds the service", points: ["Transport LSPs", "Targeted LDP mesh", "PW labels (six, directional)"] },
-            { title: "Data plane", tone: "success", tag: "switches frames", points: ["Source-MAC learning", "Destination lookup: known vs unknown", "BUM replication, split horizon"] },
+            { title: "Aging", tone: "cyan", tag: "300 s", points: ["entries not refreshed by traffic expire", "the next frame floods and relearns", "clear: clear l2vpn bridge-domain bd-name … / clear vpls mac-table instance …"] },
+            { title: "A host moves", tone: "warning", tag: "relearn", points: ["the old entry points to the old site", "the PEs relearn when the host sends from its new port", "LDP MAC withdrawal can flush faster; EVPN signals moves"] },
           ]}
         />
-        <Callout tone="warning" title="No MAC advertisements here" icon="!">
-          Traditional VPLS never advertises customer MACs in a control protocol. Every FDB entry comes from observed traffic. That is exactly what EVPN later changes.
-        </Callout>
       </GuideSection>
 
-      <GuideSection id="pl-fault" eyebrow="Troubleshooting" title="The CE1 ↔ CE3 incident" tone="danger">
-        <DiagramFrame caption="Why CE1 ↔ CE2 and CE2 ↔ CE3 keep working while CE1 ↔ CE3 fails.">
-          <FaultDiagram />
-        </DiagramFrame>
-        <ChecklistCard
-          tone="danger"
-          mark="→"
-          title="How to reason about it (no spoilers)"
-          items={["Check transport, targeted LDP and ACs first.", "Then check every mesh leg individually.", "Ask why another PE can't simply relay the missing traffic.", "Verify with a real frame after repairing."]}
+      <GuideSection id="pl-working" eyebrow="Evidence" title="What working looks like" tone="success">
+        <FieldTable
+          title="Healthy, in five questions"
+          accent="success"
+          columns={["Question", "IOS XR", "Healthy answer"]}
+          rows={[
+            ["Is every site's AC in the bridge?", <Mono key="1">show l2vpn bridge-domain detail</Mono>, "AC up, VLAN ranges [100, 100]"],
+            ["Does every PE list every other PE?", <Mono key="2">show l2vpn bridge-domain</Mono>, "two neighbors, pw-id 500"],
+            ["Is every pseudowire up?", <Mono key="3">show l2vpn bridge-domain</Mono>, "PWs: 2 (2 up) on each PE"],
+            ["Are MACs learned where expected?", <Mono key="4">show l2vpn forwarding bridge-domain mac-address location 0/0/CPU0</Mono>, "local CE on the AC, the others behind their PE"],
+            ["Does every pair of sites work?", "fresh pings", "CE1↔CE2, CE1↔CE3, CE2↔CE3"],
+          ]}
         />
       </GuideSection>
 
-      <GuideSection id="pl-challenge" eyebrow="Challenge" title="Build the virtual LAN" tone="violet">
-        <p>The closing challenge is a checklist of what you demonstrated: transport, targeted LDP mesh, bridge contexts, full-mesh PWs with six labels, source learning, flooding, split horizon, known unicast, aging and the verified repair.</p>
+      <GuideSection id="pl-incident" eyebrow="Incident" title="The incident" tone="danger">
+        <DiagramFrame caption="PE1–PE3 is down; PE2 holds the other two pseudowires and may not relay.">
+          <FaultDiagram />
+        </DiagramFrame>
+        <p>After a cleanup of PE3&apos;s configuration, CE1 can&apos;t reach CE3. CE1 ↔ CE2 and CE2 ↔ CE3 work, so &quot;the VPLS is up&quot;.</p>
+        <PingResult s={VS_FAULT} title="The lab: CE1 pings 192.168.100.3 (the ticket)" />
+        <PingResult s={VS_FAULT_OK} title="The lab: CE1 pings 192.168.100.2 — still fine" />
+      </GuideSection>
+
+      <GuideSection id="pl-investigate" eyebrow="Incident" title="Walk the evidence" tone="danger">
+        <TroubleshootingFlow
+          steps={[
+            { question: "Which pairs fail?", look: "Only CE1 ↔ CE3." },
+            { question: "Are the attachment circuits in the bridge?", look: "Yes, on all three PEs." },
+            { question: "Does every PE list every other PE?", look: "PE3 lists only 2.2.2.2." },
+            { question: "What happens to the PE1–PE3 pseudowire?", look: "No targeted session: PE1's hellos to 3.3.3.3 go unanswered." },
+          ]}
+        />
+        <CliPanel run={vsOnly(VS_FAULT, "PE3", "cisco", "show l2vpn bridge-domain", /ACs: d|VFI VPLS|Neighbor/)} caption="IOS XR · PE3 — one neighbor only: 2.2.2.2" />
+        <CliPanel run={vsOnly(VS_FAULT, "PE1", "cisco", "show mpls ldp discovery", /Targeted|->/)} caption="IOS XR · PE1 — hellos to 3.3.3.3 sent, never answered" />
+        <CliPanel run={vsOnly(VS_FAULT_JN, "PE1", "juniper", "show vpls connections", /Instance|VPLS-id|Neighbor  |vpls-id 500\)/)} caption="Junos · PE1 — 3.3.3.3: OL, no outgoing label" />
+      </GuideSection>
+
+      <GuideSection id="pl-fix" eyebrow="Incident" title="Repair and prove it" tone="success">
+        <CliPair cisco={{ prompt: "RP/0/RP0/CPU0:PE3(config)#", command: "l2vpn", output: "RP/0/RP0/CPU0:PE3(config-l2vpn)#bridge group CUST-A\nRP/0/RP0/CPU0:PE3(config-l2vpn-bg)#bridge-domain VPLS-A\nRP/0/RP0/CPU0:PE3(config-l2vpn-bg-bd)#vfi VPLS-A\nRP/0/RP0/CPU0:PE3(config-l2vpn-bg-bd-vfi)#neighbor 1.1.1.1 pw-id 500\nRP/0/RP0/CPU0:PE3(config-l2vpn-bg-bd-vfi-pw)#commit" }} junos={{ prompt: "admin@PE3# ", command: "set routing-instances VPLS-A protocols vpls neighbor 1.1.1.1", output: "\n[edit]\nadmin@PE3# commit and-quit\ncommit complete\nExiting configuration mode" }} ciscoCaption="IOS XR · PE3" junosCaption="Junos · PE3" />
+        <PingResult s={VS_FIXED} title="The lab: a fresh ping after the fix" />
+        <ChecklistCard tone="success" title="Proved, not assumed" mark="✓" items={["PE3 lists both 1.1.1.1 and 2.2.2.2; all six pseudowire ends are up", "a fresh ping from CE1 reaches CE3 directly over PE1–PE3"]} />
+      </GuideSection>
+
+      <GuideSection id="pl-other" eyebrow="Beyond this incident" title="Other ways a VPLS fails" tone="warning">
+        <FailureSignatures
+          items={[
+            { tag: "ID", title: "Different VPLS ID", tone: "danger", points: ["one PE's pseudowires down", "that site isolated"] },
+            { tag: "MTU", title: "Different MTU", tone: "danger", points: ["remote labels known", "that PE's pseudowires down"] },
+            { tag: "VLAN", title: "AC on the wrong VLAN", tone: "violet", points: ["every pseudowire up", "one site silent"] },
+            { tag: "LSP", title: "Transport broken", tone: "warning", points: ["XR: PWs up, drops in the core", "Junos: PWs down"] },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Each is a ticket in the VPLS Lab, together with this incident.</p>
+      </GuideSection>
+
+      <GuideSection id="pl-model" eyebrow="Mental model" title="Mental model" tone="cyan">
+        <p>
+          Picture three office buildings, each with a receptionist (the PE) and direct phone lines to the other two receptionists (the full mesh). A visitor&apos;s envelope arrives addressed to someone: if the receptionist knows which building that person is in, it goes down that one line; if not, a copy goes down every line (flooding) — and every receptionist notes who sent what from where (learning). One rule keeps the envelopes from circling: a receptionist never passes an envelope that came in on one line out on another line (split horizon). So if the line between building 1 and building 3 is cut, nobody in building 2 will bridge the gap — buildings 1 and 3 simply can&apos;t reach each other.
+        </p>
+        <Callout tone="cyan" title="When it breaks, ask in this order" icon="→">
+          Which pairs of sites fail? Is every site&apos;s attachment circuit in the bridge? Does every PE list every other PE? Is every pseudowire up — same VPLS ID and MTU? Is the transport LSP complete?
+        </Callout>
       </GuideSection>
 
       <GuideSection id="pl-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
         <Glossary
           items={[
-            { term: "VPLS", def: "Virtual Private LAN Service: multipoint Ethernet over pseudowires." },
-            { term: "VSI", def: "Virtual Switching Instance: the per-PE bridge for one VPLS." },
-            { term: "FDB", def: "Forwarding database (MAC table) per PE." },
-            { term: "BUM", def: "Broadcast, Unknown unicast, Multicast: replicated traffic." },
-            { term: "Split horizon", def: "Mesh-PW ingress never leaves on another mesh PW." },
-            { term: "Full mesh", def: "A PW between every pair of PEs: n(n−1)/2." },
-            { term: "Aging", def: "Removing an FDB entry after a period without traffic." },
-            { term: "MAC move", def: "Relearning a MAC on a different port." },
+            { term: "VPLS", def: "Virtual Private LAN Service: multipoint Ethernet over an MPLS network." },
+            { term: "Bridge domain / VSI", def: "The per-customer Ethernet bridge on a PE (IOS XR bridge domain; Junos VPLS instance)." },
+            { term: "VFI", def: "IOS XR's virtual forwarding instance: the bridge domain's set of mesh pseudowires." },
+            { term: "VPLS ID", def: "The PW ID every pseudowire of the VPLS uses (LDP-signaled VPLS)." },
+            { term: "Full mesh", def: "A pseudowire between every pair of PEs: N(N−1)/2 of them." },
+            { term: "Split horizon", def: "A frame received on a mesh pseudowire is never sent out another one." },
+            { term: "BUM", def: "Broadcast, unknown unicast and multicast: the traffic a bridge floods." },
+            { term: "MAC aging", def: "Learned entries expire when not refreshed by traffic (300 s by default)." },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="pl-recap" eyebrow="Recap" title="Mental model" tone="mpls">
-        <div className="rounded-2xl border border-pv-mpls/30 bg-gradient-to-br from-pv-mpls/10 to-pv-violet/5 p-5 text-sm leading-relaxed text-pv-text">
-          VPLS is a distributed Ethernet switch. Each PE is one switch, its pseudowires are uplinks to every other PE, and the switches learn from traffic like any bridge. Unknown and broadcast frames are copied to every PE; learned MACs go to exactly one. Split horizon keeps copies from bouncing around the mesh, which is why the mesh must be full.
-        </div>
+      <GuideSection id="pl-recap" eyebrow="Reference" title="Recap" tone="success">
+        <ChecklistCard tone="success" title="You can now" mark="✓" items={["explain why VPLS bridges at the PEs", "count and read the pseudowire mesh", "follow learning, flooding and known unicast", "explain split horizon and the full mesh", "read the directional labels", "find, fix and prove a missing mesh member"]} />
       </GuideSection>
-    </>
+
+      <GuideSection id="pl-practice" eyebrow="Next" title="Practice it" tone="violet">
+        <p>The Deep Dive tab covers VPLS in full: the VSI and bridge domain, the cost of the full mesh, LDP signaling, the forwarding decision, BUM replication, loops and split horizon, aging and MAC moves, scaling limits, IOS XR and Junos configuration, and every failure signature with real evidence. The lab lets you operate it.</p>
+        <LessonLabBridge />
+        <PresentationBridge>Rewatch the VPLS presentation.</PresentationBridge>
+      </GuideSection>
+    </div>
   );
 }

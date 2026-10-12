@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -69,13 +69,18 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { DEVICE_ROUTERS, PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { EvolutionPresentation } from "./EvolutionPresentation";
+import { EvolutionLabWorkspace } from "./evo-lab/EvolutionLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { EVO_BRIEFING_NOTES, EVO_BRIEFING_PHASES } from "./briefing";
 import { EVO_LESSON_SECTIONS, EvoLessonGuideContent } from "./LessonGuideContent";
 import { EVO_DEEP_DIVE_SECTIONS, EvoDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "CUST-A · VPWS → VPLS → BGP-VPLS → H-VPLS → EVPN", sections: EVO_LESSON_SECTIONS, content: <EvoLessonGuideContent /> },
-  { id: "deep", label: "L2VPN Evolution Deep Dive", hint: "Five architectures compared factually", sections: EVO_DEEP_DIVE_SECTIONS, content: <EvoDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "CUST-A · five architectures, ending on EVPN-MPLS", sections: EVO_LESSON_SECTIONS, content: <EvoLessonGuideContent /> },
+  { id: "deep", label: "L2VPN Evolution Deep Dive", hint: "The five compared in depth · EVPN-MPLS on IOS XR and Junos", sections: EVO_DEEP_DIVE_SECTIONS, content: <EvoDeepDiveContent /> },
 ];
 
 type ViewMode = "physical" | "service";
@@ -123,6 +128,20 @@ export default function L2vpnEvolutionDemo() {
   const [xrayMode, setXrayMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the L2VPN Evolution Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -619,22 +638,38 @@ export default function L2vpnEvolutionDemo() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <Link href="/dashboard" className="text-sm text-pv-text-faint hover:text-pv-text">
           ← Dashboard
         </Link>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <Badge tone="violet">CUST-A · L2VPN Evolution Capstone</Badge>
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice L2VPN evolution" onOpen={openLab} />
           <LessonGuideButton onClick={() => setGuideOpen(true)} />
         </div>
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="L2VPN Evolution Capstone" subtitle="CUST-A · VPWS · LDP-VPLS · BGP-VPLS · H-VPLS · EVPN" tabs={GUIDE_TABS} />
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="L2VPN Evolution Capstone" subtitle="CUST-A · LDP VPLS → BGP VPLS → EVPN-MPLS · EVI 100 · RT 65000:100" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <EvolutionPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the L2VPN Evolution Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <EvolutionLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="L2VPN evolution" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "L2VPN Evolution Lab", buttonLabel: "Practice L2VPN evolution", description: "The CUST-A LAN of the VPLS labs, rebuilt with EVPN-MPLS: watch Type 3 routes build the flood lists and Type 2 routes carry every MAC, compare each step with LDP VPLS and BGP VPLS on the same routers, rebuild a PE and move the EVI to a new route target; open every router (IOS XR or Junos) and solve five tickets from evidence." }} contextNote={currentStep && ["evpn-mental-model", "evpn-type2-recap", "evpn-ce3-install", "evpn-bum-comparison", "architecture-comparison-table", "engineer-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <h1 className="mb-2 text-2xl font-bold text-pv-text">L2VPN Evolution: VPWS → VPLS → BGP-VPLS → H-VPLS → EVPN</h1>
       <p className="mb-6 text-sm text-pv-text-muted">If all five can provide a Layer-2 service, why do all five exist? One customer, five architectures, compared on the same questions every time.</p>
 
       {/* Step rail */}
-      <div className="mb-6 flex gap-1">
+      <div className="mb-6 flex gap-px sm:gap-1">
         {l2vpnEvolutionSteps.map((step, i) => (
           <button
             key={step.id}
@@ -642,7 +677,7 @@ export default function L2vpnEvolutionDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-1 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 min-w-0 flex-1 rounded-full transition-colors sm:min-w-1", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -656,8 +691,8 @@ export default function L2vpnEvolutionDemo() {
           <Button onClick={handleRestart}>Restart Lesson</Button>
         </GlassPanel>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
-          <div className="space-y-5">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
+          <div className="min-w-0 space-y-5">
             {/* Narrative */}
             {currentStep && briefing && (
               <MissionBriefingCard
@@ -688,7 +723,9 @@ export default function L2vpnEvolutionDemo() {
 
             {/* Toolbar */}
             <div className="flex flex-wrap items-center gap-3">
-              <TopologyModeSwitcher options={ARCHITECTURES.map((a) => ({ value: a, label: ARCHITECTURE_LABEL[a] }))} value={selectedArchitecture} onChange={(v) => setSelectedArchitecture(v as Architecture)} tone="cyan" />
+              <div className="max-w-full overflow-x-auto">
+                <TopologyModeSwitcher options={ARCHITECTURES.map((a) => ({ value: a, label: ARCHITECTURE_LABEL[a] }))} value={selectedArchitecture} onChange={(v) => setSelectedArchitecture(v as Architecture)} tone="cyan" />
+              </div>
               {showServiceToggle && <TopologyModeSwitcher options={[{ value: "physical", label: "BGP Control" }, { value: "service", label: "Service Mesh" }]} value={viewMode} onChange={(v) => setViewMode(v as ViewMode)} tone="violet" />}
               <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => handleView3DChange(v === "on")} tone="violet" />
               {viewMode3D && (

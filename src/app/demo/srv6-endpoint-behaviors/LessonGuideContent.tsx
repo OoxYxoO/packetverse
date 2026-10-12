@@ -1,24 +1,75 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DNode, DiagramFrame, DiagramSvg, FieldTable, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DNode, DiagramFrame, DiagramSvg, FailureSignatures, FieldTable, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { DHeaderColumn, SRV6_HEX_POS, Srv6Topology, type Srv6Link } from "@/components/lesson/Srv6GuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import { DOC, createEbNet, ebApply, ebTicket, ebTicketState, type EbAction, type EbR, type EbRtr, type EbState } from "@/lib/sim-engine/scenarios/ebNet";
+import { ebSets, ebStaticApi } from "./eb-lab/ebCli";
 
 export const SRV6E_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "le-mission", label: "The mission" },
-  { id: "le-families", label: "Two behavior families" },
-  { id: "le-tables", label: "R3 and R6 Local SID Tables" },
-  { id: "le-three", label: "End, End.X and End.T" },
-  { id: "le-endx", label: "What End.X really changes" },
-  { id: "le-outer", label: "Outer vs inner packet" },
-  { id: "le-final", label: "The final-segment rule" },
-  { id: "le-dxdt", label: "DX vs DT" },
-  { id: "le-dx2", label: "End.DX2" },
-  { id: "le-stage", label: "Reading the R6 packet stage" },
-  { id: "le-fault", label: "The wrong-CE incident" },
-  { id: "le-challenge", label: "Program the endpoint" },
-  { id: "le-mistakes", label: "Common mistakes" },
-  { id: "le-glossary", label: "Glossary" },
-  { id: "le-recap", label: "Mental model" },
+  { id: "bl-mission", label: "What this lesson teaches" },
+  { id: "bl-network", label: "The network of this lesson" },
+  { id: "bl-ideas", label: "Three ideas you need" },
+  { id: "bl-table", label: "One table, many behaviors" },
+  { id: "bl-endx", label: "End vs End.X" },
+  { id: "bl-endt", label: "End.T, briefly" },
+  { id: "bl-decap", label: "Outer and inner packet" },
+  { id: "bl-dt", label: "End.DT4 and End.DT6" },
+  { id: "bl-rules", label: "The rules of the last segment" },
+  { id: "bl-dx", label: "End.DX4: cross-connect" },
+  { id: "bl-dx2", label: "End.DX2, briefly" },
+  { id: "bl-incident", label: "The wrong-customer incident" },
+  { id: "bl-working", label: "What working looks like" },
+  { id: "bl-other", label: "Other ways it fails" },
+  { id: "bl-model", label: "Mental model" },
+  { id: "bl-glossary", label: "Glossary" },
+  { id: "bl-recap", label: "Recap" },
+  { id: "bl-practice", label: "Practice it" },
 ];
+
+/** Real IOS XR output and test results on this page come from the SRv6 Endpoint Behaviors Lab. */
+const E0: EbState = createEbNet(0);
+const run = (s: EbState, ...a: EbAction[]) => a.reduce((acc, x) => ebApply(acc, x), s);
+const set = (text: string, changes: { dev: EbR; f: (c: EbRtr) => void }[]): EbAction => ({ type: "set", text, changes });
+const send = (sids: string[], inner: string): EbAction => ({ type: "send", sids, inner });
+const VIA_END = run(E0, send([DOC.endR3, DOC.dt4], "10.10.2.8"));
+const VIA_X = run(E0, send([DOC.endXR3R4, DOC.dt4], "10.10.2.8"));
+const DT4B = run(E0, send([DOC.dt4], "10.10.2.8"));
+const DT4A = run(E0, send([DOC.dt4], "10.10.1.8"));
+const DT6 = run(E0, send([DOC.dt6], "2001:db8:c6::6"));
+const NOTLAST = run(E0, send([DOC.dt4, DOC.endR3], "10.10.2.8"));
+const FAMILY = run(E0, send([DOC.dt6], "10.10.2.8"));
+const PERCE = run(E0, set("per-ce", [{ dev: "R6", f: (c) => void (c.vrfs.CUST4!.mode = "per-ce") }]));
+const DXB = run(PERCE, send(["2001:db8:100:6:43::"], "10.10.2.8"));
+const INC = ebTicket("perce").repro.reduce((acc, a) => ebApply(acc, a), ebTicketState("perce", 0));
+const INC_FIX = run(INC, set("per-vrf", [{ dev: "R6", f: (c) => void (c.vrfs.CUST4!.mode = "per-vrf") }]), send([DOC.dt4], "10.10.2.8"));
+export function ebCli(s: EbState, r: EbR, command: string) {
+  return runGuideCli(ebSets(ebStaticApi(s, r), r).cisco, command);
+}
+export function ebOnly(s: EbState, r: EbR, command: string, match: RegExp, keep = 0) {
+  const x = ebCli(s, r, command);
+  return { ...x, output: pickLines(x.output, match, keep) };
+}
+/** One test, as the lab reports it. */
+export function EbResult({ s, title }: { s: EbState; title: string }) {
+  const t = s.tests[s.tests.length - 1];
+  return (
+    <Callout tone={t.ok ? "success" : "danger"} title={title} icon={t.ok ? "✓" : "!"}>
+      H1 → {t.inner} via [{t.sids.join(", ")}]: {t.ok ? `delivered to ${t.deliveredTo} via ${t.path.join(" → ")}` : t.why}
+    </Callout>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the SRv6 Endpoint Behaviors Lab" onPractice={openLab}>
+      The network of this lesson on IOS XR: End, End.X and R6&apos;s service SIDs, test traffic to three customers, VRFs you can change, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
 
 const BASE: Srv6Link[] = [
   { a: "R1", b: "R2", label: "10" },
@@ -161,166 +212,169 @@ function StageDiagram() {
   );
 }
 
+
 export function Srv6EndpointLessonGuideContent() {
   return (
-    <>
-      <GuideSection id="le-mission" eyebrow="Introduction" title="The mission: what happens after the SID is reached" tone="ip">
+    <div className="space-y-12">
+      <GuideSection id="bl-mission" eyebrow="This lesson" title="What this lesson teaches" tone="mpls">
         <p>
-          SRv6 Foundations gave R3 one End SID. Here R3 and R6 get several SIDs under the same locator, each bound to a different behavior, and every behavior is proven with a real packet.
+          In SRv6 Foundations every SID meant the same thing: End — “move on to the next segment”. But a SID is an instruction, and the instruction is whatever the owning node bound to it. This lesson opens R6&apos;s local SID table and finds SIDs that steer through a chosen link, SIDs that hand a packet to a VRF, and SIDs that hand it straight to one customer.
         </p>
-        <Callout tone="cyan" title="Scope of this simulation" icon="i">
-          Eight behaviors are implemented: End, End.X, End.T, End.DX6, End.DX4, End.DT6, End.DT4 and End.DX2. Flavors (PSP/USP/USD), End.DT46, the L2 table behaviors and End.B6.Encaps are named as previews only.
-        </Callout>
+        <p>You will compare End with End.X on the same path, watch R6 decapsulate and look packets up in two VRFs, break the rules that make decapsulation safe — and end with the guided lesson&apos;s incident, where a packet for one customer is delivered, flawlessly, to another.</p>
+        <ChecklistCard tone="violet" title="By the end of this lesson you can" mark="→" items={["read a local SID table and say what each behavior does", "tell End from End.X and use End.X to steer", "explain End.DT4/DT6: decapsulate and look up", "explain End.DX4: decapsulate and cross-connect", "apply the last-segment and family rules", "find a service-SID fault from evidence, fix it and prove it"]} />
       </GuideSection>
 
-      <GuideSection id="le-families" eyebrow="Concepts" title="Two behavior families" tone="violet">
-        <DiagramFrame caption="The bound behavior — never the address alone — decides what happens next.">
-          <FamiliesDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="le-tables" eyebrow="Local SID state" title="R3 and R6 Local SID Tables" tone="ip">
-        <FieldTable
-          title="Instantiated SIDs (locator 2001:db8:100:N::/64, 16-bit function)"
-          accent="ip"
-          columns={["SID", "Behavior", "Parameter"]}
-          rows={[
-            [<Mono key="1">2001:db8:100:3:1::</Mono>, "End", "—"],
-            [<Mono key="2">2001:db8:100:3:2::</Mono>, "End.X", "adjacency R4"],
-            [<Mono key="3">2001:db8:100:3:3::</Mono>, "End.T", "IPv6 table CORE-B"],
-            [<Mono key="4">2001:db8:100:6:1::</Mono>, "End", "—"],
-            [<Mono key="5">2001:db8:100:6:10::</Mono>, "End.DX6", "adjacency CE6"],
-            [<Mono key="6">2001:db8:100:6:11::</Mono>, "End.DX4", "adjacency CE4-A"],
-            [<Mono key="7">2001:db8:100:6:12::</Mono>, "End.DT6", "table VRF-CUST6"],
-            [<Mono key="8">2001:db8:100:6:13::</Mono>, "End.DT4", "table VRF-CUST4"],
-            [<Mono key="9">2001:db8:100:6:15::</Mono>, "End.DX2", "OIF ge-0/0/7 → CE-L2"],
-          ]}
-        />
-        <p>
-          Function <Mono>0x14</Mono> is reserved for End.DT46 and never instantiated. The table shows the healthy starting state; always read the live Local SID Table tab in Device Explorer.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="le-three" eyebrow="Data plane" title="End, End.X and End.T against one next segment" tone="warning">
-        <DiagramFrame caption="Policies A, B and C all end at R6's End SID. The topology adds R3-R4 (metric 20).">
-          <ThreeBehaviorsDiagram />
-        </DiagramFrame>
-        <FlowSteps
-          steps={[
-            { title: "Policy A · End", body: "R1 → R2 → R3 → R6.", tone: "success" },
-            { title: "Policy B · End.X", body: "R3 sends out its bound adjacency to R4: R1 → R2 → R3 → R4 → R5 → R6.", tone: "warning" },
-            { title: "Policy C · End.T", body: "R3 looks up R6's locator in CORE-B (no R3-R6 link): same R3 → R4 → R5 → R6.", tone: "ospf" },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="le-endx" eyebrow="Accuracy" title="What End.X really changes" tone="warning">
-        <CompareCards
-          items={[
-            { title: "Changes", tone: "warning", tag: "End.X", points: ["The outgoing adjacency (R3 → R4)", "Nothing about the next DA"] },
-            { title: "Does not change", tone: "success", tag: "same as End", points: ["SL 1 → 0", "DA ← next SID (R6 End)", "The DA never becomes R4's address"] },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="le-outer" eyebrow="Service behaviors" title="Outer vs inner packet" tone="violet">
-        <DiagramFrame caption="Two different namespaces in one packet.">
-          <OuterInnerDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="le-final" eyebrow="Service behaviors" title="The final-segment rule" tone="danger">
-        <p>
-          Service behaviors are modeled as final-segment behaviors. When an SRH is present, SL must be 0 when the service SID is active. The lesson&apos;s deliberately wrong program ⟨R6 End.DT4, R3 End⟩ reaches R6 with SL 1 and is rejected as <Mono>INVALID_FINAL_SEGMENT</Mono>: no decapsulation, no lookup.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="le-dxdt" eyebrow="Service behaviors" title="DX vs DT" tone="violet">
-        <DiagramFrame caption="X = cross-connect, T = table lookup.">
-          <DxDtDiagram />
-        </DiagramFrame>
-        <FieldTable
-          title="What the lesson sends"
-          accent="violet"
-          columns={["Service SID", "Inner packet", "Outcome"]}
-          rows={[
-            ["End.DX6", "IPv6 to 2001:db8:cafe:6::b", "Cross-connected to CE6"],
-            ["End.DX4", "IPv4 to 10.10.1.5", "Cross-connected to CE4-A"],
-            ["End.DT6", "IPv6 to 2001:db8:cafe:6::b", "VRF-CUST6 lookup → CE6"],
-            ["End.DT4", "IPv4 to 10.10.1.5", "VRF-CUST4: 10.10.1.0/24 → CE4-A"],
-            ["End.DT4 (same SID)", "IPv4 to 10.10.2.8", "VRF-CUST4: 10.10.2.0/24 → CE4-B"],
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="le-dx2" eyebrow="Service behaviors" title="End.DX2" tone="ethernet">
-        <p>
-          The inner payload is an Ethernet frame (CE-A-MAC → CE-B-MAC). End.DX2 removes the outer IPv6 header and sends the frame out the bound interface <Mono>ge-0/0/7</Mono> toward CE-L2 — no MAC learning, no bridge table, no flooding. VLAN-aware and MAC-table behaviors (End.DX2V, End.DT2U, End.DT2M) are previews.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="le-stage" eyebrow="Reading the UI" title="Reading the R6 packet stage" tone="cyan">
-        <DiagramFrame caption="What a service step's packet visual means.">
+      <GuideSection id="bl-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="The hexagon, the R3–R4 cross-link, and R6's customers.">
           <StageDiagram />
         </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="le-fault" eyebrow="Troubleshooting" title="The wrong-CE incident" tone="danger">
-        <ChecklistCard
-          tone="danger"
-          title="How to reason about it (no spoilers)"
-          mark="→"
-          items={[
-            "List what the incident says is healthy — take it at its word, then verify.",
-            "Follow the packet to the router where the outcome diverges.",
-            "At that router, read every table that could decide the outcome: FIB, Local SID Table, VRFs.",
-            "For each candidate cause, predict what the packet would do — and compare with what you observed.",
-            "After a fix, resend the same packet and confirm which CE it reaches.",
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="le-challenge" eyebrow="Challenge" title="Program the endpoint" tone="violet">
-        <p>
-          Four requirements, one behavior each. For every requirement, ask: does the packet keep moving as SRv6 or get decapsulated? If it keeps moving, is a specific adjacency or a specific table needed? If it is decapsulated, what is the payload family, and is the neighbor fixed or chosen by a lookup? Each answer was already proven by a packet in this lesson.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="le-mistakes" eyebrow="Troubleshooting" title="Common mistakes" tone="warning">
-        <ChecklistCard
-          tone="warning"
-          title="Avoid these"
-          mark="!"
-          items={[
-            "Describing End.X as rewriting the DA to the neighbor's address.",
-            "Confusing End.T (no decap) with End.DT6 (decap + lookup).",
-            "Expecting a DX behavior to consult a VRF.",
-            "Executing a service SID while SL > 0.",
-            "Treating behavior names as cosmetic labels.",
-            "Reading the pre-decap R6 packet as already delivered.",
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="le-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
-        <Glossary
-          items={[
-            { term: "End.X", def: "End plus a forced L3 adjacency — the SRv6 analog of an Adj-SID." },
-            { term: "End.T", def: "End plus a lookup in a specific IPv6 table; no decapsulation." },
-            { term: "End.DX6 / DX4", def: "Decapsulate and cross-connect the IPv6 / IPv4 payload to a fixed neighbor." },
-            { term: "End.DT6 / DT4", def: "Decapsulate and look the payload up in a bound table." },
-            { term: "End.DX2", def: "Decapsulate and send the Ethernet frame out a bound interface." },
-            { term: "Final segment", def: "Active segment with SL = 0 (or no SRH)." },
-            { term: "CORE-B", def: "This lesson's second IPv6 table at R3, excluding the R3-R6 link." },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="le-recap" eyebrow="Recap" title="Mental model" tone="success">
-        <Callout tone="success" title="One sentence" icon="✓">
-          The SID gets the packet to an instruction; the behavior bound in the owner&apos;s Local SID Table defines the instruction — keep moving, force a link, change tables, or remove the outer header and deliver what is inside.
+        <p>The SRv6 Foundations hexagon plus a cross-link R3–R4 (metric 20 — no shortest path uses it). R6 is the service node: <b className="text-pv-text">VRF CUST4</b> with CE4-A (10.10.1.8) and CE4-B (10.10.2.8), and <b className="text-pv-text">VRF CUST6</b> with CE6 (2001:db8:c6::6). R1 encapsulates H1&apos;s test packets with any segment list.</p>
+        <Callout tone="cyan" title="IOS XR in the lab" icon="i">
+          The lab runs IOS XR on every router: IS-IS allocates End and End.X; on R6, BGP allocates the VRF service SIDs (<Mono>segment-routing srv6 locator MAIN alloc mode per-vrf | per-ce</Mono> under each VRF address family).
         </Callout>
       </GuideSection>
-    </>
+
+      <GuideSection id="bl-ideas" eyebrow="This lesson" title="Three ideas you need" tone="violet">
+        <CompareCards
+          items={[
+            { title: "Transit behaviors", tone: "mpls", tag: "End, End.X", points: ["move to the next segment", "route, or use a chosen link"] },
+            { title: "Decapsulation", tone: "violet", tag: "DT, DX", points: ["end the SRv6 journey", "hand the inner packet on"] },
+            { title: "The rules", tone: "warning", tag: "safety", points: ["last segment only", "the right inner family"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="bl-table" eyebrow="The table" title="One table, many behaviors" tone="mpls">
+        <DiagramFrame caption="Transit family on R3, service family on R6.">
+          <FamiliesDiagram />
+        </DiagramFrame>
+        <p>R6&apos;s local SID table holds five SIDs under one locator. IS-IS allocated End and the two End.X (one per adjacency); BGP allocated End.DT4 for CUST4 and End.DT6 for CUST6. The function bits are just numbers — the table is what gives them meaning.</p>
+        <CliPanel run={ebCli(E0, "R6", "show segment-routing srv6 sid")} caption="IOS XR · R6 — End, End.X, End.DT4 ('CUST4'), End.DT6 ('CUST6')" />
+      </GuideSection>
+
+      <GuideSection id="bl-endx" eyebrow="Moving on" title="End vs End.X" tone="success">
+        <DiagramFrame caption="Same rewrite, different exit.">
+          <ThreeBehaviorsDiagram />
+        </DiagramFrame>
+        <p>With <Mono>[R3 End, CUST4 SID]</Mono> R3 moves to the next segment and routes toward R6&apos;s locator — the direct link. With <Mono>[R3 End.X → R4, CUST4 SID]</Mono> the rewrite is identical, but R3 sends the packet out of its link to R4. End.X is SRv6&apos;s Adjacency SID: steering by a link rather than by routing.</p>
+        <EbResult s={VIA_END} title="The lab: via R3's End" />
+        <EbResult s={VIA_X} title="The lab: via R3's End.X toward R4" />
+      </GuideSection>
+
+      <GuideSection id="bl-endt" eyebrow="Moving on" title="End.T, briefly" tone="cyan">
+        <p>RFC 8986 also defines <b className="text-pv-text">End.T</b>: move to the next segment, but look the new destination up in a specific IPv6 table instead of the main one. The guided lesson uses it to route around the R3–R6 link. It is rarely deployed and IOS XR does not allocate it, so the lab sticks to End and End.X.</p>
+      </GuideSection>
+
+      <GuideSection id="bl-decap" eyebrow="Leaving SRv6" title="Outer and inner packet" tone="violet">
+        <DiagramFrame caption="The outer header carries the program; the inner packet is the customer's.">
+          <OuterInnerDiagram />
+        </DiagramFrame>
+        <p>Every packet R1 sends is a customer packet inside an outer IPv6 header. Transit behaviors work on the outer header only. Service behaviors <b className="text-pv-text">decapsulate</b> — remove the outer header (and any SRH) — and then decide what to do with the customer&apos;s packet.</p>
+      </GuideSection>
+
+      <GuideSection id="bl-dt" eyebrow="Leaving SRv6" title="End.DT4 and End.DT6" tone="success">
+        <p><b className="text-pv-text">End.DT4</b>: decapsulate, look the inner IPv4 packet up in the VRF the SID belongs to. The same CUST4 SID reaches CE4-B for 10.10.2.8 and CE4-A for 10.10.1.8 — the lookup chose the customer. <b className="text-pv-text">End.DT6</b> does the same for IPv6.</p>
+        <EbResult s={DT4B} title="The lab: CUST4 SID, inner 10.10.2.8" />
+        <EbResult s={DT4A} title="The lab: CUST4 SID, inner 10.10.1.8" />
+        <EbResult s={DT6} title="The lab: CUST6 SID, inner 2001:db8:c6::6" />
+        <CliPanel run={ebCli(E0, "R6", "show segment-routing srv6 sid 2001:db8:100:6:42:: detail")} caption="IOS XR · R6 — End.DT4 bound to VRF CUST4's IPv4 table" />
+      </GuideSection>
+
+      <GuideSection id="bl-rules" eyebrow="The rules" title="The rules of the last segment" tone="danger">
+        <p>Decapsulation ends the SRv6 journey, so a DT or DX SID is only valid as the <b className="text-pv-text">last segment</b> — Segments Left 0. And the behavior defines the lookup, so the inner packet must be the right <b className="text-pv-text">family</b>: IPv4 for DT4/DX4, IPv6 for DT6/DX6 (End.DT46 accepts both).</p>
+        <EbResult s={NOTLAST} title="The lab: [CUST4 SID, R3 End]" />
+        <EbResult s={FAMILY} title="The lab: CUST6 SID with an IPv4 packet inside" />
+      </GuideSection>
+
+      <GuideSection id="bl-dx" eyebrow="Cross-connect" title="End.DX4: cross-connect" tone="warning">
+        <DiagramFrame caption="DT looks up; DX sends.">
+          <DxDtDiagram />
+        </DiagramFrame>
+        <p>With <Mono>alloc mode per-ce</Mono> BGP allocates one <b className="text-pv-text">End.DX4</b> per CE instead of one End.DT4 per VRF: decapsulate and send to that CE, without any lookup. The headend picks the customer by picking the SID. Because these SIDs are dynamic, switching modes renumbered R6&apos;s table.</p>
+        <CliPanel run={ebCli(PERCE, "R6", "show segment-routing srv6 sid")} caption="IOS XR · R6 with CUST4 per-ce — End.DX4 toward each CE, End.DT6 moved to …:44::" />
+        <EbResult s={DXB} title="The lab: CE4-B's DX SID, inner 10.10.2.8" />
+      </GuideSection>
+
+      <GuideSection id="bl-dx2" eyebrow="Cross-connect" title="End.DX2, briefly" tone="cyan">
+        <p><b className="text-pv-text">End.DX2</b> is the Layer-2 cross-connect: decapsulate and send the inner Ethernet frame out of an attachment circuit — the data plane of SRv6 EVPN VPWS. The guided lesson shows it; configuring it needs EVPN, which a later lesson covers.</p>
+      </GuideSection>
+
+      <GuideSection id="bl-incident" eyebrow="Incident" title="The wrong-customer incident" tone="danger">
+        <p>In the guided lesson, R6&apos;s service SID was bound to End.DX4 toward CE4-A where End.DT4 for CUST4 was intended: a packet for 10.10.2.8 was decapsulated and handed to CE4-A. In the lab the same thing happens for a realistic reason: a BGP template switched VRF CUST4 to per-CE allocation, the dynamic SIDs were renumbered, and the documented CUST4 SID became CE4-A&apos;s End.DX4.</p>
+        <EbResult s={INC} title="The lab: the documented CUST4 SID, inner 10.10.2.8 (the ticket)" />
+        <TroubleshootingFlow
+          steps={[
+            { question: "Did the packet reach R6?", look: "Yes — transit was healthy." },
+            { question: "What is …:6:42:: now?", look: "End.DX4 toward CE4-A — no longer End.DT4." },
+            { question: "Was the final-segment check fine?", look: "Yes: it was the only segment. The behavior itself is the problem." },
+            { question: "Why did it change?", look: "VRF CUST4: alloc mode per-ce." },
+          ]}
+        />
+        <CliPanel run={ebOnly(INC, "R6", "show running-config router bgp", /^router bgp|vrf CUST4|address-family ipv4|alloc mode per-ce/)} caption="IOS XR · R6 — VRF CUST4 allocates per CE" />
+        <CliPanel run={{ prompt: "RP/0/RP0/CPU0:R6(config)#", command: "router bgp 65000 vrf CUST4 address-family ipv4 unicast segment-routing srv6", output: "RP/0/RP0/CPU0:R6(config-bgp-vrf-af-srv6)#alloc mode per-vrf\nRP/0/RP0/CPU0:R6(config-bgp-vrf-af-srv6)#commit" }} caption="IOS XR · R6 — the repair" />
+        <EbResult s={INC_FIX} title="The lab: a fresh test after the fix" />
+        <ChecklistCard tone="success" title="Proved, not assumed" mark="✓" items={["…:6:42:: is End.DT4 for CUST4 again", "the same packet for 10.10.2.8 reaches CE4-B", "the lesson: read the live SID table — dynamic SIDs move"]} />
+      </GuideSection>
+
+      <GuideSection id="bl-working" eyebrow="Evidence" title="What working looks like" tone="success">
+        <FieldTable
+          title="Healthy, in five questions (IOS XR)"
+          accent="success"
+          columns={["Question", "Command", "Healthy answer"]}
+          rows={[
+            ["Which SIDs, which behaviors?", <Mono key="1">show segment-routing srv6 sid</Mono>, "End, End.X, End.DT4 'CUST4', End.DT6 'CUST6'"],
+            ["What is behind a service SID?", <Mono key="2">show segment-routing srv6 sid &lt;sid&gt; detail</Mono>, "the VRF table (DT) or the CE (DX)"],
+            ["What does the VRF allocate?", <Mono key="3">show bgp vrf CUST4 ipv4 unicast</Mono>, "locator MAIN, per-vrf"],
+            ["What is in the VRF?", <Mono key="4">show route vrf CUST4</Mono>, "10.10.1.0/24 and 10.10.2.0/24"],
+            ["Does it work?", "a test from R1", "delivered to the right CE"],
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="bl-other" eyebrow="Beyond this incident" title="Other ways it fails" tone="warning">
+        <FailureSignatures
+          items={[
+            { tag: "AF", title: "VRF without SRv6", tone: "danger", points: ["no service SID", "dropped at R6"] },
+            { tag: "VRF", title: "CE out of its VRF", tone: "warning", points: ["DT runs", "no route in the VRF"] },
+            { tag: "X", title: "End.X adjacency down", tone: "violet", points: ["End.X SID withdrawn", "dropped at R3"] },
+            { tag: "LOC", title: "Missing locator name", tone: "danger", points: ["no SID for that VRF", "the others shift"] },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Each is a ticket in the SRv6 Endpoint Behaviors Lab, together with this incident.</p>
+      </GuideSection>
+
+      <GuideSection id="bl-model" eyebrow="Mental model" title="Mental model" tone="cyan">
+        <p>
+          Think of R6 as a building with a reception desk and a list of extension numbers (the local SID table). Some extensions just forward the caller to the next number on their list (End), some forward through one particular corridor (End.X). Others end the call at the building: one extension connects you to the switchboard of a company that looks up the right desk for you (End.DT), another rings one desk directly, whoever you asked for (End.DX). If somebody quietly renumbers the extensions, callers using last year&apos;s directory still get through — to the wrong desk.
+        </p>
+        <Callout tone="cyan" title="When it breaks, ask in this order" icon="→">
+          Where did the packet die, or who got it? Does every SID exist, and which behavior is it? Is the service SID last? Does the family match? What does the VRF allocate, and what is in it? Are the End.X adjacencies up?
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="bl-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
+        <Glossary
+          items={[
+            { term: "End", def: "Move to the next segment and route on it." },
+            { term: "End.X", def: "Move to the next segment and send out a given adjacency." },
+            { term: "End.T", def: "Move to the next segment and look it up in a given table." },
+            { term: "End.DT4 / DT6 / DT46", def: "Decapsulate and look the inner packet up in a VRF." },
+            { term: "End.DX4 / DX6", def: "Decapsulate and send the inner packet to one CE." },
+            { term: "End.DX2", def: "Decapsulate and send the inner frame out an L2 attachment circuit." },
+            { term: "alloc mode per-vrf / per-ce", def: "IOS XR: one DT SID per VRF, or one DX SID per CE." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="bl-recap" eyebrow="Reference" title="Recap" tone="success">
+        <ChecklistCard tone="success" title="You can now" mark="✓" items={["read a local SID table", "steer with End.X", "explain DT and DX", "apply the last-segment and family rules", "explain why dynamic SIDs move", "find, fix and prove a service-SID fault"]} />
+      </GuideSection>
+
+      <GuideSection id="bl-practice" eyebrow="Next" title="Practice it" tone="violet">
+        <p>The Deep Dive tab covers the endpoint behaviors of RFC 8986 in full: the processing pipeline, the next-hop treatment of End, End.X and End.T, the decapsulation family, flavors, how IOS XR allocates each behavior, configuration and verification, and every failure signature with real evidence. The lab lets you send the packets.</p>
+        <LessonLabBridge />
+        <PresentationBridge>Rewatch the SRv6 Endpoint Behaviors presentation.</PresentationBridge>
+      </GuideSection>
+    </div>
   );
 }

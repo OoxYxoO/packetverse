@@ -1,24 +1,99 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DNode, DPill, DiagramFrame, DiagramSvg, FieldTable, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DNode, DPill, DiagramFrame, DiagramSvg, FailureSignatures, FieldTable, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { DHeaderColumn, Srv6Topology, type Srv6Pos } from "@/components/lesson/Srv6GuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import { createSvNet, svApply, svTicket, svTicketState, type Src, type SvAction, type SvR, type SvRtr, type SvState, type SvTicketId } from "@/lib/sim-engine/scenarios/svNet";
+import { svSets, svStaticApi } from "./sv-lab/svCli";
 
 export const SRV6L_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "ll-mission", label: "The mission" },
-  { id: "ll-topology", label: "Topology and roles" },
-  { id: "ll-identities", label: "Two PE identities" },
-  { id: "ll-vrf", label: "VRF, RD and RT" },
-  { id: "ll-sids", label: "Per-VRF Service SIDs" },
-  { id: "ll-route", label: "Anatomy of the VPN route" },
-  { id: "ll-install", label: "PE1's install checks" },
-  { id: "ll-dataplane", label: "CE1 → CE2 across the core" },
-  { id: "ll-shared", label: "One SID, two CEs" },
-  { id: "ll-reverse", label: "Reverse direction and IPv6" },
-  { id: "ll-labs", label: "Labs and previews" },
-  { id: "ll-fault", label: "The broken-service incident" },
-  { id: "ll-mistakes", label: "Common mistakes" },
-  { id: "ll-glossary", label: "Glossary" },
-  { id: "ll-recap", label: "Mental model" },
+  { id: "vl-mission", label: "What this lesson teaches" },
+  { id: "vl-network", label: "The network of this lesson" },
+  { id: "vl-ideas", label: "Three ideas you need" },
+  { id: "vl-watch", label: "What you will watch" },
+  { id: "vl-vrf", label: "Two customers, one core" },
+  { id: "vl-identities", label: "Two addresses per PE" },
+  { id: "vl-route", label: "A customer route becomes a VPN route" },
+  { id: "vl-sid", label: "The service SID" },
+  { id: "vl-install", label: "PE1's three checks" },
+  { id: "vl-packet", label: "One packet, CE1 to CE2" },
+  { id: "vl-shared", label: "One SID, two sites" },
+  { id: "vl-v6", label: "IPv6: its own family" },
+  { id: "vl-policy", label: "With an SRv6 policy, briefly" },
+  { id: "vl-working", label: "What working looks like" },
+  { id: "vl-incident", label: "The broken-service incident" },
+  { id: "vl-repair", label: "Repair and proof" },
+  { id: "vl-other", label: "Other ways it breaks" },
+  { id: "vl-model", label: "Mental model" },
+  { id: "vl-glossary", label: "Glossary" },
+  { id: "vl-recap", label: "Recap" },
+  { id: "vl-practice", label: "Practice it" },
 ];
+
+/** Real IOS XR output and ping results on this page come from the SRv6 L3VPN Lab. */
+const NL = String.fromCharCode(10);
+const V0: SvState = createSvNet(0);
+const run = (s: SvState, ...a: SvAction[]) => a.reduce((acc, x) => svApply(acc, x), s);
+const ping = (src: Src, to: string): SvAction => ({ type: "ping", src, to });
+export const svSet = (text: string, dev: SvR, f: (c: SvRtr) => void): SvAction => ({ type: "set", text, changes: [{ dev, f }] });
+export const svTicketRun = (id: SvTicketId) => svTicket(id).repro.reduce((acc, a) => svApply(acc, a), svTicketState(id, 1));
+const CE1 = { ce: "CE1" } as const;
+const P_A = run(V0, ping(CE1, "10.20.1.10"));
+const P_B = run(V0, ping({ ce: "CE4" }, "10.20.1.10"));
+const P_LEAK = run(V0, ping({ ce: "CE4" }, "10.20.2.10"));
+const P_CE3 = run(V0, ping(CE1, "10.20.2.10"));
+const P_V6 = run(V0, ping(CE1, "2001:db8:ca:20::a"));
+const INC = svTicketRun("locator");
+const INC_FIX = run(INC, svSet("restore locator", "PE2", (c) => void (c.isisLoc = true)), ping(CE1, "10.20.1.10"), ping(CE1, "2001:db8:ca:20::a"));
+const INC_V6 = run(INC, ping(CE1, "2001:db8:ca:20::a"));
+export function svCli(s: SvState, r: SvR, command: string) {
+  return runGuideCli(svSets(svStaticApi(s, r), r).cisco, command);
+}
+export function svOnly(s: SvState, r: SvR, command: string, match: RegExp, keep = 0) {
+  const x = svCli(s, r, command);
+  return { ...x, output: pickLines(x.output, match, keep) };
+}
+/** Matching lines, each with the `after` lines that follow it (two-line IOS XR route entries). */
+export function svWith(s: SvState, r: SvR, command: string, match: RegExp, after = 1) {
+  const x = svCli(s, r, command);
+  const lines = x.output.split(NL);
+  const keep = new Set<number>();
+  lines.forEach((l, i) => {
+    if (match.test(l)) for (let k = 0; k <= after; k++) keep.add(i + k);
+  });
+  return { ...x, output: lines.filter((_l, i) => keep.has(i)).join(NL) };
+}
+/** Lines from the first match of `from` up to (not including) the first later match of `stop`. */
+export function svBlock(s: SvState, r: SvR, command: string, from: RegExp, stop?: RegExp) {
+  const x = svCli(s, r, command);
+  const lines = x.output.split(NL);
+  const i = lines.findIndex((l) => from.test(l));
+  if (i < 0) return x;
+  let j = stop ? lines.findIndex((l, k) => k > i && stop.test(l)) : -1;
+  if (j < 0) j = lines.length;
+  return { ...x, output: lines.slice(i, j).join(NL) };
+}
+/** One ping, as the lab reports it (the last one of the state). */
+export function SvResult({ s, title, i }: { s: SvState; title: string; i?: number }) {
+  const t = s.tests[i ?? s.tests.length - 1];
+  return (
+    <Callout tone={t.ok ? "success" : "danger"} title={title} icon={t.ok ? "✓" : "!"}>
+      {t.src} → {t.to}: {t.ok ? `success, answered by ${t.deliveredTo}` : t.why}
+      {t.fwd.sid ? ` · service SID ${t.fwd.sid} (${t.fwd.behavior})` : ""} · request {t.fwd.path.join(" → ")}
+    </Callout>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the SRv6 L3VPN Lab" onPractice={openLab}>
+      The network of this lesson on IOS XR with a second customer: VRFs, VPNv4/VPNv6 routes and service SIDs on every PE, RR1 and the CEs in their own windows, pings between any sites — your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
 
 const POS: Srv6Pos = {
   CE1: [50, 140],
@@ -181,152 +256,223 @@ function PolicyPreviewDiagram() {
   );
 }
 
+
 export function Srv6L3vpnLessonGuideContent() {
   return (
-    <>
-      <GuideSection id="ll-mission" eyebrow="Introduction" title="The mission: L3VPN over an SRv6 core" tone="ip">
+    <div className="space-y-12">
+      <GuideSection id="vl-mission" eyebrow="This lesson" title="What this lesson teaches" tone="ip">
         <p>
-          You know MPLS L3VPN: VRFs, RD, RT and MP-BGP VPN routes, with an MPLS VPN label as the egress instruction. This lesson runs a VPN for the same customer over an IPv6/SRv6 core and checks, piece by piece, what the new data plane changes.
+          The SRv6 lessons so far moved packets between routers. A provider sells something else: private networks for its customers, all sharing one core. This lesson builds that service — a Layer-3 VPN — on SRv6. The VPN itself (VRFs, route distinguishers, route targets, BGP) is the same one MPLS networks use. What changes is the instruction the egress PE gives the ingress PE: no VPN label, but an SRv6 <b className="text-pv-text">service SID</b>.
         </p>
-        <Callout tone="cyan" title="Scope of this simulation" icon="i">
-          One VRF (CUST-A) on PE1 and PE2, per-VRF End.DT4/End.DT6 Service SIDs (RFC 9252), shortest-path forwarding with a single Service SID, and RR1 as a control-plane-only route reflector. CE-PE routing is outside the lesson&apos;s scope.
-        </Callout>
+        <p>You will follow one customer route from PE2 to PE1 through BGP, then one customer packet from CE1 to CE2 through the core, see how two customers with the same addresses stay apart, and end with the guided lesson&apos;s incident: everything in BGP looks healthy, and nothing gets through.</p>
+        <ChecklistCard tone="violet" title="By the end of this lesson you can" mark="→" items={["explain what an SRv6 L3VPN is and what CE, PE and P routers do", "follow a customer route through the control plane: VRF → VPN route → RR → import", "follow a customer packet through the data plane: lookup → encapsulation → core → End.DT4 → CE", "say what a service SID causes at the egress PE", "tell transport and BGP-next-hop health apart from service health", "find, fix and prove a VPN fault with real evidence"]} />
       </GuideSection>
 
-      <GuideSection id="ll-topology" eyebrow="Setup" title="Topology and roles" tone="ospf">
-        <DiagramFrame caption="Customer edges, provider edges, and a plain-IPv6 provider core.">
+      <GuideSection id="vl-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="The guided lesson's network: CE1 — PE1 — P1 — P2 — PE2 — CE2 / CE3.">
           <TopologyDiagram />
         </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="ll-identities" eyebrow="Setup" title="Two PE identities" tone="violet">
-        <DiagramFrame caption="PE1 has the same split: 2001:db8:ffff::1 and 2001:db8:100:1::/64.">
-          <IdentitiesDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="ll-vrf" eyebrow="VPN state" title="VRF, RD and RT" tone="bgp">
-        <FieldTable
-          title="CUST-A"
-          accent="bgp"
-          columns={["Item", "PE1", "PE2"]}
-          rows={[
-            ["RD", <Mono key="1">65000:1</Mono>, <Mono key="2">65000:2</Mono>],
-            ["Export / import RT", <Mono key="3">65000:100</Mono>, <Mono key="4">65000:100</Mono>],
-            ["Local IPv4 routes", "10.10.1.0/24 (CE1)", "10.20.1.0/24 (CE2), 10.20.2.0/24 (CE3)"],
-            ["Local IPv6 routes", "2001:db8:ca:10::/64", "2001:db8:ca:20::/64, 2001:db8:ca:30::/64"],
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="ll-sids" eyebrow="Service SIDs" title="Per-VRF Service SIDs" tone="violet">
-        <FieldTable
-          title="Instantiated Service SIDs"
-          accent="violet"
-          columns={["SID", "Owner", "Behavior", "Table"]}
-          rows={[
-            [<Mono key="1">2001:db8:100:1:13::</Mono>, "PE1", "End.DT4", "CUST-A (IPv4)"],
-            [<Mono key="2">2001:db8:100:1:12::</Mono>, "PE1", "End.DT6", "CUST-A (IPv6)"],
-            [<Mono key="3">2001:db8:100:2:13::</Mono>, "PE2", "End.DT4", "CUST-A (IPv4)"],
-            [<Mono key="4">2001:db8:100:2:12::</Mono>, "PE2", "End.DT6", "CUST-A (IPv6)"],
-          ]}
-        />
-        <p>Function values match Endpoint Behaviors (0x13 End.DT4, 0x12 End.DT6); 0x14 stays reserved for End.DT46.</p>
-      </GuideSection>
-
-      <GuideSection id="ll-route" eyebrow="Control plane" title="Anatomy of the VPN route" tone="bgp">
-        <DiagramFrame caption="Built step by step in the lesson, then advertised in one UPDATE.">
-          <RouteDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="ll-install" eyebrow="Control plane" title="PE1's install checks" tone="warning">
-        <DiagramFrame caption="Three independent checks before a route is usable.">
-          <InstallDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="ll-dataplane" eyebrow="Data plane" title="CE1 → CE2 across the core" tone="ip">
-        <DiagramFrame caption="Shortest-path service forwarding.">
-          <DataPlaneDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="ll-shared" eyebrow="Data plane" title="One SID, two CEs" tone="success">
-        <FlowSteps
-          steps={[
-            { title: "CE1 → 10.20.1.10", body: "PE1 uses PE2's End.DT4 SID; PE2's CUST-A lookup matches 10.20.1.0/24 → CE2.", tone: "success" },
-            { title: "CE1 → 10.20.2.10", body: "Same Service SID; PE2's CUST-A lookup matches 10.20.2.0/24 → CE3.", tone: "success" },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="ll-reverse" eyebrow="Data plane" title="Reverse direction and IPv6" tone="cyan">
-        <CompareCards
-          items={[
-            { title: "CE2 → CE1", tone: "cyan", tag: "reverse", points: ["PE1 advertised 10.10.1.0/24 with its own SID", "PE2 encapsulates to 2001:db8:100:1:13::", "Each SID is meaningful only at its owner"] },
-            { title: "IPv6 VPN", tone: "ip", tag: "End.DT6", points: ["Outer provider IPv6, DA = PE2 End.DT6", "Inner customer IPv6 to 2001:db8:ca:20::a", "Two IPv6 headers, two roles"] },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="ll-labs" eyebrow="Labs" title="Labs and previews" tone="violet">
-        <DiagramFrame caption="SR Policy service steering (preview): the Service SID can follow a transport segment.">
-          <PolicyPreviewDiagram />
-        </DiagramFrame>
         <p>
-          The other read-only labs compare a per-VRF End.DT4 SID with a CE-bound End.DX4 SID, show an RT mismatch that fails at import, and show a route that arrives without an SRv6 L3 Service TLV. Transposition is previewed only.
+          Customer <b className="text-pv-text">CUST-A</b> has a head office behind CE1 (10.10.1.0/24, 2001:db8:ca:10::/64) and a second site behind PE2 with two routers: CE2 (10.20.1.0/24) and CE3 (10.20.2.0/24), dual-stack. P1 and P2 form an IPv6 core running IS-IS. Route reflector RR1 hangs off P1 and carries the BGP routes between the PEs.
         </p>
-      </GuideSection>
-
-      <GuideSection id="ll-fault" eyebrow="Troubleshooting" title="The broken-service incident" tone="danger">
-        <ChecklistCard
-          tone="danger"
-          title="How to reason about it (no spoilers)"
-          mark="→"
-          items={[
-            "Inspect every layer the incident names, in order: session, received routes, RT import, next hop, Service SID resolution.",
-            "Mark each layer healthy or failed only with evidence from the route viewer and FIB.",
-            "Pick the fix for the layer that actually failed — not the most familiar knob.",
-            "After the fix, resend CE1 → CE3 traffic: a healthy control plane is not proof.",
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="ll-mistakes" eyebrow="Troubleshooting" title="Common mistakes" tone="warning">
-        <ChecklistCard
-          tone="warning"
-          title="Avoid these"
-          mark="!"
-          items={[
-            "Treating the Service SID as the BGP next hop.",
-            "Expecting P routers to hold customer routes.",
-            "Adding an SRH to a single-SID service packet.",
-            "Thinking the RD controls import (the RT does).",
-            "Assuming one Service SID per prefix is required.",
-            "Treating a received, RT-matched route as automatically usable.",
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="ll-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
-        <Glossary
-          items={[
-            { term: "Service SID", def: "SRv6 SID bound to an egress VPN behavior (here End.DT4/End.DT6)." },
-            { term: "Prefix-SID attribute", def: "BGP attribute carrying the SRv6 L3 Service TLV (RFC 9252)." },
-            { term: "SRv6 L3 Service TLV", def: "Holds the Service SID and its endpoint behavior." },
-            { term: "Infra loopback", def: "PE address used for BGP sessions and next hops." },
-            { term: "Locator", def: "Prefix the PE's Service SIDs are built from; must be in remote FIBs." },
-            { term: "RD / RT", def: "Make the route unique / decide which VRFs import it." },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="ll-recap" eyebrow="Recap" title="Mental model" tone="success">
-        <Callout tone="success" title="One sentence" icon="✓">
-          The VPN machinery stays — VRF, RD, RT and MP-BGP — while the egress instruction becomes an IPv6 Service SID that the core simply routes toward the owning PE&apos;s locator.
+        <Callout tone="cyan" title="The lesson and the lab" icon="i">
+          The guided lesson writes PE2&apos;s service SIDs by hand — End.DT4 <Mono>2001:db8:100:2:13::</Mono>, End.DT6 <Mono>…:2:12::</Mono> — and has one customer. The lab runs IOS XR, whose BGP allocates service SIDs dynamically after End and End.X: End.DT4 <Mono>…:2:41::</Mono>, End.DT6 <Mono>…:2:42::</Mono>. It also adds a second customer, <b className="text-pv-text">CUST-B</b> (CE4 at PE1, CE5 at PE2), with exactly the same IPv4 addresses as CUST-A&apos;s CE1 and CE2, and a spare CUST-A site, CE6. Same design, same decisions; the outputs below come from the lab.
         </Callout>
       </GuideSection>
-    </>
+
+      <GuideSection id="vl-ideas" eyebrow="This lesson" title="Three ideas you need" tone="violet">
+        <CompareCards
+          items={[
+            { title: "VRF", tone: "violet", tag: "separation", points: ["one routing table per customer on each PE", "the ingress interface picks it"] },
+            { title: "VPN route", tone: "bgp", tag: "control plane", points: ["RD · RT · next hop · service SID", "carried by BGP (VPNv4 / VPNv6)"] },
+            { title: "Service SID", tone: "cyan", tag: "data plane", points: ["the packet's outer destination", "End.DT4/DT6: decapsulate, look up in the VRF"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="vl-watch" eyebrow="This lesson" title="What you will watch" tone="cyan">
+        <TroubleshootingFlow
+          steps={[
+            { question: "PE2 learns 10.20.1.0/24 from CE2", look: "a static route in VRF CUST-A" },
+            { question: "PE2 advertises it as a VPN route", look: "65000:2:10.20.1.0/24, RT 65000:100, next hop 2001:db8:ffff::2, SID …:2:41::" },
+            { question: "RR1 reflects it; PE1 imports and installs it", look: "RT matches; next hop and SID reachable" },
+            { question: "CE1 sends to 10.20.1.10", look: "PE1 looks it up in CUST-A and encapsulates to the SID" },
+            { question: "P1 and P2 route the outer packet", look: "toward PE2's locator 2001:db8:100:2::/64" },
+            { question: "PE2 executes End.DT4", look: "decapsulate, look up in CUST-A, deliver to CE2" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="vl-vrf" eyebrow="Separation" title="Two customers, one core" tone="violet">
+        <p>
+          Each PE keeps one table per customer — a <b className="text-pv-text">VRF</b>. A packet&apos;s VRF is decided by the interface it arrives on: CE1&apos;s port is in CUST-A, CE4&apos;s in CUST-B. Both customers use 10.10.1.0/24 and 10.20.1.0/24; in each VRF those prefixes point to that customer&apos;s own sites.
+        </p>
+        <CliPanel run={svCli(V0, "PE1", "show vrf all")} caption="IOS XR · PE1 — two VRFs, their RDs and route targets" />
+        <SvResult s={P_A} title="The lab: CE1 (CUST-A) pings 10.20.1.10" />
+        <SvResult s={P_B} title="The lab: CE4 (CUST-B) pings 10.20.1.10" />
+        <SvResult s={P_LEAK} title="The lab: CE4 pings CUST-A's 10.20.2.10" />
+        <p>Same destination, two different answers, and no way across. The P routers never see any of these addresses.</p>
+      </GuideSection>
+
+      <GuideSection id="vl-identities" eyebrow="Setup" title="Two addresses per PE" tone="ospf">
+        <DiagramFrame caption="The BGP identity and the SRv6 locator are separate prefixes.">
+          <IdentitiesDiagram />
+        </DiagramFrame>
+        <p>
+          Every PE has a <b className="text-pv-text">loopback</b> (PE2: <Mono>2001:db8:ffff::2</Mono>) — its BGP identity and the next hop of its VPN routes — and an SRv6 <b className="text-pv-text">locator</b> (PE2: <Mono>2001:db8:100:2::/64</Mono>) from which all its SIDs are taken. IS-IS advertises both, but separately: the locator only with <Mono>segment-routing srv6 locator MAIN</Mono>. Keep that in mind for the incident.
+        </p>
+        <CliPanel run={svWith(V0, "PE1", "show route ipv6", /2001:db8:ffff::2\/128|2001:db8:100:2::\/64/)} caption="IOS XR · PE1 — PE2's loopback and PE2's locator, two routes" />
+      </GuideSection>
+
+      <GuideSection id="vl-route" eyebrow="Control plane" title="A customer route becomes a VPN route" tone="bgp">
+        <DiagramFrame caption="The guided lesson builds the route field by field.">
+          <RouteDiagram />
+        </DiagramFrame>
+        <p>
+          PE2 has a static route in CUST-A toward CE2 and <Mono>redistribute static</Mono> in BGP. The route leaves as a VPNv4 route: <b className="text-pv-text">RD</b> <Mono>65000:2</Mono> makes it unique (CUST-B&apos;s 10.20.1.0/24 uses 65000:12), <b className="text-pv-text">RT</b> <Mono>65000:100</Mono> says which VRFs may import it, the <b className="text-pv-text">next hop</b> is PE2&apos;s loopback. RR1 reflects it to PE1.
+        </p>
+        <CliPanel run={svOnly(V0, "PE1", "show bgp vpnv4 unicast rd 65000:2 10.20.1.0/24", /entry for|2001:db8:ffff::2 \(metric|community|Originator|Sid:/)} caption="IOS XR · PE1 — the VPN route as received: RT, next hop via RR1, service SID" />
+      </GuideSection>
+
+      <GuideSection id="vl-sid" eyebrow="Control plane" title="The service SID" tone="cyan">
+        <p>
+          The Prefix-SID attribute carries the SRv6 service SID: <Mono>2001:db8:100:2:41::</Mono>, <b className="text-pv-text">End.DT4</b> bound to VRF CUST-A. In MPLS that slot was a VPN label. Here it is a real IPv6 address: routable through the core (it lives in PE2&apos;s locator), and executable at PE2 (decapsulate, look up in CUST-A).
+        </p>
+        <CliPanel run={svCli(V0, "PE2", "show segment-routing srv6 sid")} caption="IOS XR · PE2 — End and End.X from IS-IS, one End.DT4/End.DT6 per VRF and family from BGP" />
+        <p>One SID per VRF and family (<Mono>alloc mode per-vrf</Mono>): CUST-A IPv4, CUST-A IPv6 and CUST-B IPv4 each have their own.</p>
+      </GuideSection>
+
+      <GuideSection id="vl-install" eyebrow="Control plane" title="PE1's three checks" tone="warning">
+        <DiagramFrame caption="Received is not installed.">
+          <InstallDiagram />
+        </DiagramFrame>
+        <p>
+          Before PE1 puts 10.20.1.0/24 in CUST-A it checks three independent things: the <b className="text-pv-text">RT</b> matches one of CUST-A&apos;s import RTs; the <b className="text-pv-text">next hop</b> 2001:db8:ffff::2 is reachable; the <b className="text-pv-text">SID</b>&apos;s locator 2001:db8:100:2::/64 is reachable. All three pass, so the route is installed, pointing at the SID.
+        </p>
+        <CliPanel run={svOnly(V0, "PE1", "show route vrf CUST-A", /^[BS]\s/)} caption="IOS XR · PE1 — CUST-A: CE1's LAN (static) and site 2's prefixes (BGP via PE2's loopback)" />
+      </GuideSection>
+
+      <GuideSection id="vl-packet" eyebrow="Data plane" title="One packet, CE1 to CE2" tone="ip">
+        <DiagramFrame caption="The guided lesson's packet: no SRH, the service SID is the outer destination.">
+          <DataPlaneDiagram />
+        </DiagramFrame>
+        <p>
+          A host behind CE1 pings 10.20.1.10. CE1 sends an ordinary IPv4 packet to PE1. PE1 looks it up in CUST-A, finds the SID, and encapsulates: a new IPv6 header with destination <Mono>2001:db8:100:2:41::</Mono> and source PE1&apos;s loopback (H.Encaps.Red — one SID needs no Segment Routing Header). P1 and P2 route on the destination like any IPv6 packet: it falls in PE2&apos;s locator. PE2 finds the SID in its table, removes the outer header and looks 10.20.1.10 up in CUST-A: CE2. The reply makes the same trip back to PE1&apos;s own End.DT4, <Mono>…:1:41::</Mono>.
+        </p>
+        <CliPanel run={svCli(V0, "PE1", "show cef vrf CUST-A 10.20.1.10")} caption="IOS XR · PE1 — what PE1 will push for 10.20.1.10" />
+        <CliPanel run={svWith(V0, "P1", "show route ipv6", /2001:db8:100:2::\/64|2001:db8:ffff::2\/128/)} caption="IOS XR · P1 — all a P router needs: PE2's locator (and loopback)" />
+        <SvResult s={P_A} title="The lab: CE1 → 10.20.1.10" />
+      </GuideSection>
+
+      <GuideSection id="vl-shared" eyebrow="Data plane" title="One SID, two sites" tone="success">
+        <p>CE3&apos;s 10.20.2.0/24 is advertised with the same SID. Packets to CE2 and to CE3 arrive at PE2 with the same destination; the CUST-A lookup after decapsulation picks the CE. A per-VRF SID never names a CE — the table does.</p>
+        <SvResult s={P_CE3} title="The lab: CE1 → 10.20.2.10" />
+        <p className="text-sm text-pv-text-muted">The alternative, <Mono>alloc mode per-ce</Mono>, gives each CE its own End.DX4: decapsulate and send straight to that CE, no lookup. The lab lets you switch.</p>
+      </GuideSection>
+
+      <GuideSection id="vl-v6" eyebrow="Data plane" title="IPv6: its own family" tone="ip">
+        <p>CUST-A&apos;s IPv6 routes travel as VPNv6 routes, negotiated separately on each BGP session, with PE2&apos;s <b className="text-pv-text">End.DT6</b> <Mono>…:2:42::</Mono>. The two families share the VRF and the core, and nothing else: each can work, or fail, on its own.</p>
+        <CliPanel run={svOnly(V0, "PE1", "show bgp vpnv6 unicast rd 65000:2 2001:db8:ca:20::/64", /entry for|community|Sid:/)} caption="IOS XR · PE1 — the VPNv6 route and its End.DT6" />
+        <SvResult s={P_V6} title="The lab: CE1 → 2001:db8:ca:20::a" />
+      </GuideSection>
+
+      <GuideSection id="vl-policy" eyebrow="Briefly" title="With an SRv6 policy, briefly" tone="violet">
+        <DiagramFrame caption="The guided lesson's preview: transport segments first, the service SID last.">
+          <PolicyPreviewDiagram />
+        </DiagramFrame>
+        <p>Everything here follows the IGP&apos;s shortest path, so one SID is enough. If PE2 colored the route and PE1 had a matching SR policy (the previous lesson), PE1 would push the policy&apos;s SIDs first and the service SID last — the transport changes, the service instruction doesn&apos;t. The lab keeps to the shortest path.</p>
+      </GuideSection>
+
+      <GuideSection id="vl-working" eyebrow="Evidence" title="What working looks like" tone="success">
+        <FieldTable
+          title="Healthy, in six questions (IOS XR)"
+          accent="success"
+          columns={["Question", "Command", "Healthy answer"]}
+          rows={[
+            ["Does the egress PE have the customer route?", <Mono key="1">show route vrf CUST-A (PE2)</Mono>, "S 10.20.1.0/24 via 192.168.22.2"],
+            ["Is it a VPN route with a SID?", <Mono key="2">show bgp vpnv4 unicast rd 65000:2 10.20.1.0/24</Mono>, "RT 65000:100, Sid …:2:41::, End.DT4"],
+            ["Do the sessions carry the family?", <Mono key="3">show bgp vpnv4 unicast summary</Mono>, "RR1 Established, prefixes received"],
+            ["Is it installed at the ingress?", <Mono key="4">show route vrf CUST-A (PE1)</Mono>, "B 10.20.1.0/24 via 2001:db8:ffff::2"],
+            ["Is the SID reachable?", <Mono key="5">show route ipv6 2001:db8:100:2:41::</Mono>, "via isis, 2001:db8:100:2::/64"],
+            ["Does it work?", "ping from CE1", "answered by CE2 — both directions"],
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="vl-incident" eyebrow="Incident" title="The broken-service incident" tone="danger">
+        <p>
+          After an IS-IS change on PE2, CE1 can no longer reach site 2 — IPv4 or IPv6. The NOC says BGP to RR1 is Established, the VPN routes are there, and PE2&apos;s loopback answers pings. All true. In the guided lesson PE2&apos;s locator is withdrawn from the IGP; in the lab the cause is concrete: PE2&apos;s IS-IS lost <Mono>segment-routing srv6 locator MAIN</Mono>.
+        </p>
+        <SvResult s={INC} i={0} title="The lab: CE1 → 10.20.1.10 (the ticket)" />
+        <SvResult s={INC_V6} title="The lab: CE1 → 2001:db8:ca:20::a" />
+        <TroubleshootingFlow
+          steps={[
+            { question: "Is the VPN route at PE1, with its SID?", look: "Yes — RT 65000:100, next hop 2001:db8:ffff::2, Sid …:2:41::." },
+            { question: "Is it in VRF CUST-A?", look: "No — only CE1's own routes are there." },
+            { question: "Is the next hop reachable?", look: "Yes — PE2's loopback is in the IPv6 table and answers pings." },
+            { question: "Is the SID reachable?", look: "No — there is no route to 2001:db8:100:2:41::: the locator is gone." },
+            { question: "Why?", look: "PE2's IS-IS no longer advertises its locator." },
+          ]}
+        />
+        <CliPanel run={svOnly(INC, "PE1", "show bgp vpnv4 unicast rd 65000:2 10.20.1.0/24", /entry for|2001:db8:ffff::2 \(metric|community|Sid:/)} caption="IOS XR · PE1 — the route is still received, with its SID" />
+        <CliPanel run={svCli(INC, "PE1", "show route ipv6 2001:db8:100:2:41::")} caption="IOS XR · PE1 — no route to the SID" />
+        <CliPanel run={svCli(INC, "PE1", "ping 2001:db8:ffff::2")} caption="IOS XR · PE1 — and yet PE2's loopback answers" />
+        <CliPanel run={svCli(INC, "PE2", "show isis segment-routing srv6 locators")} caption="IOS XR · PE2 — IS-IS advertises no locator" />
+      </GuideSection>
+
+      <GuideSection id="vl-repair" eyebrow="Incident" title="Repair and proof" tone="success">
+        <p>The repair is on PE2, not on PE1 and not in BGP: put the locator back into IS-IS.</p>
+        <CliPanel run={{ prompt: "RP/0/RP0/CPU0:PE2(config)#", command: "router isis CORE address-family ipv6 unicast segment-routing srv6", output: "RP/0/RP0/CPU0:PE2(config-isis-srv6)#locator MAIN\nRP/0/RP0/CPU0:PE2(config-isis-srv6)#commit" }} caption="IOS XR · PE2 — the repair" />
+        <CliPanel run={svOnly(INC_FIX, "PE1", "show route vrf CUST-A", /^B\s/)} caption="IOS XR · PE1 — the routes are installed again" />
+        <SvResult s={INC_FIX} i={INC_FIX.tests.length - 2} title="The lab: a fresh CE1 → 10.20.1.10" />
+        <SvResult s={INC_FIX} title="The lab: a fresh CE1 → 2001:db8:ca:20::a" />
+        <ChecklistCard tone="success" title="Proved, not assumed" mark="✓" items={["2001:db8:100:2::/64 is back in PE1's IPv6 table", "PE1 installs site 2's routes in CUST-A", "fresh pings succeed in both directions, on IPv4 and IPv6", "the lesson: a VPN route needs a reachable SID, not just a reachable next hop"]} />
+      </GuideSection>
+
+      <GuideSection id="vl-other" eyebrow="Beyond this incident" title="Other ways it breaks" tone="warning">
+        <FailureSignatures
+          items={[
+            { tag: "RT", title: "Wrong export RT", tone: "danger", points: ["routes on RR1 with the wrong RT", "PE1 keeps no copy"] },
+            { tag: "SID", title: "No SRv6 for one family", tone: "danger", points: ["the route arrives without a SID", "IPv4 dead, IPv6 fine"] },
+            { tag: "RED", title: "Route not redistributed", tone: "warning", points: ["the request arrives", "the reply has no way back"] },
+            { tag: "AF", title: "Family not negotiated", tone: "violet", points: ["session up, VPNv6 missing", "only IPv6 broken"] },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Each is a ticket in the SRv6 L3VPN Lab, together with this incident.</p>
+      </GuideSection>
+
+      <GuideSection id="vl-model" eyebrow="Mental model" title="Mental model" tone="cyan">
+        <p>
+          Think of the provider as a courier with many corporate clients. Each client has its own address book at every depot (the VRFs), and the same street address can mean different buildings for different clients. When a depot learns a client&apos;s new address, it tells the others through head office (BGP via RR1): which client book it belongs in (RT), which depot to send to (next hop), and the label to put on the outside of the parcel (the service SID) — a label that says both “to depot 2, desk CUST-A” and how the trucks find depot 2. The trucks (P routers) only read the depot part. If depot 2&apos;s address disappears from the road maps, head office still lists the client&apos;s address, and the phone line to depot 2 still works — but no truck can find it.
+        </p>
+        <Callout tone="cyan" title="When it breaks, ask in this order" icon="→">
+          Does the egress PE have the customer route? Is it advertised as a VPN route, with RT and SID? Do the sessions carry that family? Does the ingress PE import it? Are the next hop and the SID reachable? Is there a way back?
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="vl-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
+        <Glossary
+          items={[
+            { term: "CE / PE / P", def: "Customer edge; provider edge (VRFs, BGP, SIDs); provider core (IPv6 only)." },
+            { term: "VRF", def: "A customer's routing table on a PE; chosen by the ingress interface." },
+            { term: "RD", def: "Route distinguisher: makes a customer prefix unique in BGP." },
+            { term: "RT", def: "Route target: decides which VRFs import a VPN route." },
+            { term: "VPNv4 / VPNv6", def: "The BGP families carrying customers' IPv4 / IPv6 routes." },
+            { term: "Service SID", def: "The SRv6 SID of a VPN route (End.DT4/DT6 per VRF, End.DX4/DX6 per CE)." },
+            { term: "Locator", def: "The prefix all of a node's SIDs come from; it must be in the IGP." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="vl-recap" eyebrow="Reference" title="Recap" tone="success">
+        <ChecklistCard tone="success" title="You can now" mark="✓" items={["explain VRFs, RD and RT, and why customers stay apart", "read a VPN route: RD, RT, next hop, service SID", "explain PE1's three install checks", "follow a packet: lookup, H.Encaps.Red, core, End.DT4, CE", "tell BGP and next-hop health apart from SID reachability", "find, fix and prove an L3VPN fault"]} />
+      </GuideSection>
+
+      <GuideSection id="vl-practice" eyebrow="Next" title="Practice it" tone="violet">
+        <p>The Deep Dive tab covers SRv6 L3VPN in full: the service model and RFCs, VRFs, RD and RT, BGP signaling and the Prefix-SID attribute, SID allocation and transposition, the two resolutions, encapsulation, verification and every failure signature with real evidence. The lab lets you change the service yourself.</p>
+        <LessonLabBridge />
+        <PresentationBridge>Rewatch the SRv6 L3VPN presentation.</PresentationBridge>
+      </GuideSection>
+    </div>
   );
 }

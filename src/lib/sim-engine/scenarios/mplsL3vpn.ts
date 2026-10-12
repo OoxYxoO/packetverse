@@ -11,9 +11,9 @@ import type { PacketLayer, PacketVisual, ScenarioStep } from "../types";
  *        PE1 ──────── P1 ──────── P2 ──────── PE2
  *      VRF CUST-A  <── MPLS provider core ──>  VRF CUST-A
  *
- * Prerequisites (from the OSPF and MPLS/LDP lessons) are presented
+ * Prerequisites (from the IS-IS and MPLS/LDP lessons) are presented
  * already converged, per the brief — this lesson does not re-teach
- * OSPF or basic LDP, it builds VRF/RD/RT/MP-BGP/VPN-label concepts on
+ * IS-IS or basic LDP, it builds VRF/RD/RT/MP-BGP/VPN-label concepts on
  * top of them and reuses the exact same generic label-stack shape
  * (`labels: MplsLabel[]`) introduced there, now carrying two labels.
  *
@@ -332,7 +332,7 @@ export const l3vpnSteps: ScenarioStep<L3VpnState>[] = [
     id: "prerequisites",
     label: "Already In Place",
     narrative:
-      "From the previous lessons: the provider IGP (OSPF) is converged, LDP is operational, and the MPLS transport LSP between PE1 and PE2 already works — PE1 can push a label, P1 and P2 switch it, PE2 receives plain IP. None of that is re-taught here; it's just available to inspect.",
+      "From the previous lessons: the provider IGP (IS-IS) is converged, LDP is operational, and the MPLS transport LSP between PE1 and PE2 already works — PE1 can push a label, P1 and P2 switch it, PE2 receives plain IP. None of that is re-taught here; it's just available to inspect.",
   },
   {
     id: "vrf-intro",

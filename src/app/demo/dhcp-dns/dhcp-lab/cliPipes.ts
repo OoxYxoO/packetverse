@@ -8,7 +8,7 @@
  *         match · except · find · count · last · no-more · display set · compare [rollback n]
  */
 
-export type PipeOs = "ios" | "junos";
+export type PipeOs = "ios" | "iosxr" | "junos";
 export interface PipeCtx {
   os: PipeOs;
   /** The command before the first pipe, as typed. */
@@ -39,11 +39,13 @@ const JUNOS_FILTERS: Filter[] = [
   { name: "match", summary: "Show only text that matches a pattern", arg: "<pattern>" },
   { name: "no-more", summary: "Don't paginate output" },
 ];
-const filtersOf = (os: PipeOs) => (os === "ios" ? IOS_FILTERS : JUNOS_FILTERS);
+/** IOS XR offers begin / exclude / include (no section or count). */
+const XR_FILTERS: Filter[] = IOS_FILTERS.filter((f) => ["begin", "exclude", "include"].includes(f.name));
+const filtersOf = (os: PipeOs) => (os === "junos" ? JUNOS_FILTERS : os === "iosxr" ? XR_FILTERS : IOS_FILTERS);
 
 /** Split a line into the command and its pipes. IOS: only the first `|` counts. Junos: every `|` outside quotes. */
 export function splitPipes(os: PipeOs, line: string): { cmd: string; pipes: string[]; at: number } {
-  if (os === "ios") {
+  if (os !== "junos") {
     const i = line.indexOf("|");
     return i < 0 ? { cmd: line, pipes: [], at: -1 } : { cmd: line.slice(0, i), pipes: [line.slice(i + 1)], at: i };
   }
@@ -165,13 +167,13 @@ export function applyPipes(output: string, pipes: string[], ctx: PipeCtx): { out
     const seg = raw.trim();
     const [word, ...rest] = seg.split(/\s+/);
     const argText = seg.slice(word.length).trim();
-    if (!word) return { error: ctx.os === "ios" ? "% Incomplete command." : "syntax error, expecting <command>." };
+    if (!word) return { error: ctx.os !== "junos" ? "% Incomplete command." : "syntax error, expecting <command>." };
     const r = resolve(ctx.os, word);
-    if (r.ambiguous) return { error: ctx.os === "ios" ? `% Ambiguous command:  "| ${seg}"` : `'${word}' is ambiguous.\nPossible completions:\n${r.ambiguous.map((n) => `  ${n}`).join("\n")}` };
-    if (!r.f) return { error: ctx.os === "ios" ? "% Invalid input detected at '^' marker." : `syntax error, expecting <command>: ${word}` };
+    if (r.ambiguous) return { error: ctx.os !== "junos" ? `% Ambiguous command:  "| ${seg}"` : `'${word}' is ambiguous.\nPossible completions:\n${r.ambiguous.map((n) => `  ${n}`).join("\n")}` };
+    if (!r.f) return { error: ctx.os !== "junos" ? "% Invalid input detected at '^' marker." : `syntax error, expecting <command>: ${word}` };
     const lines = text.split("\n");
     const f = r.f.name;
-    if (ctx.os === "ios") {
+    if (ctx.os !== "junos") {
       if (!argText && f !== "count") return { error: "% Incomplete command." };
       const re = rx(argText || ".*", "ios");
       if (!re) return { error: `% Invalid regular expression: ${argText}` };
@@ -244,12 +246,12 @@ export function pipeHelp(os: PipeOs, line: string, ctx: PipeCtx): string {
   const words = seg.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0 || (words.length === 1 && !trailing)) {
     const list = filtersOf(os).filter((f) => !words[0] || f.name.startsWith(words[0].toLowerCase()));
-    if (!list.length) return os === "ios" ? "% Unrecognized command" : "No valid completions";
+    if (!list.length) return os !== "junos" ? "% Unrecognized command" : "No valid completions";
     return rows(os, list.map((f) => ({ label: f.name, description: f.summary })));
   }
   const r = resolve(os, words[0]);
-  if (!r.f) return os === "ios" ? "% Unrecognized command" : "No valid completions";
-  if (os === "ios") return rows(os, [{ label: "LINE", description: "Regular Expression" }]);
+  if (!r.f) return os !== "junos" ? "% Unrecognized command" : "No valid completions";
+  if (os !== "junos") return rows(os, [{ label: "LINE", description: "Regular Expression" }]);
   if (r.f.name === "display") return rows(os, [{ label: "set", description: "Show 'set' commands that create configuration" }]);
   if (r.f.name === "compare") {
     if (words[1] === "rollback" || (words[1] && "rollback".startsWith(words[1]) && !trailing)) {

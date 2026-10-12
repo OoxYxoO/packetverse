@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -83,12 +83,17 @@ import { explainNode } from "./explain";
 import { DEVICE_ROUTERS, PRIMARY_TRANSITION_ROUTER, deviceForStep, framesForHopPacket, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
 import { capstoneAddressNames, capstoneLabelMeaning } from "./addressNames";
 import { SRCMP_BRIEFING_NOTES, SRCMP_BRIEFING_PHASES } from "./briefing";
+import { DpPresentation } from "./DpPresentation";
+import { DpLabWorkspace } from "./dp-lab/DpLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { SRCMP_LESSON_SECTIONS, SrMplsVsSrv6LessonGuideContent } from "./LessonGuideContent";
 import { SRCMP_DEEP_DIVE_SECTIONS, SrMplsVsSrv6DeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "One topology · transport, TE, L3VPN, TI-LFA in both encodings", sections: SRCMP_LESSON_SECTIONS, content: <SrMplsVsSrv6LessonGuideContent /> },
-  { id: "deep", label: "SR-MPLS vs SRv6 Deep Dive", hint: "Segment Routing encodings in general", sections: SRCMP_DEEP_DIVE_SECTIONS, content: <SrMplsVsSrv6DeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "Both data planes on one network · the migration incident · real IOS XR output", sections: SRCMP_LESSON_SECTIONS, content: <SrMplsVsSrv6LessonGuideContent /> },
+  { id: "deep", label: "SR-MPLS vs SRv6 Deep Dive", hint: "Segment Routing data planes in depth · IOS XR", sections: SRCMP_DEEP_DIVE_SECTIONS, content: <SrMplsVsSrv6DeepDiveContent /> },
 ];
 
 const RR1_NODE = { id: "RR1", label: "RR1", x: 49, y: 6, subLabel: "Route Reflector (control-plane only)" };
@@ -175,6 +180,20 @@ export default function SrMplsVsSrv6Capstone() {
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
   const [autoPlay, setAutoPlay] = useState(false);
+  /** Presentation ("understand it first") and the SR-MPLS vs SRv6 Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [speed, setSpeed] = useState<PlaySpeed>(1);
   const completeLesson = useProgressStore((s) => s.completeLesson);
   const recordAnswer = useProgressStore((s) => s.recordAnswer);
@@ -757,8 +776,26 @@ export default function SrMplsVsSrv6Capstone() {
           One shared topology, one shared traffic requirement, one shared failure, one shared VPN service, one shared TE requirement — solved once in SR-MPLS, once in SRv6. Inspect exactly what changes and what doesn&apos;t.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SR-MPLS vs SRv6" subtitle="One Segment Routing architecture · two data-plane encodings · same topology" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice SR-MPLS vs SRv6" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SR-MPLS vs SRv6" subtitle="One network, two data planes · labels vs IPv6 addresses · each plane needs its own reachability" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <DpPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the SR-MPLS vs SRv6 Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <DpLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="SR-MPLS vs SRv6" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "SR-MPLS vs SRv6 Lab", buttonLabel: "Practice SR-MPLS vs SRv6", description: "The lesson's network on IOS XR running both Segment Routing data planes: carry CUST-A over SR-MPLS labels or an SRv6 End.DT4 SID, compare the headers and byte counts computed from the live network, turn SR-MPLS off in transit, drill the P1–P2 cut in both planes, shrink an MTU; open every router and solve five tickets from evidence." }} contextNote={currentStep && ["incident-intro", "incident-fault-injected", "incident-ladder", "incident-repair", "incident-resend", "migration-coexistence", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -770,7 +807,7 @@ export default function SrMplsVsSrv6Capstone() {
         ))}
       </div>
 
-      <div className="mb-4 flex gap-1 overflow-x-auto pb-2">
+      <div className="mb-4 flex gap-px pb-2 sm:gap-1">
         {capstoneSteps.map((step, i) => (
           <button
             key={step.id}
@@ -778,19 +815,21 @@ export default function SrMplsVsSrv6Capstone() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-2 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 min-w-0 flex-1 rounded-full transition-colors sm:min-w-1", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
 
       <div className="mb-6 flex flex-wrap items-center gap-3">
-        <TopologyModeSwitcher options={VIEW_MODES} value={viewMode} onChange={setViewMode} />
+        <div className="max-w-full overflow-x-auto">
+          <TopologyModeSwitcher options={VIEW_MODES} value={viewMode} onChange={setViewMode} />
+        </div>
         <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={is3D ? "on" : "off"} onChange={(v) => handleView3DChange(v === "on")} tone="violet" />
         {is3D && <TopologyModeSwitcher options={CAMERA_OPTIONS} value={cameraMode} onChange={handleCameraModeChange} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
-        <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
+        <div className="min-w-0 space-y-4">
           {currentStep && briefing ? (
             <MissionBriefingCard
               stepNumber={index + 1}

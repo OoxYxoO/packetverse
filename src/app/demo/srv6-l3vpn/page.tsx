@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -73,14 +73,19 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { SvPresentation } from "./SvPresentation";
+import { SvLabWorkspace } from "./sv-lab/SvLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { SRV6L_BRIEFING_NOTES, SRV6L_BRIEFING_PHASES } from "./briefing";
 import { SRV6L_LESSON_SECTIONS, Srv6L3vpnLessonGuideContent } from "./LessonGuideContent";
 import { SRV6L_DEEP_DIVE_SECTIONS, Srv6L3vpnDeepDiveContent } from "./DeepDiveContent";
 import { RR1_ID, explainRr1, packetFromRr1, packetToRr1, reflectThroughRr1, rr1Interfaces, withRr1 } from "./rrIntegration";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "VRF CUST-A · RD/RT · per-VRF End.DT4/End.DT6 Service SIDs", sections: SRV6L_LESSON_SECTIONS, content: <Srv6L3vpnLessonGuideContent /> },
-  { id: "deep", label: "SRv6 L3VPN Deep Dive", hint: "BGP services over SRv6 (RFC 9252) in general", sections: SRV6L_DEEP_DIVE_SECTIONS, content: <Srv6L3vpnDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "Customer route → VPN route → service SID → packet · real IOS XR output", sections: SRV6L_LESSON_SECTIONS, content: <Srv6L3vpnLessonGuideContent /> },
+  { id: "deep", label: "SRv6 L3VPN Deep Dive", hint: "RFC 9252 / RFC 4364 L3VPN over SRv6 in depth · IOS XR", sections: SRV6L_DEEP_DIVE_SECTIONS, content: <Srv6L3vpnDeepDiveContent /> },
 ];
 
 const DEVICE_ROUTERS: RouterId[] = ["PE1", "P1", "P2", "PE2"];
@@ -137,6 +142,20 @@ export default function Srv6L3vpnDemo() {
   const [rrRelayHop, setRrRelayHop] = useState<0 | 1>(0);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the SRv6 L3VPN Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection (ARCHITECTURE.md §18) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -604,8 +623,26 @@ export default function Srv6L3vpnDemo() {
           SID instead of a VPN label, and BGP next-hop reachability turns out not to be the whole story.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 L3VPN" subtitle="PE1 ↔ PE2 over a plain IPv6 core · Service SIDs 2001:db8:100:{1,2}:13:: / :12::" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice SRv6 L3VPN" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 L3VPN" subtitle="VRFs and VPN routes in BGP · service SIDs End.DT4 / End.DT6 · a plain IPv6 core" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <SvPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the SRv6 L3VPN Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <SvLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="SRv6 L3VPN" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "SRv6 L3VPN Lab", buttonLabel: "Practice SRv6 L3VPN", description: "The lesson's network on IOS XR with a second customer: inspect VRFs, VPNv4/VPNv6 routes and their service SIDs on PE1, PE2 and RR1, ping between sites with overlapping addresses, follow each packet through H.Encaps.Red and End.DT4/DT6, turn up a site, switch to per-CE SIDs; open every router and CE and solve five tickets from evidence." }} contextNote={currentStep && ["route-installed", "pe2-dt4-execute", "dual-stack-recap", "diagnostic-layers", "repair-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -626,7 +663,7 @@ export default function Srv6L3vpnDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-3 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-3", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -671,9 +708,9 @@ export default function Srv6L3vpnDemo() {
         {showPlanes && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

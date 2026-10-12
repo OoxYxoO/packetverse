@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -73,13 +73,18 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { EbPresentation } from "./EbPresentation";
+import { EbLabWorkspace } from "./eb-lab/EbLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { SRV6E_BRIEFING_NOTES, SRV6E_BRIEFING_PHASES } from "./briefing";
 import { SRV6E_LESSON_SECTIONS, Srv6EndpointLessonGuideContent } from "./LessonGuideContent";
 import { SRV6E_DEEP_DIVE_SECTIONS, Srv6EndpointDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "R3: End · End.X · End.T  ·  R6: DX6 · DX4 · DT6 · DT4 · DX2", sections: SRV6E_LESSON_SECTIONS, content: <Srv6EndpointLessonGuideContent /> },
-  { id: "deep", label: "Endpoint Behaviors Deep Dive", hint: "RFC 8986 endpoint behaviors in general", sections: SRV6E_DEEP_DIVE_SECTIONS, content: <Srv6EndpointDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "R3: End · End.X  ·  R6: End.DT4 · End.DT6 · End.DX4 · real IOS XR output", sections: SRV6E_LESSON_SECTIONS, content: <Srv6EndpointLessonGuideContent /> },
+  { id: "deep", label: "Endpoint Behaviors Deep Dive", hint: "RFC 8986 behaviors in depth · IOS XR allocation", sections: SRV6E_DEEP_DIVE_SECTIONS, content: <Srv6EndpointDeepDiveContent /> },
 ];
 
 const ROUTER_IDS: RouterId[] = ["R1", "R2", "R3", "R4", "R5", "R6"];
@@ -184,6 +189,20 @@ export default function Srv6EndpointBehaviorsDemo() {
   const [xrayMode, setXrayMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the SRv6 Endpoint Behaviors Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -684,8 +703,26 @@ export default function Srv6EndpointBehaviorsDemo() {
           happens next — a different, real forwarding decision per behavior.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 Endpoint Behaviors" subtitle="Same locator, different behaviors · R3 transit family · R6 service family" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice Endpoint Behaviors" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 Endpoint Behaviors" subtitle="One locator, many behaviors · End / End.X on R3 · End.DT4 / DT6 / DX4 on R6" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <EbPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the SRv6 Endpoint Behaviors Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <EbLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="SRv6 Endpoint Behaviors" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "SRv6 Endpoint Behaviors Lab", buttonLabel: "Practice Endpoint Behaviors", description: "The lesson's network on IOS XR: read local SID tables with End, End.X and the service SIDs BGP allocates on R6, send segment lists to three customers, compare End with End.X, DT with DX, break the last-segment and family rules, switch a VRF to per-CE SIDs; open every router and solve five tickets from evidence." }} contextNote={currentStep && ["richer-local-sid-table", "behavior-comparison-intro", "diagnostic-ladder", "repair-challenge", "engineer-challenge-complete", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -705,7 +742,7 @@ export default function Srv6EndpointBehaviorsDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-3 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-3", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -750,9 +787,9 @@ export default function Srv6EndpointBehaviorsDemo() {
         <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

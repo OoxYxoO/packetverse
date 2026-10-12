@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -64,13 +64,18 @@ import { ObjectFocusPanel } from "@/components/network3d/ObjectFocusPanel";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { SrPresentation } from "./SrPresentation";
+import { SrLabWorkspace } from "./sr-lab/SrLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { SRF_BRIEFING_NOTES, SRF_BRIEFING_PHASES } from "./briefing";
 import { SRF_LESSON_SECTIONS, SrFoundationsLessonGuideContent } from "./LessonGuideContent";
 import { SRF_DEEP_DIVE_SECTIONS, SrFoundationsDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "R1 → R6 · SRGB 16000 · Node SIDs · Adj-SID 24035", sections: SRF_LESSON_SECTIONS, content: <SrFoundationsLessonGuideContent /> },
-  { id: "deep", label: "SR-MPLS Deep Dive", hint: "Segment Routing over MPLS in general", sections: SRF_DEEP_DIVE_SECTIONS, content: <SrFoundationsDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "R1 → R6 · SRGB 16000 · Node SIDs · Adj-SID 24035 · real IOS XR / Junos output", sections: SRF_LESSON_SECTIONS, content: <SrFoundationsLessonGuideContent /> },
+  { id: "deep", label: "SR-MPLS Deep Dive", hint: "SR-MPLS in depth · IS-IS extensions · IOS XR and Junos", sections: SRF_DEEP_DIVE_SECTIONS, content: <SrFoundationsDeepDiveContent /> },
 ];
 
 const DEVICE_ROUTERS: RouterId[] = ["R1", "R2", "R3", "R4", "R5", "R6"];
@@ -115,6 +120,20 @@ export default function SrMplsFoundationsDemo() {
   const [labSegments, setLabSegments] = useState<SegmentSpec[]>([{ type: "NODE", target: "R6" }]);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the SR-MPLS Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Explicit Hop-vs-Device intent inside Focus Mode ("Shared Focus Mode Inspector Fix") — set by the actual gesture (node click → device; timeline/next-hop/Play → hop), never inferred from whether a trace object happens to exist. */
   const [inspectorSurface, setInspectorSurface] = useState<InspectorSurface>("hop");
@@ -616,8 +635,26 @@ export default function SrMplsFoundationsDemo() {
           specific link — without RSVP-style PATH/RESV signaling for every engineered LSP.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SR-MPLS Foundations" subtitle="SRGB 16000–23999 · Node SIDs 16001–16006 · Adj-SID 24035 (R3→R5)" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice SR-MPLS" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SR-MPLS Foundations" subtitle="SRGB 16000–23999 · Node SIDs 16001–16006 · Adj-SID 24035 (R3→R5)" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <SrPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the SR-MPLS Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <SrLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="SR-MPLS" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "SR-MPLS Lab", buttonLabel: "Practice SR-MPLS", description: "The lesson's six routers running IS-IS with segment routing and no LDP: read SRGBs, Prefix-SIDs and Adjacency SIDs from the IGP, follow a Node SID hop by hop, move it with a metric, steer with segment lists, renumber a SID and an SRGB; open every router (IOS XR or Junos) and solve five tickets from evidence." }} contextNote={currentStep && ["segment-lab-intro", "lab-compare-experiment", "diagnostic-ladder", "repair-challenge", "engineer-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -648,7 +685,7 @@ export default function SrMplsFoundationsDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-3 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-3", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -692,9 +729,9 @@ export default function SrMplsFoundationsDemo() {
         {showViews && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

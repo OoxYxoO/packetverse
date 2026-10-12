@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -94,14 +94,19 @@ import {
   traceFor,
   walkFor,
 } from "./deviceTrace";
+import { UcPresentation } from "./UcPresentation";
+import { UcLabWorkspace } from "./uc-lab/UcLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { csidDescribeDa, csidHopFacts } from "./addressNames";
 import { SRV6C_BRIEFING_NOTES, SRV6C_BRIEFING_PHASES } from "./briefing";
 import { SRV6C_LESSON_SECTIONS, Srv6CsidLessonGuideContent } from "./LessonGuideContent";
 import { SRV6C_DEEP_DIVE_SECTIONS, Srv6CsidDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "R1 → R8 · NEXT-CSID containers · REPLACE-CSID packed positions", sections: SRV6C_LESSON_SECTIONS, content: <Srv6CsidLessonGuideContent /> },
-  { id: "deep", label: "CSID / uSID Deep Dive", hint: "RFC 9800 compressed SIDs in general", sections: SRV6C_DEEP_DIVE_SECTIONS, content: <Srv6CsidDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "Block, uSIDs, carriers, shifts · the guided incident · real IOS XR output", sections: SRV6C_LESSON_SECTIONS, content: <Srv6CsidLessonGuideContent /> },
+  { id: "deep", label: "CSID / uSID Deep Dive", hint: "RFC 9800 compressed SRv6 in depth · IOS XR uSID", sections: SRV6C_DEEP_DIVE_SECTIONS, content: <Srv6CsidDeepDiveContent /> },
 ];
 
 const DEVICE_ROUTERS: RouterId[] = [...ALL_ROUTERS];
@@ -195,6 +200,20 @@ export default function Srv6CsidDemo() {
   const [packetSelected, setPacketSelected] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the SRv6 uSID Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection (ARCHITECTURE.md §18) — a step INDEX, never passed to engine.goTo(). undefined = live. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -700,8 +719,26 @@ export default function Srv6CsidDemo() {
           segment&apos;s meaning, and RFC 8754&apos;s reversed Segment List storage order, stay exactly as they were.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 CSID" subtitle="Locator-Block 2001:db8:c5::/48 · NEXT-CSID 16-bit · REPLACE-CSID 32-bit, K = 4" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice SRv6 uSID" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 uSID / CSID" subtitle="Block once, uSIDs in a row · shift at every node · carriers, not 128-bit SIDs" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <UcPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the SRv6 uSID Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <UcLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="SRv6 uSID / CSID" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "SRv6 uSID Lab", buttonLabel: "Practice SRv6 uSID", description: "The lesson's eight-router chain on IOS XR with uSID (F3216) locators: see R1 pack policy GREEN's SIDs into 128-bit carriers, compare classic and compressed overhead from the real list, follow the active uSID router by router through every shift and carrier boundary, edit the segment list, switch nodes between uSID and classic; open every router and solve five tickets from evidence."}} contextNote={currentStep && ["r6-boundary-cross", "diagnostic-ladder", "repair-challenge", "compression-comparison", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -713,7 +750,7 @@ export default function Srv6CsidDemo() {
         ))}
       </div>
 
-      <div className="mb-4 flex gap-1 overflow-x-auto pb-2">
+      <div className="mb-4 flex gap-px pb-2 sm:gap-1">
         {srv6CsidSteps.map((step, i) => (
           <button
             key={step.id}
@@ -721,7 +758,7 @@ export default function Srv6CsidDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-3 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 min-w-0 flex-1 rounded-full transition-colors sm:min-w-1", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -746,8 +783,8 @@ export default function Srv6CsidDemo() {
         )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
-        <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

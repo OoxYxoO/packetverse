@@ -1,24 +1,94 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, FieldTable, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, FailureSignatures, FieldTable, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
 import { BASE_PROGRAM } from "@/lib/sim-engine/scenarios/srv6Csid";
 import { BLOCK_TEXT, NEXT_CAPACITY, NEXT_CONTAINERS, NEXT_LAYOUT, NEXT_SRH_STORAGE, NEXT_WALK, REPLACE_CAPACITY, REPLACE_FINAL_DA, REPLACE_INDEX_BITS, REPLACE_LAYOUT, REPLACE_SLOTS, REPLACE_WALK, STRUCTURE } from "./guideModel";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import { createUNet, uApply, uTicket, uTicketState, type UAction, type UR, type URtr, type UState, type UTicketId } from "@/lib/sim-engine/scenarios/ucNet";
+import { ucSets, ucStaticApi } from "./uc-lab/ucCli";
 
 export const SRV6C_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "lc-mission", label: "The mission" },
-  { id: "lc-terms", label: "CSID, NEXT-CSID, REPLACE-CSID" },
-  { id: "lc-structure", label: "SID structure" },
-  { id: "lc-containers", label: "Building the containers" },
-  { id: "lc-shift", label: "The NEXT-CSID shift" },
-  { id: "lc-boundary", label: "Crossing a container boundary" },
-  { id: "lc-endx", label: "End.X and the service SID" },
-  { id: "lc-fault", label: "When compression is refused" },
-  { id: "lc-replace", label: "REPLACE-CSID physical layout" },
-  { id: "lc-index", label: "The Index countdown" },
-  { id: "lc-metrics", label: "What compression saves" },
-  { id: "lc-mistakes", label: "Common mistakes" },
-  { id: "lc-glossary", label: "Glossary" },
-  { id: "lc-recap", label: "Mental model" },
+  { id: "ul-mission", label: "What this lesson teaches" },
+  { id: "ul-network", label: "The network of this lesson" },
+  { id: "ul-ideas", label: "Three ideas you need" },
+  { id: "ul-watch", label: "What you will watch" },
+  { id: "ul-cost", label: "Why classic SRv6 gets heavy" },
+  { id: "ul-structure", label: "Block, node, function" },
+  { id: "ul-carriers", label: "Packing uSIDs into carriers" },
+  { id: "ul-shift", label: "The shift at each node" },
+  { id: "ul-walk", label: "One packet, R1 to R8" },
+  { id: "ul-local", label: "Local uSIDs: uA and uDT4" },
+  { id: "ul-replace", label: "REPLACE-CSID, briefly" },
+  { id: "ul-working", label: "What working looks like" },
+  { id: "ul-incident", label: "The uncompressible-node incident" },
+  { id: "ul-repair", label: "Repair and proof" },
+  { id: "ul-other", label: "Other ways it breaks" },
+  { id: "ul-model", label: "Mental model" },
+  { id: "ul-glossary", label: "Glossary" },
+  { id: "ul-recap", label: "Recap" },
+  { id: "ul-practice", label: "Practice it" },
 ];
+
+/** Real IOS XR output and ping results on this page come from the SRv6 uSID Lab. */
+const NL = String.fromCharCode(10);
+const U0: UState = createUNet(0);
+const run = (s: UState, ...a: UAction[]) => a.reduce((acc, x) => uApply(acc, x), s);
+export const uSet = (text: string, dev: UR, f: (c: URtr) => void): UAction => ({ type: "set", text, changes: [{ dev, f }] });
+export const uTicketRun = (id: UTicketId) => uTicket(id).repro.reduce((acc, a) => uApply(acc, a), uTicketState(id, 1));
+const P100 = run(U0, { type: "ping", size: 100 });
+const P1430 = run(U0, { type: "ping", size: 1430 });
+const INC = uTicketRun("usidloc");
+const INC_FIX = run(INC, uSet("fix", "R4", (c) => void (c.micro = true)), uSet("fix", "R1", (c) => void (c.lists!["PATH-A"].find((e) => e.idx === 30)!.sid = "fcbb:bb00:4::")), { type: "ping", size: 1430 });
+const G = U0.view.green;
+export function ucCli(s: UState, r: UR, command: string) {
+  return runGuideCli(ucSets(ucStaticApi(s, r), r).cisco, command);
+}
+export function ucOnly(s: UState, r: UR, command: string, match: RegExp, keep = 0) {
+  const x = ucCli(s, r, command);
+  return { ...x, output: pickLines(x.output, match, keep) };
+}
+/** Lines from the first match of `from` up to (not including) the first later match of `stop`. */
+export function ucBlock(s: UState, r: UR, command: string, from: RegExp, stop?: RegExp) {
+  const x = ucCli(s, r, command);
+  const lines = x.output.split(NL);
+  const i = lines.findIndex((l) => from.test(l));
+  if (i < 0) return x;
+  let j = stop ? lines.findIndex((l, k) => k > i && stop.test(l)) : -1;
+  if (j < 0) j = lines.length;
+  return { ...x, output: lines.slice(i, j).join(NL) };
+}
+/** One ping, as the lab reports it. */
+export function UcResult({ s, title, i }: { s: UState; title: string; i?: number }) {
+  const t = s.tests[i ?? s.tests.length - 1];
+  return (
+    <Callout tone={t.walk.ok ? "success" : "danger"} title={title} icon={t.walk.ok ? "✓" : "!"}>
+      CE1 → CE8, {t.size} bytes: {t.walk.ok ? `delivered via ${t.walk.path.join(" → ")}, ${t.walk.ms} ms` : t.walk.why} · {t.entries} entr{t.entries > 1 ? "ies" : "y"}, {t.overhead} bytes of overhead
+    </Callout>
+  );
+}
+/** The packet's destination address at each step, from the lab's walk. */
+export function UcHops({ s }: { s: UState }) {
+  const t = s.tests[s.tests.length - 1];
+  return (
+    <FieldTable
+      title="The destination address, step by step (from the lab)"
+      accent="ip"
+      columns={["Where", "Destination address", "Active uSID", "SL", "Event"]}
+      rows={t.walk.hops.filter((h) => h.da && h.kind !== "encap").map((h) => [h.to && h.at !== h.to ? `${h.at} → ${h.to}` : `at ${h.at}`, <Mono key="d">{h.da}</Mono>, h.active ?? "—", String(h.sl ?? "—"), h.kind === "shift" ? "shift" : h.kind === "next" ? "next carrier" : h.kind === "exec" ? "execute" : "route"])}
+    />
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the SRv6 uSID Lab" onPractice={openLab}>
+      The network of this lesson on IOS XR with uSID locators: R1&apos;s carriers, the classic-vs-compressed comparison, the active uSID at every hop, an editable segment list, IOS XR consoles — your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
 
 const FIRST_SHIFT = NEXT_WALK[0];
 const BOUNDARY = NEXT_WALK.find((h) => h.boundary);
@@ -257,142 +327,215 @@ function IndexDiagram() {
   );
 }
 
+
 export function Srv6CsidLessonGuideContent() {
-  const uncompressed = BASE_PROGRAM.length * 16;
-  const compressed = NEXT_CONTAINERS.length * 16;
   return (
-    <>
-      <GuideSection id="lc-mission" eyebrow="Introduction" title="The mission: stop repeating the Locator-Block" tone="cyan">
+    <div className="space-y-12">
+      <GuideSection id="ul-mission" eyebrow="This lesson" title="What this lesson teaches" tone="ip">
         <p>
-          A {BASE_PROGRAM.length}-segment SRv6 program stores {BASE_PROGRAM.length} full 128-bit SIDs, and every one repeats the same Locator-Block. Compressed SIDs pack only the part that differs per hop, while the logical program — which nodes, which behaviors, in which order — stays exactly the same.
+          Every SRv6 lesson so far carried one 128-bit SID per instruction. That works, but a policy that names many waypoints, plus a VPN service SID, quickly costs a hundred bytes or more on every packet — and big packets stop fitting the MTU. This lesson answers: <b className="text-pv-text">how can SRv6 carry a long path with far less header?</b>
         </p>
+        <p>The answer — compressed SIDs, RFC 9800, called <b className="text-pv-text">uSID</b> in the industry and in IOS XR — keeps every router, every behavior and the exact path. It changes only how the instructions are written into the packet. You will see what repeats in every SID, how many instructions fit in one 128-bit carrier, how each router finds and consumes its own, when the packet moves to the next carrier — and the guided lesson&apos;s incident, where one router can&apos;t take part.</p>
+        <ChecklistCard tone="violet" title="By the end of this lesson you can" mark="→" items={["explain what is compressed: the repeated block and padding, not the path", "read a uSID locator, a uN and a uA SID", "pack a SID list into carriers and count the bytes", "follow the active uSID router by router, including the carrier boundary", "explain why local uSIDs only work at their node", "find, fix and prove a compression fault"]} />
       </GuideSection>
 
-      <GuideSection id="lc-terms" eyebrow="Terminology" title="CSID, NEXT-CSID, REPLACE-CSID" tone="violet">
-        <CompareCards
-          items={[
-            { title: "NEXT-CSID", tone: "violet", tag: "RFC 9800 flavor", points: [`${NEXT_LAYOUT.lnflBits}-bit CSIDs in this lesson`, "Shifts the Argument left at each endpoint", "Often called uSID in industry material"] },
-            { title: "REPLACE-CSID", tone: "warning", tag: "RFC 9800 flavor", points: [`${REPLACE_LAYOUT.lnflBits}-bit CSIDs in this lesson`, "Replaces the active CSID from a packed container", "Uses an Index in the DA's low bits"] },
-          ]}
-        />
-        <p>RFC 9800 uses CSID, NEXT-CSID and REPLACE-CSID as its normative terms; &quot;uSID&quot; is industry and historical naming associated with the NEXT-CSID style.</p>
-      </GuideSection>
-
-      <GuideSection id="lc-structure" eyebrow="Foundations" title="SID structure" tone="violet">
-        <DiagramFrame caption="Compression is only safe when every node's advertised structure is known and consistent.">
-          <StructureDiagram />
-        </DiagramFrame>
-        <FieldTable
-          title="Validation outcomes"
-          accent="violet"
-          columns={["Advertised structure", "Result", "Compressible?"]}
-          rows={[
-            ["Consistent (AL matches the formula)", "VALID", "Yes"],
-            ["Nothing advertised", "UNKNOWN", "No — never inferred"],
-            ["Inconsistent (AL does not match)", "INVALID", "No"],
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lc-containers" eyebrow="Encoding" title="Building the containers" tone="ip">
-        <DiagramFrame caption="Values produced by the lesson's own compression function.">
-          <ContainersDiagram />
-        </DiagramFrame>
-        <FieldTable
-          title="SRH storage (reverse order)"
-          accent="ip"
-          columns={["Segment List", "Container", "CSIDs"]}
-          rows={NEXT_SRH_STORAGE.map((e) => [`[${e.index}]`, <Mono key={e.index}>{e.text}</Mono>, e.owners.join(" · ")])}
-        />
-      </GuideSection>
-
-      <GuideSection id="lc-shift" eyebrow="Data plane" title="The NEXT-CSID shift" tone="violet">
-        <DiagramFrame caption="Shown for the first endpoint; every intra-container endpoint does the same.">
-          <ShiftDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="lc-boundary" eyebrow="Data plane" title="Crossing a container boundary" tone="warning">
-        <DiagramFrame caption="The full walk, from the real advance function.">
-          <WalkDiagram />
-        </DiagramFrame>
-        {BOUNDARY && (
-          <p>
-            At {BOUNDARY.router} the last CSID of the first container is consumed. That endpoint behaves like an ordinary End: Segments Left drops {BOUNDARY.slBefore} → {BOUNDARY.slAfter}, the next container is copied into the DA, and Hop Limit still decrements ({BOUNDARY.hlBefore} → {BOUNDARY.hlAfter}).
-          </p>
-        )}
-      </GuideSection>
-
-      <GuideSection id="lc-endx" eyebrow="Variants" title="End.X and the service SID" tone="bgp">
+      <GuideSection id="ul-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
         <p>
-          The same flavor works on End.X: the shift happens, then the packet is forced over the bound adjacency instead of following the IGP. A program may also end on an ordinary service SID such as End.DT4 — the final entry does not need a compression flavor.
+          Eight routers in a chain, R1 to R8, with two higher-metric shortcuts: R3–R5 and an express link R6–R8. CUST&apos;s site 1 sits behind R1 and site 8 behind R8. Policy GREEN on R1 sends CUST&apos;s traffic through R2, R3, R4, R5 and R6, then over the express link — a deliberately long, explicit path — and R8&apos;s VPN service SID finishes the program.
         </p>
-      </GuideSection>
-
-      <GuideSection id="lc-fault" eyebrow="Troubleshooting" title="When compression is refused" tone="danger">
-        <DiagramFrame caption="Refusing to compress is a safety outcome, not a reachability failure.">
-          <FallbackDiagram />
-        </DiagramFrame>
-        <ChecklistCard
-          tone="danger"
-          title="How to reason about it (no spoilers)"
-          mark="→"
-          items={["Confirm the policy is valid and every SID is reachable.", "Compare each node's advertised structure with the formula.", "Look for where the compressed run is split.", "After a fix, resend and verify the expanded program equals the original."]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lc-replace" eyebrow="Second flavor" title="REPLACE-CSID physical layout" tone="warning">
-        <DiagramFrame caption={`K = ${REPLACE_CAPACITY} CSIDs of ${REPLACE_LAYOUT.lnflBits} bits per packed container.`}>
-          <ReplaceSlotsDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="lc-index" eyebrow="Second flavor" title="The Index countdown" tone="warning">
-        <DiagramFrame caption="Each advance reads the position named by the new Index.">
-          <IndexDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="lc-metrics" eyebrow="Measurement" title="What compression saves" tone="cyan">
-        <FieldTable
-          title="Segment-value storage for this program"
-          accent="cyan"
-          columns={["Encoding", "Entries", "Bytes"]}
-          rows={[
-            ["Uncompressed SIDs", String(BASE_PROGRAM.length), String(uncompressed)],
-            ["NEXT-CSID containers", String(NEXT_CONTAINERS.length), String(compressed)],
-          ]}
-        />
-        <p>This counts segment values only — not the IPv6 header, the SRH fixed fields or the payload.</p>
-      </GuideSection>
-
-      <GuideSection id="lc-mistakes" eyebrow="Troubleshooting" title="Common mistakes" tone="warning">
-        <ChecklistCard
-          tone="warning"
-          title="Avoid these"
-          mark="!"
-          items={["Expecting Segments Left to change on every shift.", "Forgetting that the boundary endpoint also decrements Hop Limit.", "Drawing a REPLACE container in travel order and calling it the physical layout.", "Treating an INVALID or UNKNOWN structure as a reachability problem.", "Assuming compression changes the logical program."]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lc-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
-        <Glossary
-          items={[
-            { term: "CSID", def: "Compressed SID — the per-node part of a SID carried inside a container." },
-            { term: "Container", def: "One 128-bit value holding a Locator-Block followed by several CSIDs." },
-            { term: "LBL / LNL / FL / AL", def: "Locator-Block, Locator-Node, Function and Argument lengths, in bits." },
-            { term: "Shift", def: "NEXT-CSID advance inside a container: Argument slides left, SL unchanged." },
-            { term: "Index", def: "REPLACE-CSID counter in the DA's low bits naming the next packed position." },
-            { term: "Padding", def: "Unused CSID slots, filled with zeros." },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lc-recap" eyebrow="Recap" title="Mental model" tone="success">
-        <Callout tone="success" title="One sentence" icon="✓">
-          Validate every structure, pack only what differs per hop, advance inside a container without touching Segments Left, pay one End-style step at each boundary — and always prove the expanded program is unchanged.
+        <Callout tone="cyan" title="The lesson and the lab" icon="i">
+          The guided lesson uses the standards view of RFC 9800: Locator-Block <Mono>{BLOCK_TEXT}</Mono> with {NEXT_LAYOUT.lnflBits}-bit CSIDs, so {NEXT_CAPACITY} fit in a container; its program visits {BASE_PROGRAM.map((x) => x.owner).join(", ")}, and it compares NEXT-CSID with REPLACE-CSID ({REPLACE_LAYOUT.lnflBits}-bit CSIDs). Its incident is a router whose advertised SID structure is inconsistent. The lab runs IOS XR, which deploys NEXT-CSID as <b className="text-pv-text">uSID</b> in format <b className="text-pv-text">F3216</b>: a 32-bit block <Mono>fcbb:bb00::/32</Mono> and 16-bit uSIDs, so <b className="text-pv-text">6</b> fit in a carrier. Its incident is a router whose locator lost its micro-segment behavior — same consequence, an IOS XR cause. Outputs below come from the lab.
         </Callout>
       </GuideSection>
-    </>
+
+      <GuideSection id="ul-ideas" eyebrow="This lesson" title="Three ideas you need" tone="violet">
+        <CompareCards
+          items={[
+            { title: "Block", tone: "violet", tag: "what repeats", points: ["the 32 bits every SID shares", "carried once per carrier"] },
+            { title: "uSID", tone: "cyan", tag: "16 bits", points: ["a node (uN) or a local function (uA, uDT4)", "six fit after the block"] },
+            { title: "Shift", tone: "success", tag: "at each node", points: ["execute the active uSID", "move the rest left"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ul-watch" eyebrow="This lesson" title="What you will watch" tone="cyan">
+        <TroubleshootingFlow
+          steps={[
+            { question: "R1 builds GREEN's SID list", look: `${G.sids.length} SIDs: five from PATH-A, R8's uDT4 from BGP` },
+            { question: "R1 packs them", look: `${G.entries.length} carriers: ${G.entries.map((e) => e.text).join(", ")}` },
+            { question: "R2 … R5 execute and shift", look: "the active uSID moves one place at each node" },
+            { question: "R6 runs out of carrier", look: "uN, then its local uA, then the next SRH entry" },
+            { question: "R8 delivers", look: "uN, then its local uDT4 — decapsulate to CE8" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ul-cost" eyebrow="The problem" title="Why classic SRv6 gets heavy" tone="danger">
+        <p>
+          Written classically, GREEN&apos;s {G.classicEntries} SIDs need {G.classicEntries} full IPv6 addresses: the first in the destination, the other {G.classicEntries - 1} in the SRH. 40 bytes of outer IPv6 + 8 bytes of SRH header + {G.classicEntries - 1} × 16 = <b className="text-pv-text">{G.classicOverhead} bytes</b> on every packet. With a 1500-byte core MTU, a 1430-byte customer packet would need {1430 + G.classicOverhead}.
+        </p>
+        <FieldTable
+          title="GREEN, computed by the lab"
+          accent="danger"
+          columns={["", "Classic", "uSID (what R1 pushes)"]}
+          rows={[
+            ["128-bit entries", String(G.classicEntries), String(G.entries.length)],
+            ["SRH bytes", String(G.classicSrhBytes), String(G.srhBytes)],
+            ["Overhead (40 + SRH)", String(G.classicOverhead), String(G.overhead)],
+            ["1430-byte packet on the wire", `${1430 + G.classicOverhead} ✗`, `${1430 + G.overhead} ✓`],
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ul-structure" eyebrow="Structure" title="Block, node, function" tone="violet">
+        <DiagramFrame caption="The guided lesson's view: Locator-Block, Locator-Node, Function, Argument (RFC 9800).">
+          <StructureDiagram />
+        </DiagramFrame>
+        <p>
+          Every SID is LOC:FUNCT:ARG. With compression the locator splits into a <b className="text-pv-text">block</b> shared by the whole domain and a short <b className="text-pv-text">node</b> part. In the lab every locator is <Mono>fcbb:bb00:N::/48</Mono> — block <Mono>fcbb:bb00</Mono>, node uSID <Mono>N</Mono>. IOS XR marks such a locator with flag <b className="text-pv-text">U</b> (micro-segment).
+        </p>
+        <CliPanel run={ucCli(U0, "R6", "show segment-routing srv6 locator")} caption="IOS XR · R6 — locator MAIN, a micro-segment (uSID) locator" />
+        <CliPanel run={ucCli(U0, "R6", "show segment-routing srv6 sid")} caption="IOS XR · R6 — uN (one uSID) and three uAs (two uSIDs: 6 + a local value)" />
+      </GuideSection>
+
+      <GuideSection id="ul-carriers" eyebrow="Encoding" title="Packing uSIDs into carriers" tone="cyan">
+        <DiagramFrame caption="The guided lesson's containers (48-bit block, 5 CSIDs each).">
+          <ContainersDiagram />
+        </DiagramFrame>
+        <p>
+          With <Mono>sid-format usid-f3216</Mono>, R1 takes GREEN&apos;s SIDs in order and writes their uSIDs one after another behind the block, six per 128-bit <b className="text-pv-text">carrier</b>, never splitting a SID. <Mono>2 3 4 5 6 e002</Mono> fill the first carrier exactly; R8&apos;s uDT4 (<Mono>8 e002</Mono>) starts the second. A carrier is itself a valid IPv6 address — it routes toward the owner of its first uSID.
+        </p>
+        <FieldTable title="The guided lesson's SRH storage (48-bit block, 5 CSIDs per container)" accent="cyan" columns={["Segment List", "Container", "Owners"]} rows={NEXT_SRH_STORAGE.map((e) => [`[${e.index}]`, <Mono key={e.index}>{e.text}</Mono>, e.owners.join(" · ")])} />
+        <CliPanel run={ucOnly(U0, "R1", "show segment-routing traffic-eng policy", /SID format|SID\[|Packed/)} caption="IOS XR · R1 — five SIDs, one packed carrier (the service SID is added at forwarding)" />
+        <CliPanel run={ucOnly(U0, "R1", "show cef vrf CUST 10.8.1.10", /via|SID-list|overhead/)} caption="IOS XR · R1 — what is pushed for site 8: two entries, 64 bytes" />
+      </GuideSection>
+
+      <GuideSection id="ul-shift" eyebrow="Forwarding" title="The shift at each node" tone="success">
+        <DiagramFrame caption="The guided lesson's NEXT-CSID shift.">
+          <ShiftDiagram />
+        </DiagramFrame>
+        <p>
+          The <b className="text-pv-text">active uSID</b> is always the 16 bits right after the block (bits 32–47 of the destination). The router that owns it executes its behavior — uN means “I am a waypoint” — and then <b className="text-pv-text">shifts</b> the remaining uSIDs left by 16 bits, padding with zero. The destination now names the next owner, and ordinary IPv6 routing on the /48 locators takes it there. Segments Left doesn&apos;t move; the SRH is untouched while the carrier still holds uSIDs.
+        </p>
+      </GuideSection>
+
+      <GuideSection id="ul-walk" eyebrow="Forwarding" title="One packet, R1 to R8" tone="ip">
+        <DiagramFrame caption="The guided lesson's walk across two containers.">
+          <WalkDiagram />
+        </DiagramFrame>
+        <UcHops s={P100} />
+        <UcResult s={P100} title="The lab: CE1 → CE8, 100 bytes" />
+        <p className="text-sm text-pv-text-muted">Segments Left changes exactly once — at R6, where the first carrier runs out and the second is copied in.{BOUNDARY ? ` In the guided lesson the boundary is at ${BOUNDARY.router}: Segments Left ${BOUNDARY.slBefore} → ${BOUNDARY.slAfter}.` : ""}</p>
+      </GuideSection>
+
+      <GuideSection id="ul-local" eyebrow="Forwarding" title="Local uSIDs: uA and uDT4" tone="violet">
+        <p>
+          Node uSIDs (2 … 8) are global: every router can route them on their locators. Values from <Mono>e000</Mono> to <Mono>efff</Mono> come from each node&apos;s <b className="text-pv-text">local ID block</b>: they are meaningful only at the node that has just executed its own uN. At R6, <Mono>e002</Mono> is R6&apos;s <b className="text-pv-text">uA</b> toward R8 (forward out that link); at R8, the same <Mono>e002</Mono> is R8&apos;s <b className="text-pv-text">uDT4</b> (decapsulate into VRF CUST). That is why a uA SID is written <Mono>fcbb:bb00:6:e002::</Mono>: two uSIDs, node first.
+        </p>
+        <CliPanel run={ucCli(U0, "R6", "show segment-routing srv6 sid fcbb:bb00:6:e002:: detail")} caption="IOS XR · R6 — the uA's structure and the two uSIDs it occupies" />
+      </GuideSection>
+
+      <GuideSection id="ul-replace" eyebrow="Briefly" title="REPLACE-CSID, briefly" tone="cyan">
+        <DiagramFrame caption="The guided lesson's REPLACE-CSID packed container and its index.">
+          <ReplaceSlotsDiagram />
+        </DiagramFrame>
+        <DiagramFrame caption="The guided lesson's REPLACE-CSID index: which packed CSID is next.">
+          <IndexDiagram />
+        </DiagramFrame>
+        <p>RFC 9800 defines a second flavor. REPLACE-CSID keeps the full first SID in the destination and packs further 32-bit CSIDs into SRH entries that carry no block; an index in the argument says which one is next, and the destination&apos;s CSID is <i>replaced</i> rather than shifted. The guided lesson walks it ({REPLACE_CAPACITY} CSIDs per packed entry, {REPLACE_INDEX_BITS}-bit index). IOS XR deploys NEXT-CSID (uSID), so the lab does too.</p>
+      </GuideSection>
+
+      <GuideSection id="ul-working" eyebrow="Evidence" title="What working looks like" tone="success">
+        <FieldTable
+          title="Healthy, in five questions (IOS XR)"
+          accent="success"
+          columns={["Question", "Command", "Healthy answer"]}
+          rows={[
+            ["Is every locator micro-segment?", <Mono key="1">show segment-routing srv6 locator</Mono>, "flag U on every router"],
+            ["Does R1 pack?", <Mono key="2">show segment-routing traffic-eng policy</Mono>, "SID format usid-f3216, packed carriers"],
+            ["What is pushed, how big?", <Mono key="3">show cef vrf CUST 10.8.1.10</Mono>, "2 entries, 64 bytes"],
+            ["Do the local uSIDs exist?", <Mono key="4">show segment-routing srv6 sid</Mono>, "R6 uA e002 → R8, R8 uDT4 e002"],
+            ["Does it work, big and small?", <Mono key="5">ping vrf CUST 10.8.1.10 size 1430</Mono>, "!!!!! — 11 ms over the express link"],
+          ]}
+        />
+        <UcResult s={P1430} title="The lab: CE1 → CE8, 1430 bytes" />
+      </GuideSection>
+
+      <GuideSection id="ul-incident" eyebrow="Incident" title="The uncompressible-node incident" tone="danger">
+        <DiagramFrame caption="The guided lesson's fallback: an uncompressible SID is carried in its own entry.">
+          <FallbackDiagram />
+        </DiagramFrame>
+        <p>
+          In the guided lesson, R4 advertises an inconsistent SID structure (AL 48 where 128 − 48 − 16 − 0 = 64): R4 is reachable, the policy is valid, packets are delivered — but R4 can&apos;t be compressed, so the encoding falls back to a mixed list. In the lab the same thing happens for an IOS XR reason: R4&apos;s locator lost <Mono>micro-segment behavior unode psp-usd</Mono>. R4 now allocates a classic End SID, <Mono>fcbb:bb00:4:1::</Mono>, the provisioning tool put it into PATH-A — and a classic SID can&apos;t share a carrier.
+        </p>
+        <UcResult s={INC} i={0} title="The lab: 100 bytes (the ticket)" />
+        <UcResult s={INC} title="The lab: 1430 bytes (the ticket)" />
+        <TroubleshootingFlow
+          steps={[
+            { question: "Is anything unreachable?", look: "No — small packets are delivered over the same path." },
+            { question: "How many entries does R1 push?", look: "Three, not two: 80 bytes of overhead." },
+            { question: "Which SID breaks the packing?", look: "fcbb:bb00:4:1:: — a classic SID in its own entry." },
+            { question: "Why is it classic?", look: "R4's locator has no micro-segment behavior (no U flag)." },
+          ]}
+        />
+        <CliPanel run={ucOnly(INC, "R1", "show segment-routing traffic-eng policy", /SID\[2\]|Packed/)} caption="IOS XR · R1 — three carriers for five SIDs" />
+        <CliPanel run={ucCli(INC, "R4", "show segment-routing srv6 locator")} caption="IOS XR · R4 — no U flag: a classic locator" />
+        <CliPanel run={ucOnly(INC, "R1", "show cef vrf CUST 10.8.1.10", /SID-list|overhead/)} caption="IOS XR · R1 — 80 bytes of overhead" />
+      </GuideSection>
+
+      <GuideSection id="ul-repair" eyebrow="Incident" title="Repair and proof" tone="success">
+        <p>Two changes: make R4&apos;s locator a uSID locator again, and put R4&apos;s uN back into PATH-A.</p>
+        <CliPanel run={{ prompt: "RP/0/RP0/CPU0:R4(config)#", command: "segment-routing srv6 locators locator MAIN", output: "RP/0/RP0/CPU0:R4(config-srv6-locator)#micro-segment behavior unode psp-usd\nRP/0/RP0/CPU0:R4(config-srv6-locator)#commit" }} caption="IOS XR · R4 — the locator" />
+        <CliPanel run={{ prompt: "RP/0/RP0/CPU0:R1(config)#", command: "segment-routing traffic-eng segment-lists segment-list PATH-A srv6", output: "RP/0/RP0/CPU0:R1(config-sr-te-sl-srv6)#index 30 sid fcbb:bb00:4::\nRP/0/RP0/CPU0:R1(config-sr-te-sl-srv6)#commit" }} caption="IOS XR · R1 — the segment list" />
+        <CliPanel run={ucOnly(INC_FIX, "R1", "show cef vrf CUST 10.8.1.10", /SID-list|overhead/)} caption="IOS XR · R1 — two entries, 64 bytes again" />
+        <UcResult s={INC_FIX} title="The lab: a fresh 1430-byte ping" />
+        <ChecklistCard tone="success" title="Proved, not assumed" mark="✓" items={["R4's locator carries the U flag", "R1 pushes two carriers, 64 bytes of overhead", "a fresh 1430-byte ping is delivered over the same path", "the lesson: compression changes the encoding — one uncompressible node costs a whole 128-bit entry"]} />
+      </GuideSection>
+
+      <GuideSection id="ul-other" eyebrow="Beyond this incident" title="Other ways it breaks" tone="warning">
+        <FailureSignatures
+          items={[
+            { tag: "ORD", title: "uSIDs in the wrong order", tone: "warning", points: ["carrier order = execution order", "a longer path, no drop"] },
+            { tag: "LIB", title: "Stale local uSID", tone: "danger", points: ["a uA re-allocated", "dropped at that node"] },
+            { tag: "LOC", title: "Locator not advertised", tone: "danger", points: ["first uSID unreachable", "policy down, IGP path"] },
+            { tag: "FMT", title: "Headend doesn't pack", tone: "violet", points: ["no sid-format", "one entry per SID"] },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Each is a ticket in the SRv6 uSID Lab, together with this incident.</p>
+      </GuideSection>
+
+      <GuideSection id="ul-model" eyebrow="Mental model" title="Mental model" tone="cyan">
+        <p>
+          Think of a delivery manifest. The classic way writes the full company address on a new line for every stop: “Acme Logistics, Depot 2”, “Acme Logistics, Depot 3”… The compressed way writes “Acme Logistics” once and then a row of depot numbers: 2 · 3 · 4 · 5 · 6. Each depot crosses off its own number and the driver heads for the next one on the line. Some entries are not depots but notes for the depot just visited — “at 6, take the express road” — that no other depot would understand. When the line is full, the driver turns to the next page. If one depot only accepts its full old-style address, it needs a line of its own, and the manifest gets longer.
+        </p>
+        <Callout tone="cyan" title="When it breaks, ask in this order" icon="→">
+          What does the customer see — size-dependent or not? Is GREEN up? Is every locator micro-segment and advertised? How does R1 pack the list, and how many bytes? Is the uSID order the path order? Do the local uSIDs still exist at their nodes?
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="ul-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
+        <Glossary
+          items={[
+            { term: "CSID / uSID", def: "A compressed SID: 16 bits (here) that stand for a full SID within a shared block." },
+            { term: "NEXT-CSID", def: "RFC 9800 flavor where each node shifts the next CSID into place — IOS XR's uSID." },
+            { term: "Block", def: "The bits every SID of the domain shares (fcbb:bb00::/32)." },
+            { term: "Carrier (container)", def: "One 128-bit entry: the block plus up to six uSIDs." },
+            { term: "uN / uA / uDT4", def: "Node, adjacency and VPN-decapsulation behaviors with NEXT-CSID." },
+            { term: "Local ID block", def: "Function values (e000–efff) meaningful only at their own node." },
+            { term: "F3216", def: "IOS XR's uSID format: 32-bit block, 16-bit uSIDs." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ul-recap" eyebrow="Reference" title="Recap" tone="success">
+        <ChecklistCard tone="success" title="You can now" mark="✓" items={["say what compression removes", "read uSID locators and SIDs", "pack a list and count its bytes", "follow the active uSID and the carrier boundary", "explain local uSIDs", "find, fix and prove a compression fault"]} />
+      </GuideSection>
+
+      <GuideSection id="ul-practice" eyebrow="Next" title="Practice it" tone="violet">
+        <p>The Deep Dive tab covers compressed SRv6 in full: RFC 9800, SID structure and capacity, NEXT-CSID and REPLACE-CSID mechanics, the global and local ID blocks, control-plane advertisement, header size, IOS XR configuration and verification, and every failure signature with real evidence. The lab lets you pack and break it yourself.</p>
+        <LessonLabBridge />
+        <PresentationBridge>Rewatch the SRv6 uSID / CSID presentation.</PresentationBridge>
+      </GuideSection>
+    </div>
   );
 }

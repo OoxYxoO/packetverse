@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -66,13 +66,18 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { SxPresentation } from "./SxPresentation";
+import { SxLabWorkspace } from "./sx-lab/SxLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { SRV6F_BRIEFING_NOTES, SRV6F_BRIEFING_PHASES } from "./briefing";
 import { SRV6F_LESSON_SECTIONS, Srv6FoundationsLessonGuideContent } from "./LessonGuideContent";
 import { SRV6F_DEEP_DIVE_SECTIONS, Srv6FoundationsDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "R1 → R6 · End SIDs on R3, R5, R6 · ⟨R3, R6⟩ and ⟨R3, R5, R6⟩", sections: SRV6F_LESSON_SECTIONS, content: <Srv6FoundationsLessonGuideContent /> },
-  { id: "deep", label: "SRv6 Deep Dive", hint: "SRv6 in general", sections: SRV6F_DEEP_DIVE_SECTIONS, content: <Srv6FoundationsDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "R1 → R6 · End SIDs on R3, R5, R6 · ⟨R3, R6⟩ and ⟨R3, R5, R6⟩ · real IOS XR output", sections: SRV6F_LESSON_SECTIONS, content: <Srv6FoundationsLessonGuideContent /> },
+  { id: "deep", label: "SRv6 Deep Dive", hint: "SRv6 in depth · RFC 8754 / 8986 · IOS XR", sections: SRV6F_DEEP_DIVE_SECTIONS, content: <Srv6FoundationsDeepDiveContent /> },
 ];
 
 const DEVICE_ROUTERS: RouterId[] = ALL_ROUTERS;
@@ -141,6 +146,20 @@ export default function Srv6FoundationsDemo() {
   const [labOrder, setLabOrder] = useState<RouterId[]>(["R6"]);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the SRv6 Foundations Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -586,8 +605,26 @@ export default function Srv6FoundationsDemo() {
           needed — no MPLS label stack anywhere underneath.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 Foundations" subtitle="Locators 2001:db8:100:N::/64 · End SIDs :N:1:: · full SRH" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice SRv6" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 Foundations" subtitle="Locators 2001:db8:100:N::/64 · End SIDs 2001:db8:100:N:1:: · SRH and End" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <SxPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the SRv6 Foundations Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <SxLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="SRv6 Foundations" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "SRv6 Foundations Lab", buttonLabel: "Practice SRv6", description: "The lesson's hexagon on IOS XR with SRv6: read locators, local SID tables and the IS-IS advertisements, send segment lists from R1 and follow the outer header and the SRH hop by hop, ping SIDs, change metrics and MTUs, rebuild a router's SRv6; open every router and solve five tickets from evidence." }} contextNote={currentStep && ["local-sid-table-intro", "segment-lab-intro", "diagnostic-ladder", "repair-challenge", "engineer-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -618,7 +655,7 @@ export default function Srv6FoundationsDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-3 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-3", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -662,9 +699,9 @@ export default function Srv6FoundationsDemo() {
         {showViews && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
