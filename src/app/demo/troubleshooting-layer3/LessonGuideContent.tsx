@@ -1,25 +1,71 @@
-import { Callout, ChecklistCard, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, DLink, DNode, FailureSignatures, FieldTable, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { DFieldRow, DTable } from "@/components/lesson/FundamentalsGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
-import { LadderDiagram, SeqLanes, WorkflowDiagram } from "@/components/lesson/TroubleshootingGuideSvg";
+import { SeqLanes } from "@/components/lesson/TroubleshootingGuideSvg";
 import { FAULT_PREFIX, GOOD_PREFIX, L3, L3_MAC, maskOf, networkOf } from "@/lib/sim-engine/scenarios/troubleshootingLayer3";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import { createL3Net, l3Apply, l3Ticket, l3TicketState, testOk, testText, type L3Action, type L3D, type L3State, type L3TicketId } from "@/lib/sim-engine/scenarios/l3tsNet";
+import { l3Sets, l3StaticApi } from "./l3-lab/l3Cli";
 
 export const L3_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "l3l-mission", label: "The mission" },
-  { id: "l3l-method", label: "The method" },
-  { id: "l3l-topology", label: "Topology" },
-  { id: "l3l-decision", label: "Local or remote?" },
-  { id: "l3l-arp", label: "ARP for the next hop" },
-  { id: "l3l-two-dst", label: "Gateway MAC, remote IP" },
-  { id: "l3l-ttl", label: "TTL along the path" },
-  { id: "l3l-scope", label: "Scoping the symptom" },
-  { id: "l3l-lpm", label: "Which route wins" },
-  { id: "l3l-broken", label: "The broken attempt" },
-  { id: "l3l-r1", label: "R1 sees nothing" },
-  { id: "l3l-ladder", label: "Evidence ladder" },
-  { id: "l3l-verify", label: "Repair & verify" },
+  { id: "l3l-mission", label: "What this lesson teaches" },
+  { id: "l3l-network", label: "The network of this lesson" },
+  { id: "l3l-ideas", label: "Three ideas you need" },
+  { id: "l3l-watch", label: "What you will watch" },
+  { id: "l3l-decide", label: "The host decides first" },
+  { id: "l3l-arp", label: "ARP finds the next hop" },
+  { id: "l3l-frame", label: "Two addresses, two layers" },
+  { id: "l3l-routers", label: "Routers, hop by hop" },
+  { id: "l3l-working", label: "What working looks like" },
+  { id: "l3l-incident", label: "The incident" },
+  { id: "l3l-decision", label: "What CLIENT decides now" },
+  { id: "l3l-arpfail", label: "An ARP nobody answers" },
+  { id: "l3l-r1", label: "R1's side of the story" },
+  { id: "l3l-repair", label: "Repair and proof" },
+  { id: "l3l-other", label: "Other ways it breaks" },
+  { id: "l3l-model", label: "Mental model" },
   { id: "l3l-glossary", label: "Glossary" },
+  { id: "l3l-recap", label: "Recap" },
+  { id: "l3l-practice", label: "Practice it" },
 ];
+
+/** Real Linux and Junos output on this page comes from the Layer 3 Lab. */
+const run = (s: L3State, ...a: L3Action[]) => a.reduce((acc, x) => l3Apply(acc, x), s);
+export const l3TicketRun = (id: L3TicketId) => l3Ticket(id).repro.reduce((acc, a) => l3Apply(acc, a), l3TicketState(id, 1));
+export const pS: L3Action = { type: "ping", from: "CLIENT", dst: L3.server, count: 4 };
+export const pR: L3Action = { type: "ping", from: "CLIENT", dst: L3.remote, count: 4 };
+export const L3G = run(createL3Net(0), pS, pR, { type: "trace", from: "CLIENT", dst: L3.remote });
+export const L3_INC = l3TicketRun("mask");
+export const L3_FIX = run(L3_INC, { type: "host", dev: "CLIENT", cfg: { addrs: [{ ip: L3.client, len: 24 }], gw: L3.gw }, text: "10.10.10.10/24 + default via 10.10.10.1" }, pS, pR);
+export function l3Cli(s: L3State, d: L3D, command: string) {
+  return runGuideCli(l3Sets(l3StaticApi(s, d), d).juniper, command);
+}
+export function l3Only(s: L3State, d: L3D, command: string, match: RegExp, keep = 0) {
+  const x = l3Cli(s, d, command);
+  return { ...x, output: pickLines(x.output, match, keep) };
+}
+/** Tests as the lab reports them (from test `from` on). */
+export function L3Result({ s, title, from = 0 }: { s: L3State; title: string; from?: number }) {
+  const ts = s.tests.slice(from);
+  const ok = ts.every(testOk);
+  return (
+    <Callout tone={ok ? "success" : "danger"} title={title} icon={ok ? "✓" : "!"}>
+      {ts.map(testText).join(" · ")}
+    </Callout>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the Layer 3 Lab" onPractice={openLab}>
+      The lesson&apos;s network live: CLIENT&apos;s routing decision, every ARP cache, both routers&apos; tables, ping and traceroute hop by hop, Junos and Linux consoles — your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
 
 function TopologyDiagram() {
   return (
@@ -225,115 +271,204 @@ function VerifyDiagram() {
   );
 }
 
+
+const T = { gateway: l3TicketRun("gateway"), noroute: l3TicketRun("noroute"), return: l3TicketRun("return"), loop: l3TicketRun("loop") };
+
 export function L3LessonGuideContent() {
   return (
     <div className="space-y-12">
-      <GuideSection id="l3l-mission" eyebrow="Mission" title="Every IPv4 packet starts with a host's decision" tone="cyan">
-        <p>Before a single frame leaves, a host decides whether the destination is on its own segment or behind a router. That decision — driven by the prefix length — chooses who it ARPs for and where the frame goes. This lesson follows the decision, then troubleshoots a host that gets it wrong.</p>
+      <GuideSection id="l3l-mission" eyebrow="This lesson" title="What this lesson teaches" tone="cyan">
+        <p>
+          “The server is unreachable” sends people straight to the router. But before any router sees a packet, the sending host has already made the most important decision: is the destination on my own network, or do I send it to my gateway? Get that wrong and the router never even hears about the packet. This lesson answers: <b className="text-pv-text">how do you follow a packet&apos;s journey decision by decision — host, ARP, router, router — and find the one that&apos;s wrong?</b>
+        </p>
+        <p>You will see how a host&apos;s address, prefix length and default route build its routing table, how ARP resolves only the next hop, why the Ethernet and IP destinations differ, and how routers forward hop by hop. Then you will chase the guided lesson&apos;s incident — one server reachable, one not, behind the same router — and prove the repair.</p>
+        <ChecklistCard tone="cyan" title="By the end of this lesson you can" mark="→" items={["predict a host's on-link/gateway decision from its address, prefix and default route", "say whose MAC a host ARPs for, and why", "read a router's routing table and a traceroute", "tell the sender's own errors from a router's, and both from silence", "find a wrong prefix length, gateway, missing route, missing return route or loop", "prove a repair with fresh pings in both directions"]} />
       </GuideSection>
 
-      <GuideSection id="l3l-method" eyebrow="Method" title="The same workflow, at Layer 3" tone="violet">
-        <DiagramFrame caption="Scope by destination before suspecting the path.">
-          <DiagramSvg h={82} label="Troubleshooting workflow">
-            <WorkflowDiagram notes={["which dest?", "what works?", "tables, ARP", "one cause", "far side", "one change", "the packet"]} />
-          </DiagramSvg>
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-topology" eyebrow="Topology" title="One client, two routers, two servers" tone="cyan">
-        <DiagramFrame caption="Both servers share the path from CLIENT to R2.">
+      <GuideSection id="l3l-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="The guided lesson's topology.">
           <TopologyDiagram />
         </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-decision" eyebrow="Host logic" title="Local or remote?" tone="ip">
-        <DiagramFrame caption="The mask decides what the host believes is on-link.">
-          <DecisionDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-arp" eyebrow="ARP" title="ARP resolves the next hop" tone="warning">
-        <DiagramFrame caption="Broadcast request, unicast reply.">
-          <ArpDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-two-dst" eyebrow="Addressing" title="Gateway MAC, remote IP" tone="ip">
-        <DiagramFrame caption="Two layers, two different destinations in one frame.">
-          <TwoDestinationsDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-ttl" eyebrow="Forwarding" title="TTL along the path" tone="violet">
-        <DiagramFrame caption="Count routers by TTL.">
-          <TtlDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-scope" eyebrow="Incident" title="Scope before you suspect the path" tone="warning">
-        <DiagramFrame caption="The shared path works — the difference is per destination.">
-          <ScopeDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-lpm" eyebrow="Longest match" title="Which route wins on CLIENT" tone="danger">
-        <DiagramFrame caption="The default route is fine — it just never gets a chance.">
-          <LpmDiagram />
-        </DiagramFrame>
-        <Callout tone="warning" title="Not a 'broken default route'">
-          A default gateway is consulted only when no longer prefix matches. With a /16, the connected route covers 10.10.20.20, so CLIENT treats it as a neighbor.
+        <p>
+          CLIENT (<Mono>{L3.client}/{GOOD_PREFIX}</Mono>) sits behind switch SW1 on a LAN with R1 (<Mono>{L3.gw}</Mono>). R1 and R2 share a /31 transit link (<Mono>192.0.2.0/31</Mono>). Behind R2: SERVER (<Mono>{L3.server}</Mono>, 10.20.20.0/24) and REMOTE-SERVER (<Mono>{L3.remote}</Mono>, 10.10.20.0/24). Note how similar 10.10.20.20 looks to CLIENT&apos;s own 10.10.10.10 — that matters later.
+        </p>
+        <Callout tone="cyan" title="The lesson and the lab" icon="i">
+          The guided lesson walks the incident byte by byte on these devices. The lab runs the same network live: R1 and R2 are Junos routers with static routes, the hosts are Linux with <Mono>ip addr</Mono>, <Mono>ip route</Mono>, <Mono>ip route get</Mono>, <Mono>ip neigh</Mono>, <Mono>ping</Mono> and <Mono>traceroute</Mono>. Every packet is walked as the devices would — longest-prefix match, ARP per segment, TTL, ICMP errors back to the source. Outputs below come from the lab.
         </Callout>
       </GuideSection>
 
-      <GuideSection id="l3l-broken" eyebrow="Evidence" title="The broken attempt" tone="danger">
-        <DiagramFrame caption="An ARP for a remote address is the fingerprint.">
-          <BrokenDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-r1" eyebrow="Evidence" title="R1 sees nothing to route" tone="violet">
-        <DiagramFrame caption="Absence of traffic at R1 points back at the sender.">
-          <R1Diagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-ladder" eyebrow="Ladder" title="The lowest failing rung" tone="cyan">
-        <DiagramFrame caption="Addressing failed; everything the packet would have used is healthy.">
-          <DiagramSvg h={150} label="Evidence ladder for this incident">
-            <LadderDiagram
-              rows={[
-                { rung: "Physical / Ethernet", evidence: "links up · broadcasts flooded", status: "ok" },
-                { rung: "ARP / neighbor", evidence: `${L3.remote} INCOMPLETE (symptom)`, status: "suspect" },
-                { rung: "IP addressing", evidence: `CLIENT /${FAULT_PREFIX} vs plan /${GOOD_PREFIX}`, status: "fail" },
-                { rung: "Routing / forwarding", evidence: "R1, R2 routes correct", status: "ok" },
-                { rung: "Destination", evidence: "answers R2 5/5", status: "ok" },
-              ]}
-            />
-          </DiagramSvg>
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="l3l-verify" eyebrow="Verify" title="Fix the host, prove it with the packet" tone="success">
-        <DiagramFrame caption="The proof is the frame the broken host never produced.">
-          <VerifyDiagram />
-        </DiagramFrame>
-        <ChecklistCard tone="success" title="Verified" mark="✓" items={[`CLIENT table: ${networkOf(L3.client, GOOD_PREFIX)}/${GOOD_PREFIX} connected + default via ${L3.gw}`, `ARP for ${L3.gw} (not ${L3.remote})`, `Echo: Ethernet dst R1, IPv4 dst ${L3.remote}; TTL 64 → 63 → 62`, `${L3.remote} 5/5; ${L3.server} still 5/5`]} />
-        <p>
-          On a Linux host, <Mono>ip route get 10.10.20.20</Mono> shows the chosen route and next hop in one line — the fastest way to see this fault.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="l3l-glossary" eyebrow="Glossary" title="Terms" tone="cyan">
-        <Glossary
+      <GuideSection id="l3l-ideas" eyebrow="This lesson" title="Three ideas you need" tone="violet">
+        <CompareCards
           items={[
-            { term: "Prefix length / mask", def: "How many leading bits of an address name its network (/24 = 255.255.255.0)." },
-            { term: "Connected route", def: "A route created automatically from an interface's address and prefix length." },
-            { term: "On-link", def: "Reachable directly on the local segment — resolved with ARP for the destination itself." },
-            { term: "Default gateway", def: "The router used for destinations that no more specific route covers." },
-            { term: "Longest-prefix match", def: "Among matching routes, the one with the longest prefix wins." },
-            { term: "Proxy ARP", def: "A router answering ARP on behalf of other addresses — can mask host misconfigurations." },
+            { title: "The host decides", tone: "cyan", tag: "its own table", points: ["address + prefix → connected route", "gateway → default route; longest wins"] },
+            { title: "ARP the next hop", tone: "violet", tag: "Layer 2", points: ["frame to the next hop's MAC", "IP destination stays the final host"] },
+            { title: "Hop by hop", tone: "success", tag: "routers", points: ["look up, TTL − 1, resolve next hop", "errors go back to the source"] },
           ]}
         />
+      </GuideSection>
+
+      <GuideSection id="l3l-watch" eyebrow="This lesson" title="What you will watch" tone="cyan">
+        <TroubleshootingFlow
+          steps={[
+            { question: "A healthy network", look: L3G.tests.slice(0, 2).map(testText).join(" · ") },
+            { question: "The incident", look: L3_INC.tests.map(testText).join(" · ") },
+            { question: "CLIENT's decision", look: "10.10.20.20 now matches CLIENT's own connected route" },
+            { question: "The evidence", look: "a FAILED ARP on CLIENT; R1 heard a request “not for me” and never saw an IPv4 packet" },
+            { question: "Repair and proof", look: "10.10.10.10/24 + default route → both servers answer" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="l3l-decide" eyebrow="Healthy" title="The host decides first" tone="cyan">
+        <DiagramFrame caption="The guided lesson's local-or-remote test.">
+          <DecisionDiagram />
+        </DiagramFrame>
+        <p>
+          Configuring <Mono>{L3.client}/{GOOD_PREFIX}</Mono> gives CLIENT a connected route for <Mono>{networkOf(L3.client, GOOD_PREFIX)}/{GOOD_PREFIX}</Mono> (mask {maskOf(GOOD_PREFIX)}); the gateway adds <Mono>0.0.0.0/0 via {L3.gw}</Mono>. For every destination the kernel picks the <b className="text-pv-text">longest matching prefix</b>: a connected match means on-link (ARP for the destination itself), only the default means “send to the gateway”.
+        </p>
+        <CliPanel run={l3Cli(L3G, "CLIENT", "ip route")} caption="Linux · CLIENT — the default route and the connected /24" />
+        <CliPanel run={l3Cli(L3G, "CLIENT", "ip route get 10.10.20.20")} caption="Linux · CLIENT — REMOTE-SERVER: via the gateway" />
+      </GuideSection>
+
+      <GuideSection id="l3l-arp" eyebrow="Healthy" title="ARP finds the next hop" tone="violet">
+        <DiagramFrame caption="The guided lesson's ARP request for the gateway.">
+          <ArpDiagram />
+        </DiagramFrame>
+        <p>To put a packet on the wire toward the gateway, CLIENT needs the gateway&apos;s MAC. It broadcasts “who has {L3.gw}?”; only the owner of that address answers. CLIENT never ARPs for SERVER — it never needs SERVER&apos;s MAC.</p>
+        <CliPanel run={l3Cli(L3G, "CLIENT", "ip neigh")} caption="Linux · CLIENT — only R1's MAC in the cache" />
+        <CliPanel run={l3Cli(L3G, "R2", "show arp no-resolve")} caption="Junos · R2 — R2 resolved its own next hops: R1, SERVER, REMOTE-SERVER" />
+      </GuideSection>
+
+      <GuideSection id="l3l-frame" eyebrow="Healthy" title="Two addresses, two layers" tone="ip">
+        <DiagramFrame caption="The guided lesson's echo leaving CLIENT.">
+          <TwoDestinationsDiagram />
+        </DiagramFrame>
+        <p>The echo request leaves CLIENT in a frame addressed to <b className="text-pv-text">R1&apos;s MAC</b> (<Mono>{L3_MAC.R1_LAN.toLowerCase()}</Mono>) but carries <b className="text-pv-text">SERVER&apos;s IP</b>. At every router the Ethernet header is replaced for the next segment; the IP addresses stay end to end.</p>
+      </GuideSection>
+
+      <GuideSection id="l3l-routers" eyebrow="Healthy" title="Routers, hop by hop" tone="success">
+        <DiagramFrame caption="The guided lesson's TTL at each hop.">
+          <TtlDiagram />
+        </DiagramFrame>
+        <p>Each router looks up the destination in its own table (longest prefix), decrements TTL, resolves its own next hop with ARP and sends the packet on. traceroute exposes the path: probes with TTL 1, 2, 3… make each router answer “time exceeded” from the interface the probe arrived on.</p>
+        <CliPanel run={l3Cli(L3G, "R1", "show route")} caption="Junos · R1 — Direct, Local and two Static routes via 192.0.2.1" />
+        <CliPanel run={l3Cli(L3G, "CLIENT", "traceroute -n 10.10.20.20")} caption="Linux · CLIENT — R1, R2 (its transit address), REMOTE-SERVER" />
+      </GuideSection>
+
+      <GuideSection id="l3l-working" eyebrow="Evidence" title="What working looks like" tone="success">
+        <FieldTable
+          title="Healthy, in five questions"
+          accent="success"
+          columns={["Question", "Where", "Healthy answer"]}
+          rows={[
+            ["What does CLIENT decide?", <Mono key="1">ip route get &lt;ip&gt;</Mono>, "both servers via 10.10.10.1"],
+            ["Did ARP resolve the next hop?", <Mono key="2">ip neigh</Mono>, "10.10.10.1 REACHABLE, nothing FAILED"],
+            ["Does R1 have a route onward?", <Mono key="3">show route &lt;ip&gt;</Mono>, "Static via 192.0.2.1"],
+            ["Does R2 deliver and route back?", <Mono key="4">show route on R2</Mono>, "Direct for both server LANs, Static back to 10.10.10.0/24"],
+            ["Do both servers answer?", <Mono key="5">ping · traceroute</Mono>, "4/4, 3 hops"],
+          ]}
+        />
+        <L3Result s={L3G} title="The lab: the healthy baseline" />
+      </GuideSection>
+
+      <GuideSection id="l3l-incident" eyebrow="Incident" title="The incident" tone="danger">
+        <Callout tone="danger" title="The report" icon="!">
+          {l3Ticket("mask").report}
+        </Callout>
+        <DiagramFrame caption="The guided lesson's scope: one reachable, one not.">
+          <ScopeDiagram />
+        </DiagramFrame>
+        <L3Result s={L3_INC} title="The lab: reproducing it" />
+        <CliPanel run={l3Cli(L3_INC, "CLIENT", "ping -c 3 10.10.20.20")} caption="Linux · CLIENT — Destination Host Unreachable, from CLIENT's own address" />
+        <p>Notice who reports the failure: <b className="text-pv-text">CLIENT itself</b> (10.10.10.10), not R1. That message means “I couldn&apos;t resolve the next hop&apos;s MAC” — the packet never left CLIENT.</p>
+      </GuideSection>
+
+      <GuideSection id="l3l-decision" eyebrow="Investigation" title="What CLIENT decides now" tone="ip">
+        <DiagramFrame caption="The guided lesson's longest-prefix match with /16.">
+          <LpmDiagram />
+        </DiagramFrame>
+        <CliPanel run={l3Cli(L3_INC, "CLIENT", "ip addr")} caption="Linux · CLIENT — 10.10.10.10/16" />
+        <CliPanel run={l3Cli(L3_INC, "CLIENT", "ip route")} caption="Linux · CLIENT — the connected route is now 10.10.0.0/16" />
+        <CliPanel run={l3Cli(L3_INC, "CLIENT", "ip route get 10.10.20.20")} caption="Linux · CLIENT — REMOTE-SERVER is now “on-link”: no via" />
+        <CliPanel run={l3Cli(L3_INC, "CLIENT", "ip route get 10.20.20.20")} caption="Linux · CLIENT — SERVER still via the gateway" />
+        <p>With /{FAULT_PREFIX}, 10.10.20.20 matches the connected 10.10.0.0/16 — and /16 beats /0. 10.20.20.20 is outside 10.10.0.0/16, so only the default route matches it. That&apos;s the whole asymmetry.</p>
+      </GuideSection>
+
+      <GuideSection id="l3l-arpfail" eyebrow="Investigation" title="An ARP nobody answers" tone="warning">
+        <DiagramFrame caption="The guided lesson's failed attempt.">
+          <BrokenDiagram />
+        </DiagramFrame>
+        <CliPanel run={l3Cli(L3_INC, "CLIENT", "ip neigh")} caption="Linux · CLIENT — 10.10.20.20 FAILED: asked on the LAN, never answered" />
+        <p className="text-sm text-pv-text-muted">CLIENT asks its own LAN “who has 10.10.20.20?”. REMOTE-SERVER is two routers away; nobody on the LAN owns that address, so nobody answers. No IPv4 packet for it is ever sent.</p>
+      </GuideSection>
+
+      <GuideSection id="l3l-r1" eyebrow="Investigation" title="R1's side of the story" tone="violet">
+        <DiagramFrame caption="The guided lesson's view from R1.">
+          <R1Diagram />
+        </DiagramFrame>
+        <CliPanel run={l3Only(L3_INC, "R1", "show system statistics arp", /ARP requests received|not for me|ARP replies sent/)} caption="Junos · R1 — ARP requests that were not for R1" />
+        <CliPanel run={l3Cli(L3_INC, "R1", "show route 10.10.20.20")} caption="Junos · R1 — the route to 10.10.20.0/24 is there" />
+        <ChecklistCard tone="violet" title="R1 is innocent" mark="→" items={["it heard the ARP broadcast — and correctly ignored it (10.10.20.20 isn't R1's; no proxy ARP)", "it has a route to 10.10.20.0/24", "it never received an IPv4 packet for 10.10.20.20 to forward"]} />
+      </GuideSection>
+
+      <GuideSection id="l3l-repair" eyebrow="Repair" title="Repair and proof" tone="success">
+        <p>Fix the prefix length. On Linux, removing the /16 address also removes the default route (its gateway is no longer on a connected network), so it must be added back:</p>
+        <CliPanel run={{ prompt: "admin@client:~$ ", command: "sudo ip addr del 10.10.10.10/16 dev eth0", output: "admin@client:~$ sudo ip addr add 10.10.10.10/24 dev eth0\nadmin@client:~$ sudo ip route add default via 10.10.10.1" }} caption="Linux · CLIENT — replace the address, restore the default route" />
+        <CliPanel run={l3Cli(L3_FIX, "CLIENT", "ip route get 10.10.20.20")} caption="Linux · CLIENT — REMOTE-SERVER via the gateway again" />
+        <L3Result s={L3_FIX} from={L3_INC.tests.length} title="The lab: fresh pings to both servers" />
+        <DiagramFrame caption="The guided lesson's before and after.">
+          <VerifyDiagram />
+        </DiagramFrame>
+        <ChecklistCard tone="success" title="Proved, not assumed" mark="✓" items={["CLIENT is 10.10.10.10/24 with its default route via 10.10.10.1", "ip route get shows both servers via the gateway", "fresh pings: SERVER 4/4, REMOTE-SERVER 4/4", "nothing changed on R1 or R2"]} />
+      </GuideSection>
+
+      <GuideSection id="l3l-other" eyebrow="Beyond this incident" title="Other ways it breaks" tone="warning">
+        <FailureSignatures
+          items={[
+            { tag: "GW", title: "Wrong default gateway", tone: "warning", points: ["everything off-LAN fails", "Host Unreachable from the host itself"] },
+            { tag: "RT", title: "Router without a route", tone: "danger", points: ["Net Unreachable from the router", "traceroute !N"] },
+            { tag: "BACK", title: "No route back", tone: "danger", points: ["silence, no error", "traceroute stops after hop 1"] },
+            { tag: "LOOP", title: "Routing loop", tone: "danger", points: ["Time to live exceeded", "R1, R2, R1, R2…"] },
+          ]}
+        />
+        <CliPanel run={l3Only(T.noroute, "CLIENT", "ping -c 2 10.20.20.20", /From|statistics|transmitted/)} caption="Linux · CLIENT — R1 has no route: Destination Net Unreachable from 10.10.10.1" />
+        <CliPanel run={l3Cli(T.return, "CLIENT", "traceroute -n 10.20.20.20")} caption="Linux · CLIENT — no route back on R2: silence after hop 1" />
+        <CliPanel run={l3Only(T.loop, "CLIENT", "traceroute -n 10.10.20.20", /traceroute| [1-6] /)} caption="Linux · CLIENT — a loop between R1 and R2" />
+        <p className="text-sm text-pv-text-muted">Each is a ticket in the Layer 3 Lab, together with this incident.</p>
+      </GuideSection>
+
+      <GuideSection id="l3l-model" eyebrow="Mental model" title="Mental model" tone="cyan">
+        <p>
+          Think of posting a letter from an office. First you decide: is the recipient in this building (hand it over yourself) or elsewhere (drop it at the mail room)? The prefix length is your idea of how big “this building” is. Then you need the right person&apos;s desk — you ask around the floor (ARP), but only for the mail room or the in-building colleague, never for someone in another city. The mail room (router) reads the city on the envelope, stamps it (TTL) and sends it on; if a city is unknown it returns the letter with a note. If you think the building is much bigger than it is, you&apos;ll walk the corridors asking for someone who works across town — and the mail room never even sees your letter.
+        </p>
+        <Callout tone="cyan" title="When it breaks, ask in this order" icon="→">
+          What does the sending host decide for this destination? Did ARP for the next hop succeed? Does each router have a route onward — and back? Who sent the error message, if any? Then fix one thing and ping again, in both directions.
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="l3l-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
+        <Glossary
+          items={[
+            { term: "Prefix length", def: "How many leading bits of the address are the network (/24 = 255.255.255.0)." },
+            { term: "Connected route", def: "The route a host or router creates for the network of its own address." },
+            { term: "Default route", def: "0.0.0.0/0 — the route used when nothing more specific matches." },
+            { term: "Longest-prefix match", def: "Among all matching routes, the most specific wins." },
+            { term: "Next hop", def: "The neighbour a packet is handed to: the destination (on-link) or a router." },
+            { term: "TTL", def: "Hop limit decremented by every router; at zero the packet is dropped with time exceeded." },
+            { term: "Destination Host Unreachable", def: "On Linux, printed when ARP for the next hop failed — often from the sender itself." },
+            { term: "Return path", def: "The route the reply needs back to the source; it can fail independently." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="l3l-recap" eyebrow="Reference" title="Recap" tone="success">
+        <ChecklistCard tone="success" title="You can now" mark="✓" items={["predict a host's routing decision", "say whose MAC is ARPed for", "read routing tables and traceroute", "tell the sender's errors from a router's and from silence", "find mask, gateway, route, return-path and loop faults", "prove a repair in both directions"]} />
+      </GuideSection>
+
+      <GuideSection id="l3l-practice" eyebrow="Next" title="Practice it" tone="violet">
+        <p>The Deep Dive tab covers Layer 3 in full: connected and default routes, local versus remote, ARP, Layer 2 versus Layer 3 addresses, longest-prefix match, mask mistakes, route sources, TTL and traceroute, ICMP errors, asymmetric paths, and every failure signature with real evidence. The lab lets you break and repair it yourself.</p>
+        <LessonLabBridge />
+        <PresentationBridge>Rewatch the Layer 3 presentation.</PresentationBridge>
       </GuideSection>
     </div>
   );

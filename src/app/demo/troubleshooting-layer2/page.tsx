@@ -12,10 +12,12 @@ import { explainL2, l2Tables } from "./explain";
 import { L2Panel } from "./L2Panel";
 import { L2_LESSON_SECTIONS, L2LessonGuideContent } from "./LessonGuideContent";
 import { L2_DEEP_DIVE_SECTIONS, L2DeepDiveContent } from "./DeepDiveContent";
+import { L2Presentation } from "./L2Presentation";
+import { L2LabWorkspace } from "./l2-lab/L2LabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "HOST-A · SW1/SW2/SW3 triangle · HOST-B — VLAN 10 stops at one trunk", sections: L2_LESSON_SECTIONS, content: <L2LessonGuideContent /> },
-  { id: "deep", label: "Layer 2 Deep Dive", hint: "MAC learning, 802.1Q, allowed/native VLANs, STP, flooding, loops", sections: L2_DEEP_DIVE_SECTIONS, content: <L2DeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "VLAN 10 stops at one trunk — followed frame by frame, located in the MAC tables, repaired and proven with real Junos output", sections: L2_LESSON_SECTIONS, content: <L2LessonGuideContent /> },
+  { id: "deep", label: "Layer 2 Deep Dive", hint: "MAC learning, flooding, 802.1Q, access and trunk ports, native VLANs, RSTP election and roles, loops and storms", sections: L2_DEEP_DIVE_SECTIONS, content: <L2DeepDiveContent /> },
 ];
 
 const fld = (p: PacketVisual, label: string) => p.layers.flatMap((l) => l.fields).find((x) => x.label === label)?.value ?? "";
@@ -106,6 +108,12 @@ const config: FundamentalsLessonConfig<L2State> = {
       <EvidenceNotebook entries={s.notebook} />
     </div>
   ),
+  practiceLab: {
+    entry: { title: "Layer 2 Lab", buttonLabel: "Practice Layer 2", description: "The lesson's triangle live: every port's VLANs and spanning-tree role, the MAC tables of all three switches, pings in VLAN 10 and VLAN 20, port counters; open every device (Junos EX on the switches, Linux on the hosts), prune VLANs, break natives and spanning tree, and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["inc-link-stp", "inc-mac-age", "inc-vlan-table", "diagnostic-layers", "predict-cause", "repair-challenge"].includes(stepId) ? "Want to read the switches yourself?" : undefined),
+    render: ({ open, onClose }) => <L2LabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "Layer 2 troubleshooting", render: (p) => <L2Presentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can trace a VLAN", message: "Access vs trunk, 802.1Q tags, MAC learning and aging, RSTP roles — and a VLAN missing from one side of one trunk, found from the switch's own drop reason and fixed without touching spanning tree." },
 };
 

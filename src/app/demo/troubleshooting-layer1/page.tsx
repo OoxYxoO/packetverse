@@ -13,10 +13,12 @@ import { explainL1, l1Tables } from "./explain";
 import { L1Panel } from "./L1Panel";
 import { L1_LESSON_SECTIONS, L1LessonGuideContent } from "./LessonGuideContent";
 import { L1_DEEP_DIVE_SECTIONS, L1DeepDiveContent } from "./DeepDiveContent";
+import { L1Presentation } from "./L1Presentation";
+import { L1LabWorkspace } from "./l1-lab/L1LabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "CLIENT · ACCESS-SW · DIST-SW · SERVER — one fiber uplink that stays UP while it errors", sections: L1_LESSON_SECTIONS, content: <L1LessonGuideContent /> },
-  { id: "deep", label: "Layer 1 Deep Dive", hint: "Admin vs oper, Tx/Rx, optics, CRC/FCS, drops vs errors, duplex, counter deltas", sections: L1_DEEP_DIVE_SECTIONS, content: <L1DeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "One fiber uplink that stays UP while it corrupts frames — measured, located, repaired and proven with real Junos and Linux output", sections: L1_LESSON_SECTIONS, content: <L1LessonGuideContent /> },
+  { id: "deep", label: "Layer 1 Deep Dive", hint: "Media and optics, light budgets, FCS/CRC, counters as deltas, auto-negotiation, duplex, downshift, LOS, TDR", sections: L1_DEEP_DIVE_SECTIONS, content: <L1DeepDiveContent /> },
 ];
 
 const ICMP_HEX = "#f472b6";
@@ -111,6 +113,12 @@ const config: FundamentalsLessonConfig<L1State> = {
       <EvidenceNotebook entries={s.notebook} />
     </div>
   ),
+  practiceLab: {
+    entry: { title: "Layer 1 Lab", buttonLabel: "Practice Layer 1", description: "The lesson's network live: every link's admin and operational state, speed and duplex, the uplink's light at both ends, error counters with snapshots, ping and iperf3, a field kit for physical work; open every device (Junos EX on the switches, Linux on the hosts) and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["inc-iface-state", "inc-optics", "diagnostic-layers", "predict-cause", "repair-challenge"].includes(stepId) ? "Want to measure it yourself?" : undefined),
+    render: ({ open, onClose }) => <L1LabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "Layer 1 troubleshooting", render: (p) => <L1Presentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can read the physical layer", message: "Admin vs operational state, Tx/Rx direction, CRC errors as deltas — and a link that stayed UP while it corrupted frames, proven fixed with fresh counters and the original test." },
 };
 
