@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -73,6 +73,11 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { VpwsPresentation } from "./VpwsPresentation";
+import { VpwsLabWorkspace } from "./vp-lab/VpwsLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { VPWS_BRIEFING_NOTES, VPWS_BRIEFING_PHASES } from "./briefing";
 import { VPWS_LESSON_SECTIONS, VpwsLessonGuideContent } from "./LessonGuideContent";
 import { VPWS_DEEP_DIVE_SECTIONS, VpwsDeepDiveContent } from "./DeepDiveContent";
@@ -126,6 +131,20 @@ export default function MplsL2vpnVpwsDemo() {
   const [labMtuHardGate, setLabMtuHardGate] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the L2VPN Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -573,8 +592,26 @@ export default function MplsL2vpnVpwsDemo() {
           label tells that PE which virtual wire the frame belongs to.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Traditional MPLS L2VPN / VPWS" subtitle="CUST-A-VPWS · PW ID 5000 · labels 25001 / 24001" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice VPWS" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Traditional MPLS L2VPN / VPWS" subtitle="CUST-A-VPWS · PW ID 5000 · labels 25001 / 24001" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <VpwsPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the L2VPN Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <VpwsLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="MPLS L2VPN (VPWS)" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "L2VPN (VPWS) Lab", buttonLabel: "Practice VPWS", description: "Two customers with the same IP addresses on two pseudowires: follow their frames through attachment circuits and the two-label stack, renumber a pseudowire, tune MTU and control word, rebuild a service; open every router (IOS XR or Junos) and solve five tickets from evidence." }} contextNote={currentStep && ["targeted-ldp-intro", "pw-up", "two-label-stack-signature", "fault-injection", "repair-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -605,7 +642,7 @@ export default function MplsL2vpnVpwsDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-3 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-3", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -649,9 +686,9 @@ export default function MplsL2vpnVpwsDemo() {
         {showViews && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

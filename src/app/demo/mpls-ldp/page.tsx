@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -58,13 +58,18 @@ import { layoutRegionsTo3D, layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus } from "@/components/network3d/types";
 import { PRIMARY_TRANSITION_ROUTER, deviceForStep, explainRouter, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
 import { ldpCallout } from "./callout";
+import { MplsPresentation } from "./MplsPresentation";
+import { MplsLabWorkspace } from "./mpls-lab/MplsLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { LDP_BRIEFING_NOTES, LDP_BRIEFING_PHASES } from "./briefing";
 import { LDP_LESSON_SECTIONS, LdpLessonGuideContent } from "./LessonGuideContent";
 import { LDP_DEEP_DIVE_SECTIONS, LdpDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "CE1 → PE1 → P1 → P2 → PE2 → CE2 · FEC 4.4.4.4/32", sections: LDP_LESSON_SECTIONS, content: <LdpLessonGuideContent /> },
-  { id: "deep", label: "MPLS & LDP Deep Dive", hint: "Labels, stacks and LDP in general", sections: LDP_DEEP_DIVE_SECTIONS, content: <LdpDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "CE1 → PE1 → P1 → P2 → PE2 → CE2 · a BGP-free core, LDP, push / swap / pop, and an LSP that breaks while IP works", sections: LDP_LESSON_SECTIONS, content: <LdpLessonGuideContent /> },
+  { id: "deep", label: "MPLS & LDP Deep Dive", hint: "The full study course · the shim, LDP sessions and modes, LIB / LFIB, PHP, LDP–IGP sync, MTU, LSP ping, five faults", sections: LDP_DEEP_DIVE_SECTIONS, content: <LdpDeepDiveContent /> },
 ];
 
 const DEVICE_ROUTERS: RouterId[] = ["PE1", "P1", "P2", "PE2"];
@@ -72,18 +77,18 @@ const DEVICE_ROUTERS: RouterId[] = ["PE1", "P1", "P2", "PE2"];
 const WHY_MPLS: { q: string; a: string }[] = [
   { q: "WHAT is MPLS?", a: "A forwarding technology that classifies traffic once, at the edge, and switches it through the core using short labels." },
   { q: "WHY use it?", a: "Scalable forwarding, traffic engineering, and services (like VPNs) — not because label lookups are inherently \"faster\" than IP." },
-  { q: "WHAT does it NOT replace?", a: "The IGP (OSPF) — MPLS forwards along paths the IGP already says are reachable." },
+  { q: "WHAT does it NOT replace?", a: "The IGP (IS-IS) — MPLS forwards along paths the IGP already says are reachable." },
   { q: "WHEN do engineers use it?", a: "Provider cores that need scalable per-service forwarding state, not just best-effort IP." },
 ];
 
 const REPAIR_OPTIONS = [
-  { id: "restart-ospf", label: "Restart OSPF on P1" },
+  { id: "restart-ospf", label: "Restart IS-IS on P1" },
   { id: "reboot-p2", label: "Reboot P2" },
   { id: "enable-ldp", label: "Enable LDP on the P1 ↔ P2 interface" },
   { id: "increase-mtu", label: "Increase the MTU on P1 ↔ P2" },
 ];
 const WRONG_FEEDBACK: Record<string, string> = {
-  "restart-ospf": "OSPF is already healthy — restarting it doesn't touch the LDP session at all.",
+  "restart-ospf": "IS-IS is already healthy — restarting it doesn't touch the LDP session at all.",
   "reboot-p2": "A reboot tears down everything, not just the LDP session — and doesn't address why LDP wasn't enabled.",
   "increase-mtu": "MTU isn't the problem here — the LDP session simply isn't up on this link.",
 };
@@ -107,6 +112,20 @@ export default function MplsLdpDemo() {
   const [packetSelected, setPacketSelected] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the MPLS + LDP Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -469,8 +488,26 @@ export default function MplsLdpDemo() {
           and pop a real label stack across the core.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="MPLS: Label Switching with LDP" subtitle="PE1 · P1 · P2 · PE2 · FEC 4.4.4.4/32" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice MPLS" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="MPLS: Label Switching with LDP" subtitle="PE1 · P1 · P2 · PE2 · FEC 4.4.4.4/32" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <MplsPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the MPLS + LDP Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <MplsLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="MPLS and LDP" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "MPLS + LDP Lab", buttonLabel: "Practice MPLS", description: "A BGP-free core with a backup path: watch LDP discover neighbors and labels flow upstream, push / swap / pop customer traffic, fail links, break LDP, MTU and LDP–IGP sync; open every router (IOS XR or Junos — label control changes with the OS) and solve five tickets from evidence." }} contextNote={currentStep && ["lfib-pe1", "push-pe1", "pop-p2", "control-vs-data", "fault-injected"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -501,7 +538,7 @@ export default function MplsLdpDemo() {
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
             className={clsx(
-              "h-1.5 flex-1 min-w-4 rounded-full transition-colors",
+              "h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-4",
               i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10",
             )}
           />
@@ -551,9 +588,9 @@ export default function MplsLdpDemo() {
         )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode === "physical" ? (
             <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>
               {focusMode ? <div className="h-96 w-full rounded-2xl border border-pv-border bg-pv-bg-elevated sm:h-[28rem]" /> : graph2D()}
@@ -723,9 +760,9 @@ export default function MplsLdpDemo() {
 
           {showPlaneSplit && !isComplete && (
             <PlaneSplitPanel
-              controlTitle="Control Plane — OSPF + LDP"
+              controlTitle="Control Plane — IS-IS + LDP"
               controlRows={[
-                { label: "IGP (OSPF)", value: "Converged" },
+                { label: "IGP (IS-IS)", value: "Converged" },
                 ...LDP_LINKS.map((l) => ({ label: `LDP ${l.a}↔${l.b}`, value: LDP_STATE_LABEL[state.ldp[l.id]] })),
               ]}
               dataTitle="Data Plane — Current Packet"

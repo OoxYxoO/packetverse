@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -87,6 +87,11 @@ import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3
 import type { DeviceKind } from "@/lib/sim-engine/types";
 import { bridgePortsSummary, explainNode } from "./explain";
 import { PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { HvplsPresentation } from "./HvplsPresentation";
+import { HvplsLabWorkspace } from "./hv-lab/HvplsLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { HVPLS_BRIEFING_NOTES, HVPLS_BRIEFING_PHASES } from "./briefing";
 import { HVPLS_LESSON_SECTIONS, HvplsLessonGuideContent } from "./LessonGuideContent";
 import { HVPLS_DEEP_DIVE_SECTIONS, HvplsDeepDiveContent } from "./DeepDiveContent";
@@ -144,6 +149,20 @@ export default function HVplsDemo() {
   const [xrayMode, setXrayMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the H-VPLS Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -702,8 +721,26 @@ export default function HVplsDemo() {
           forbids mesh-to-mesh relay.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Hierarchical VPLS (H-VPLS)" subtitle="CUST-A-HVPLS · 3 MTU-s · 3 PE-rs" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice H-VPLS" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="Hierarchical VPLS (H-VPLS)" subtitle="CUST-A-HVPLS · 3 MTU-s · 3 PE-rs" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <HvplsPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the H-VPLS Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <HvplsLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="H-VPLS" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "H-VPLS Lab", buttonLabel: "Practice H-VPLS", description: "Three MTU-s access bridges with one spoke each and three PE-rs hubs in a full mesh: keep traffic local, follow frames up a spoke, across the mesh and down again, see which pseudowire is in which split-horizon group, connect a fifth site, rebuild an access device; open every device (IOS XR or Junos) and solve five tickets from evidence." }} contextNote={currentStep && ["local-switching-intro", "scaling-lab-intro", "fault-injection", "repair-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -734,7 +771,7 @@ export default function HVplsDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-2 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-2", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -779,9 +816,9 @@ export default function HVplsDemo() {
         {showViews && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

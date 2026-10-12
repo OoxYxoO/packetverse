@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -62,6 +62,11 @@ import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import { explainNode } from "./explain";
 import { interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { EvpnPresentation } from "./EvpnPresentation";
+import { EvpnLabWorkspace } from "./ev-lab/EvpnLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { evpnVxlanNames } from "./addressNames";
 import { EVPNV_BRIEFING_NOTES, EVPNV_BRIEFING_PHASES } from "./briefing";
 import { EVPNV_LESSON_SECTIONS, EvpnVxlanLessonGuideContent } from "./LessonGuideContent";
@@ -152,6 +157,20 @@ export default function EvpnVxlanDemo() {
   const [xrayMode, setXrayMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the EVPN-VXLAN Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -501,8 +520,26 @@ export default function EvpnVxlanDemo() {
           telling each leaf exactly where the other one&apos;s MAC addresses live, instead of guessing by flooding.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="EVPN + VXLAN" subtitle="LEAF1 / LEAF2 VTEPs · VNI 10010 · Route Type 2" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice EVPN-VXLAN" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="EVPN + VXLAN" subtitle="LEAF1 / LEAF2 VTEPs · VNI 10010 · Route Type 2" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <EvpnPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the EVPN-VXLAN Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <EvpnLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="EVPN + VXLAN" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "EVPN-VXLAN Lab", buttonLabel: "Practice EVPN-VXLAN", description: "Two leaf VTEPs and a spine on Junos: watch Type 3 routes build the flood list and Type 2 routes carry every MAC, follow a frame through VXLAN encapsulation, stretch a second VLAN as a new VNI, rebuild a leaf's overlay; open every device and solve five tickets from evidence." }} contextNote={currentStep && ["journey-recap", "evpn-route-received", "fault-injected", "repair-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -533,7 +570,7 @@ export default function EvpnVxlanDemo() {
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
             className={clsx(
-              "h-1.5 flex-1 min-w-3 rounded-full transition-colors",
+              "h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-3",
               i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10",
             )}
           />
@@ -583,9 +620,9 @@ export default function EvpnVxlanDemo() {
         {showPlanes && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode === "3d" ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

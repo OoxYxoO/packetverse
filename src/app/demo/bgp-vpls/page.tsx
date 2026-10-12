@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -84,6 +84,11 @@ import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import { bridgePortsSummary, explainNode } from "./explain";
 import { deviceForStep, interfacesFor, isHopStep, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { BgpVplsPresentation } from "./BgpVplsPresentation";
+import { BgpVplsLabWorkspace } from "./bv-lab/BgpVplsLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { BGP_VPLS_BRIEFING_NOTES, BGP_VPLS_BRIEFING_PHASES } from "./briefing";
 import { BGP_VPLS_LESSON_SECTIONS, BgpVplsLessonGuideContent } from "./LessonGuideContent";
 import { BGP_VPLS_DEEP_DIVE_SECTIONS, BgpVplsDeepDiveContent } from "./DeepDiveContent";
@@ -143,6 +148,20 @@ export default function BgpVplsDemo() {
   const [xrayMode, setXrayMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the BGP VPLS Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -761,8 +780,26 @@ export default function BgpVplsDemo() {
           learning, flooding, split horizon — never changes.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="BGP-Signaled VPLS" subtitle="AS 65000 · RR1 · RT 65000:100 · VBO 1 / VBS 4" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice BGP VPLS" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="BGP-Signaled VPLS" subtitle="AS 65000 · RR1 · RT 65000:100 · VE IDs 1–3" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <BgpVplsPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the BGP VPLS Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <BgpVplsLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="BGP VPLS" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "BGP VPLS Lab", buttonLabel: "Practice BGP VPLS", description: "Three PEs and a route reflector: follow each PE's VPLS route through RR1, compute labels from the blocks, renumber a VE ID and watch new blocks appear, move the VPLS to a new route target, rebuild a PE; open every router (IOS XR or Junos) and solve five tickets from evidence." }} contextNote={currentStep && ["six-labels-recap", "split-horizon-visual", "pe3-ve-id-change-to-7", "fault-injection", "repair-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -793,7 +830,7 @@ export default function BgpVplsDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-3 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-3", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -838,9 +875,9 @@ export default function BgpVplsDemo() {
         {showViews && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

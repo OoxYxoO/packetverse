@@ -1,26 +1,77 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, FieldTable, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, FailureSignatures, FieldTable, FlowSteps, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { DHeaderColumn } from "@/components/lesson/Srv6GuideSvg";
 import { DRouteCard, EvpnFabric } from "@/components/lesson/EvpnGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
 import { EVPN_EXPORT_RT, HOST_A_IP, HOST_A_MAC, HOST_B_IP, HOST_B_MAC, VLAN, VNI, VTEP_LOOPBACK, rdFor } from "@/lib/sim-engine/scenarios/evpnVxlan";
+import { createEvNet, evApply, evTicket, evTicketState, type EvHost, type EvR, type EvState } from "@/lib/sim-engine/scenarios/evNet";
+import { evSets, evStaticApi } from "./ev-lab/evCli";
 
 export const EVPNV_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "lv-mission", label: "The mission" },
-  { id: "lv-fabric", label: "Physical fabric" },
-  { id: "lv-layers", label: "Underlay vs overlay" },
-  { id: "lv-vlan-vni", label: "VLAN vs VNI" },
-  { id: "lv-vtep", label: "What a VTEP does" },
-  { id: "lv-encap", label: "VXLAN encapsulation" },
-  { id: "lv-decap", label: "Remote decapsulation" },
-  { id: "lv-why-evpn", label: "Why a control plane" },
-  { id: "lv-type2", label: "EVPN Type 2" },
-  { id: "lv-mac", label: "Local vs remote MAC" },
-  { id: "lv-rd-rt", label: "RD vs RT" },
-  { id: "lv-fault", label: "The incident" },
-  { id: "lv-verify", label: "Verification" },
-  { id: "lv-glossary", label: "Glossary" },
-  { id: "lv-recap", label: "Mental model" },
+  { id: "ev-mission", label: "What this lesson teaches" },
+  { id: "ev-network", label: "The network of this lesson" },
+  { id: "ev-ideas", label: "Three ideas you need" },
+  { id: "ev-watch", label: "What you will watch" },
+  { id: "ev-layers", label: "Underlay and overlay" },
+  { id: "ev-vlan-vni", label: "VLAN and VNI" },
+  { id: "ev-vtep", label: "What a VTEP does" },
+  { id: "ev-encap", label: "VXLAN on the wire" },
+  { id: "ev-why-evpn", label: "Why a control plane" },
+  { id: "ev-type3", label: "Type 3: the flood list" },
+  { id: "ev-type2", label: "Type 2: where each MAC lives" },
+  { id: "ev-rd-rt", label: "RD and RT" },
+  { id: "ev-mac", label: "Local and remote MACs" },
+  { id: "ev-first", label: "The first ping, step by step" },
+  { id: "ev-working", label: "What working looks like" },
+  { id: "ev-incident", label: "The incident" },
+  { id: "ev-investigate", label: "Walk the evidence" },
+  { id: "ev-fix", label: "Repair and prove it" },
+  { id: "ev-other", label: "Other ways it fails" },
+  { id: "ev-model", label: "Mental model" },
+  { id: "ev-glossary", label: "Glossary" },
+  { id: "ev-recap", label: "Recap" },
+  { id: "ev-practice", label: "Practice it" },
 ];
+
+/**
+ * Every CLI sample and ping result on this page comes from the EVPN-VXLAN Lab's model and its Junos command set: the
+ * healthy fabric (before and after a real ping) and the lab's "rt" ticket — the guided lesson's incident (LEAF1's VNI
+ * 10010 route target typed as 65000:99999).
+ */
+export const EV_FRESH: EvState = createEvNet(0);
+const ping = (s: EvState, from: EvHost, dst: string) => evApply(s, { type: "test", from, dst });
+export const EV_LEARNED = ping(EV_FRESH, "HOST-A", "10.10.10.22");
+const EV_AGAIN = ping(EV_LEARNED, "HOST-A", "10.10.10.22");
+const EV_FAULT = evTicket("rt").repro.reduce((acc, a) => evApply(acc, a), evTicketState("rt", 0));
+const EV_FIXED = ping(evApply(EV_FAULT, { type: "set", text: "LEAF1: VNI 10010 route target back to 65000:10010", changes: [{ dev: "LEAF1", f: (c) => void (c.evpn!.targets[10010] = "65000:10010") }] }), "HOST-A", "10.10.10.22");
+export function evCli(s: EvState, r: EvR, command: string) {
+  return runGuideCli(evSets(evStaticApi(s, r), r).juniper, command);
+}
+export function evOnly(s: EvState, r: EvR, command: string, match: RegExp, keep = 0) {
+  const x = evCli(s, r, command);
+  return { ...x, output: pickLines(x.output, match, keep) };
+}
+/** One host ping, as the lab reports it. */
+export function PingResult({ s, title }: { s: EvState; title: string }) {
+  const t = s.tests[s.tests.length - 1];
+  return (
+    <Callout tone={t.ok ? "success" : "danger"} title={title} icon={t.ok ? "✓" : "!"}>
+      {t.from} → {t.dst}: {t.ok ? `delivered to ${t.reached}, and the reply came back — ${t.crossed ? "across the fabric" : "on the leaf"}${t.flooded ? ", part of it flooded" : ", every frame unicast"}` : t.why}
+    </Callout>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the EVPN-VXLAN Lab" onPractice={openLab}>
+      Two leaves and a spine on Junos, real EVPN routes and VXLAN packets, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
 
 function FabricDiagram() {
   return (
@@ -170,122 +221,238 @@ function MacTableDiagram() {
 
 export function EvpnVxlanLessonGuideContent() {
   return (
-    <>
-      <GuideSection id="lv-mission" eyebrow="Introduction" title="The mission: one VLAN across a routed fabric" tone="cyan">
+    <div className="space-y-12">
+      <GuideSection id="ev-mission" eyebrow="This lesson" title="What this lesson teaches" tone="cyan">
         <p>
-          HOST-A and HOST-B share VLAN {VLAN}, but they sit behind different leaf switches joined by a routed spine. A VLAN does not cross a Layer-3 hop by itself. This lesson carries their frames across the fabric with VXLAN, then replaces guesswork with a BGP EVPN control plane.
+          HOST-A and HOST-B sit in two racks, behind two different leaf switches, and the application wants them in one subnet, <Mono>10.10.10.0/24</Mono>. But a modern data-center fabric is routed between leaf and spine: no VLAN crosses the spine. This lesson shows how the leaves still give the hosts one Ethernet segment — <b className="text-pv-text">VXLAN</b> carries the frames inside IP packets — and how they know where every host lives — <b className="text-pv-text">BGP EVPN</b> tells them.
         </p>
-        <Callout tone="cyan" title="VXLAN moves the frame. EVPN tells VTEPs where the endpoint lives." icon="i">
-          VXLAN is the data-plane encapsulation. EVPN is the BGP control plane. They are separate layers that work together.
-        </Callout>
+        <p>You will watch a frame being wrapped, routed and unwrapped, watch the leaves announce themselves and their hosts in BGP, and finally meet an incident where the underlay is fine, the BGP session is Established — and HOST-A still can&apos;t reach HOST-B.</p>
+        <ChecklistCard tone="violet" title="By the end of this lesson you can" mark="→" items={["explain underlay and overlay, and what the spine knows", "map a VLAN to a VNI and say why the VLAN number stays local", "read a VXLAN packet's headers", "explain what Type 3 and Type 2 routes do", "tell local from remote MACs, and where each comes from", "find a route-target fault from evidence, fix it and prove it"]} />
       </GuideSection>
 
-      <GuideSection id="lv-fabric" eyebrow="Setup" title="Physical fabric" tone="ospf">
-        <DiagramFrame caption="The lesson's topology — the addresses come straight from the scenario.">
+      <GuideSection id="ev-network" eyebrow="This lesson" title="The network of this lesson" tone="ospf">
+        <DiagramFrame caption="A spine-leaf fabric: the leaf–spine links are routed IP links.">
           <FabricDiagram />
         </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="lv-layers" eyebrow="Model" title="Underlay vs overlay" tone="ip">
-        <DiagramFrame caption="Each layer only needs to understand its own addresses.">
-          <LayersDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="lv-vlan-vni" eyebrow="Identifiers" title="VLAN vs VNI" tone="violet">
-        <DiagramFrame caption="Two different identifiers with two different scopes.">
-          <VlanVniDiagram />
-        </DiagramFrame>
-        <p>A VLAN ID is locally significant on each switch. A VNI is a 24-bit identifier carried in the VXLAN header and shared across the fabric. Two leaves could use different local VLAN numbers for the same VNI.</p>
-      </GuideSection>
-
-      <GuideSection id="lv-vtep" eyebrow="Roles" title="What a VTEP does" tone="violet">
         <FieldTable
-          title="Who does what"
-          accent="violet"
-          columns={["Device", "Role", "Needs tenant MACs?"]}
+          title="Who is who"
+          accent="cyan"
+          columns={["Device", "Address", "Role"]}
           rows={[
-            ["LEAF1", `VTEP ${VTEP_LOOPBACK.LEAF1} — encapsulates`, "Yes"],
-            ["SPINE1", "Routes outer IP packets", "No"],
-            ["LEAF2", `VTEP ${VTEP_LOOPBACK.LEAF2} — decapsulates`, "Yes"],
+            ["LEAF1", <Mono key="1">10.255.0.1</Mono>, "VTEP · HOST-A (and HOST-C, HOST-E) behind it"],
+            ["LEAF2", <Mono key="2">10.255.0.2</Mono>, "VTEP · HOST-B (and HOST-F) behind it"],
+            ["SPINE1", <Mono key="3">10.255.0.254</Mono>, "IP underlay only (OSPF)"],
           ]}
         />
-      </GuideSection>
-
-      <GuideSection id="lv-encap" eyebrow="Data plane" title="VXLAN encapsulation" tone="ip">
-        <DiagramFrame caption="The exact stack the lesson's packet inspector shows.">
-          <EncapDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="lv-decap" eyebrow="Data plane" title="Remote decapsulation" tone="ip">
-        <p>LEAF2 removes the outer Ethernet, IP, UDP and VXLAN headers, uses the VNI to pick the right segment, and delivers the original frame out of HOST-B&apos;s access port.</p>
-      </GuideSection>
-
-      <GuideSection id="lv-why-evpn" eyebrow="Motivation" title="Why a control plane" tone="warning">
-        <CompareCards
-          items={[
-            { title: "Flood-and-learn", tone: "warning", tag: "without EVPN", points: ["Unknown destinations are replicated to every VTEP in the VNI", "Locations are guessed from replies", "Cost grows with the fabric"] },
-            { title: "BGP EVPN", tone: "bgp", tag: "this lesson", points: ["The owning VTEP advertises MAC/IP reachability", "Receivers install a verified entry", "No flood needed to find a known endpoint"] },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lv-type2" eyebrow="Control plane" title="EVPN Type 2" tone="bgp">
-        <DiagramFrame caption="Type 2 answers one question: where is this endpoint?">
-          <Type2Diagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="lv-mac" eyebrow="Tables" title="Local vs remote MAC" tone="cyan">
-        <DiagramFrame caption="A local entry comes from the access port; a remote entry comes from EVPN.">
-          <MacTableDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="lv-rd-rt" eyebrow="Control plane" title="RD vs RT" tone="bgp">
-        <FieldTable
-          title="Two fields, two jobs"
-          accent="bgp"
-          columns={["Field", "Value here", "Job"]}
-          rows={[
-            ["RD", <Mono key="rd">{rdFor("LEAF2")}</Mono>, "Keeps the route unique in BGP — never decides import"],
-            ["RT", <Mono key="rt">{EVPN_EXPORT_RT}</Mono>, "Export/import policy — decides which VNI table imports it"],
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lv-fault" eyebrow="Troubleshooting" title="The incident" tone="danger">
-        <ChecklistCard
-          tone="danger"
-          title="How to reason about it (no spoilers)"
-          mark="→"
-          items={["Note what still works and what does not.", "Walk the layers bottom-up: access port, underlay, BGP session, EVPN routes, MAC table, forwarding.", "At each layer, look for evidence rather than assumptions.", "Pick the fix only for the first layer that fails."]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lv-verify" eyebrow="Operations" title="Verification" tone="success">
-        <ChecklistCard tone="success" title="Evidence" mark="✓" items={["The received Type 2 route and its RT.", "LEAF1's MAC table entry for HOST-B and its remote VTEP.", "A real frame from HOST-A reaching HOST-B after any change."]} />
-      </GuideSection>
-
-      <GuideSection id="lv-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
-        <Glossary
-          items={[
-            { term: "VTEP", def: "VXLAN Tunnel Endpoint — encapsulates and decapsulates, identified by its loopback." },
-            { term: "VNI", def: "VXLAN Network Identifier — the 24-bit, fabric-wide overlay segment ID." },
-            { term: "Underlay", def: "The routed IP network that carries VXLAN between VTEPs." },
-            { term: "Overlay", def: "The tenant segment built on top of the underlay." },
-            { term: "Type 2", def: "EVPN MAC/IP Advertisement route: where an endpoint lives." },
-            { term: "RD / RT", def: "Route Distinguisher (uniqueness) and Route Target (import policy)." },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lv-recap" eyebrow="Recap" title="Mental model" tone="success">
-        <Callout tone="success" title="One sentence" icon="✓">
-          VXLAN wraps the tenant frame so the IP underlay can carry it between VTEPs; EVPN Type 2 tells each VTEP which remote VTEP owns each MAC/IP, and the RT decides whether that information is imported.
+        <Callout tone="cyan" title="The lab uses the same network — on Junos" icon="i">
+          VLAN {VLAN} maps to VNI {VNI} on both leaves, route target {EVPN_EXPORT_RT}, and LEAF1 and LEAF2 run their iBGP EVPN session directly between loopbacks (AS 65000), as in the guided lesson. The lab adds HOST-C on LEAF1 and a second VLAN (V20, HOST-E and HOST-F) to stretch yourself. EVPN-VXLAN data-center leaves are configured here in Junos (QFX style); Junos prints MAC addresses in lower case. Every output on this page comes from the lab.
         </Callout>
       </GuideSection>
-    </>
+
+      <GuideSection id="ev-ideas" eyebrow="This lesson" title="Three ideas you need" tone="violet">
+        <CompareCards
+          items={[
+            { title: "Underlay", tone: "cyan", tag: "routed IP", points: ["OSPF between leaves and spine", "only needs to reach the VTEP loopbacks"] },
+            { title: "VXLAN", tone: "violet", tag: "data plane", points: ["Ethernet frame inside UDP/IP", "the VNI names the segment"] },
+            { title: "EVPN", tone: "warning", tag: "control plane", points: ["BGP tells who has which VNI (Type 3)", "and where each MAC lives (Type 2)"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ev-watch" eyebrow="This lesson" title="What you will watch" tone="cyan">
+        <FlowSteps
+          steps={[
+            { title: "The pieces", body: "VTEPs, VLAN → VNI.", tone: "violet" },
+            { title: "Wrap and route", body: "VXLAN across the spine.", tone: "cyan" },
+            { title: "The question", body: "How did LEAF1 know?", tone: "warning" },
+            { title: "EVPN", body: "Type 3, then Type 2.", tone: "success" },
+            { title: "The incident", body: "Established, yet broken.", tone: "danger" },
+            { title: "Repair", body: "One route target, a fresh ping.", tone: "success" },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ev-layers" eyebrow="Model" title="Underlay and overlay" tone="ip">
+        <DiagramFrame caption="The overlay rides on a tunnel, which rides on the underlay.">
+          <LayersDiagram />
+        </DiagramFrame>
+        <p>The underlay is plain routing: OSPF makes each leaf&apos;s loopback reachable. Everything else — the tunnel and the tenant segment — rests on that.</p>
+        <CliPanel run={evCli(EV_FRESH, "SPINE1", "show route table inet.0")} caption="Junos · SPINE1 — loopbacks and links; no tenant address, no MAC" />
+      </GuideSection>
+
+      <GuideSection id="ev-vlan-vni" eyebrow="Identifiers" title="VLAN and VNI" tone="violet">
+        <DiagramFrame caption="Local VLANs, one fabric-wide VNI.">
+          <VlanVniDiagram />
+        </DiagramFrame>
+        <p>On each leaf the access ports belong to a VLAN, and the VLAN maps to a VNI. The VLAN ID never leaves the leaf; the VNI travels in every VXLAN packet. LEAF2 could call its VLAN 110 and nothing would change.</p>
+        <CliPanel run={evCli(EV_FRESH, "LEAF1", "show configuration vlans")} caption="Junos · LEAF1 — V10 maps to VNI 10010; V20 isn't stretched yet" />
+      </GuideSection>
+
+      <GuideSection id="ev-vtep" eyebrow="Roles" title="What a VTEP does" tone="violet">
+        <FieldTable
+          title="A VTEP's two directions"
+          accent="violet"
+          columns={["Direction", "What happens"]}
+          rows={[
+            ["Ingress (from a host)", "learn the source MAC, look up the destination, map VLAN → VNI, wrap in VXLAN to the remote VTEP — or replicate to every remote VTEP for a broadcast"],
+            ["Egress (from the fabric)", "unwrap, map VNI → local VLAN, look up the destination MAC, deliver — never send it back into the fabric"],
+          ]}
+        />
+        <CliPanel run={evCli(EV_FRESH, "LEAF1", "show configuration switch-options")} caption="Junos · LEAF1 — the VTEP address is lo0.0" />
+      </GuideSection>
+
+      <GuideSection id="ev-encap" eyebrow="Data plane" title="VXLAN on the wire" tone="ip">
+        <DiagramFrame caption="Fifty bytes of envelope around an unchanged frame.">
+          <EncapDiagram />
+        </DiagramFrame>
+        <p>The spine routes on the outer IP header only. LEAF2 strips the envelope, reads VNI 10010 and delivers the original frame to HOST-B.</p>
+      </GuideSection>
+
+      <GuideSection id="ev-why-evpn" eyebrow="Motivation" title="Why a control plane" tone="warning">
+        <p>VXLAN only moves frames. To send HOST-A&apos;s frame to 10.255.0.2, LEAF1 must already know that HOST-B lives there; to send a broadcast, it must know every VTEP that has VNI 10010. Plain VXLAN can flood and learn from returning traffic. EVPN replaces that guesswork with BGP: one session between the leaves&apos; loopbacks, address family EVPN.</p>
+        <CliPanel run={evCli(EV_FRESH, "LEAF1", "show bgp summary")} caption="Junos · LEAF1 — the EVPN session, before any host has spoken" />
+      </GuideSection>
+
+      <GuideSection id="ev-type3" eyebrow="Control plane" title="Type 3: the flood list" tone="bgp">
+        <p>Before any host speaks, each leaf advertises a <b className="text-pv-text">Type 3</b> (inclusive multicast Ethernet tag) route for every VNI it has. When LEAF1 imports LEAF2&apos;s, LEAF2 goes on LEAF1&apos;s flood list for VNI 10010: every broadcast gets one copy to 10.255.0.2 (ingress replication).</p>
+        <CliPanel run={evCli(EV_FRESH, "LEAF1", "show route table bgp.evpn.0")} caption="Junos · LEAF1 — two Type 3 routes (IM), no MAC yet" />
+        <CliPanel run={evCli(EV_FRESH, "LEAF1", "show ethernet-switching vxlan-tunnel-end-point remote")} caption="Junos · LEAF1 — LEAF2 is a remote VTEP for VNI 10010" />
+        <Callout tone="cyan" title="Beyond the guided lesson" icon="i">
+          The guided lesson keeps to Type 2. A real fabric needs Type 3 too — without it a leaf has nowhere to send the very first ARP broadcast — so the lab models it. The EVPN BUM lesson goes deeper.
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="ev-type2" eyebrow="Control plane" title="Type 2: where each MAC lives" tone="bgp">
+        <DiagramFrame caption="LEAF2's route for HOST-B.">
+          <Type2Diagram />
+        </DiagramFrame>
+        <p>As soon as a leaf learns a MAC on a local port, it advertises a <b className="text-pv-text">Type 2</b> route: the MAC alone, and the MAC with the host&apos;s IP once it has seen an ARP. The next hop is the leaf&apos;s own VTEP — never the host.</p>
+        <CliPanel run={evOnly(EV_LEARNED, "LEAF1", "show route table bgp.evpn.0", /^(bgp|2:|3:)|from 10\.255/)} caption="Junos · LEAF1 after one ping — its own Type 2 routes, LEAF2's for HOST-B, both Type 3" />
+      </GuideSection>
+
+      <GuideSection id="ev-rd-rt" eyebrow="Control plane" title="RD and RT" tone="bgp">
+        <FieldTable
+          title="Two different jobs"
+          accent="violet"
+          columns={["Field", "In this lab", "Job"]}
+          rows={[
+            ["RD", <Mono key="1">{rdFor("LEAF2")}</Mono>, "keeps LEAF2's routes distinct from anyone else's in BGP"],
+            ["RT", <Mono key="2">{EVPN_EXPORT_RT}</Mono>, "the import test: a leaf keeps a route only if it carries a route target it imports"],
+          ]}
+        />
+        <CliPanel run={evCli(EV_FRESH, "LEAF1", "show configuration protocols evpn")} caption="Junos · LEAF1 — VNI 10010 with route target 65000:10010" />
+      </GuideSection>
+
+      <GuideSection id="ev-mac" eyebrow="Tables" title="Local and remote MACs" tone="cyan">
+        <DiagramFrame caption="The forwarding entry is installed from the route.">
+          <MacTableDiagram />
+        </DiagramFrame>
+        <p>HOST-A is local to LEAF1 — learned from its frames on xe-0/0/1. HOST-B is remote — learned from LEAF2&apos;s Type 2 route, never from the tunnel; the switching table lists it behind the VTEP interface.</p>
+        <CliPanel run={evCli(EV_LEARNED, "LEAF1", "show evpn database")} caption="Junos · LEAF1 — HOST-A on xe-0/0/1.0, HOST-B behind 10.255.0.2, both with their IPs" />
+        <CliPanel run={evOnly(EV_LEARNED, "LEAF1", "show ethernet-switching table", /Vlan|name|V10|entries/)} caption="Junos · LEAF1 — D (local) and DR (remote, behind vtep.32769)" />
+      </GuideSection>
+
+      <GuideSection id="ev-first" eyebrow="Data plane" title="The first ping, step by step" tone="warning">
+        <FlowSteps
+          steps={[
+            { title: "ARP request", body: "A broadcast. LEAF1 learns HOST-A, advertises it (Type 2), and replicates the broadcast to 10.255.0.2.", tone: "warning" },
+            { title: "At LEAF2", body: "Unwrapped, flooded to its local VLAN 10 ports only.", tone: "cyan" },
+            { title: "ARP reply", body: "LEAF2 learns HOST-B, advertises it, and already knows HOST-A from BGP: one unicast VXLAN packet.", tone: "success" },
+            { title: "Echo", body: "Both MACs known everywhere: unicast both ways.", tone: "success" },
+          ]}
+        />
+        <PingResult s={EV_LEARNED} title="The lab: the first ping HOST-A → HOST-B" />
+        <PingResult s={EV_AGAIN} title="The lab: the same ping again" />
+      </GuideSection>
+
+      <GuideSection id="ev-working" eyebrow="Evidence" title="What working looks like" tone="success">
+        <FieldTable
+          title="Healthy, in five questions"
+          accent="success"
+          columns={["Question", "Junos", "Healthy answer"]}
+          rows={[
+            ["Can LEAF1 reach LEAF2's VTEP?", <Mono key="1">show route 10.255.0.2</Mono>, "an OSPF route"],
+            ["Is the session up with EVPN?", <Mono key="2">show bgp summary</Mono>, "Establ, bgp.evpn.0 routes accepted"],
+            ["Is LEAF2 a remote VTEP for VNI 10010?", <Mono key="3">show ethernet-switching vxlan-tunnel-end-point remote</Mono>, "10.255.0.2, VNID 10010"],
+            ["Where is HOST-B?", <Mono key="4">show evpn database</Mono>, "behind 10.255.0.2"],
+            ["Does traffic flow?", "fresh pings", "HOST-A ↔ HOST-B"],
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ev-incident" eyebrow="Incident" title="The incident" tone="danger">
+        <p>HOST-A can&apos;t reach HOST-B. LEAF1&apos;s access port is up, the underlay is converged, LEAF1 pings LEAF2&apos;s VTEP loopback, and the BGP EVPN session shows Established.</p>
+        <PingResult s={EV_FAULT} title="The lab: HOST-A pings 10.10.10.22 (the ticket)" />
+      </GuideSection>
+
+      <GuideSection id="ev-investigate" eyebrow="Incident" title="Walk the evidence" tone="danger">
+        <TroubleshootingFlow
+          steps={[
+            { question: "Is the underlay fine?", look: "Yes — LEAF1 has an OSPF route to 10.255.0.2." },
+            { question: "Is the session up with EVPN?", look: "Established, family evpn — but 1 route received, 0 accepted." },
+            { question: "Why was it not accepted?", look: "LEAF2's Type 3 route carries 65000:10010; LEAF1's VNI 10010 imports 65000:99999." },
+            { question: "What does that cost?", look: "No remote VTEP for VNI 10010: the ARP broadcast never leaves LEAF1." },
+          ]}
+        />
+        <CliPanel run={evOnly(EV_FAULT, "LEAF1", "show bgp summary", /Peer|^10\.255|bgp\.evpn|default-switch/)} caption="Junos · LEAF1 — Received 1, Accepted 0" />
+        <CliPanel run={evCli(EV_FAULT, "LEAF1", "show configuration protocols evpn")} caption="Junos · LEAF1 — vrf-target target:65000:99999" />
+        <CliPanel run={evCli(EV_FAULT, "LEAF1", "show ethernet-switching vxlan-tunnel-end-point remote")} caption="Junos · LEAF1 — no remote VTEP" />
+        <Callout tone="cyan" title="The guided lesson and the lab" icon="i">
+          The guided lesson changes only LEAF1&apos;s import target. On Junos, <Mono>vni-options vni 10010 vrf-target</Mono> sets import and export together, so in the lab LEAF2 also drops LEAF1&apos;s routes. Same root cause, same fix.
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="ev-fix" eyebrow="Incident" title="Repair and prove it" tone="success">
+        <CliPanel run={{ prompt: "admin@LEAF1# ", command: "set protocols evpn vni-options vni 10010 vrf-target target:65000:10010", output: "\n[edit]\nadmin@LEAF1# commit and-quit\ncommit complete\nExiting configuration mode" }} caption="Junos · LEAF1" />
+        <PingResult s={EV_FIXED} title="The lab: a fresh ping after the fix" />
+        <ChecklistCard tone="success" title="Proved, not assumed" mark="✓" items={["each leaf accepts the other's Type 3 route again: LEAF2 is back on LEAF1's flood list", "the Type 2 routes follow as the hosts talk", "a fresh ping from HOST-A reaches HOST-B"]} />
+      </GuideSection>
+
+      <GuideSection id="ev-other" eyebrow="Beyond this incident" title="Other ways it fails" tone="warning">
+        <FailureSignatures
+          items={[
+            { tag: "VNI", title: "VLAN mapped to a different VNI", tone: "danger", points: ["routes accepted, VNI unknown", "packets dropped at the far leaf"] },
+            { tag: "AF", title: "No family evpn", tone: "danger", points: ["session Established", "zero EVPN routes"] },
+            { tag: "IGP", title: "VTEP loopback missing from OSPF", tone: "warning", points: ["session down", "nothing crosses"] },
+            { tag: "PORT", title: "Host port in the wrong VLAN", tone: "violet", points: ["that host silent", "its Type 2 route gone"] },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Each is a ticket in the EVPN-VXLAN Lab, together with this incident.</p>
+      </GuideSection>
+
+      <GuideSection id="ev-model" eyebrow="Mental model" title="Mental model" tone="cyan">
+        <p>
+          Picture two office buildings joined by the city&apos;s ordinary postal system (the underlay). Each building has a mailroom (the VTEP) that puts internal envelopes into a city envelope addressed to the other mailroom, with a department code on it (the VNI) — the city post office (the spine) only reads the street address. The two mailrooms also keep each other informed by phone (BGP EVPN): &quot;I handle department 10010&quot; (Type 3) and &quot;Bob from department 10010 sits here&quot; (Type 2). Each mailroom only writes down calls for departments it serves (the route target). The incident is a mailroom that changed the department code on its phone list: the calls still come in, and it ignores every one of them.
+        </p>
+        <Callout tone="cyan" title="When it breaks, ask in this order" icon="→">
+          Is the host&apos;s port in the right VLAN? Can each VTEP reach the other&apos;s loopback? Is the session up with family evpn? Does the VLAN map to the same VNI on both leaves? Are the routes accepted — do the route targets match?
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="ev-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
+        <Glossary
+          items={[
+            { term: "VTEP", def: "VXLAN tunnel endpoint: wraps and unwraps VXLAN; addressed by its loopback." },
+            { term: "VNI", def: "VXLAN network identifier: the 24-bit, fabric-wide segment ID in every VXLAN header." },
+            { term: "Underlay / overlay", def: "The routed fabric that reaches the loopbacks / the tenant segments carried across it." },
+            { term: "EVPN", def: "Ethernet VPN: a BGP address family that carries VTEP membership and MAC/IP reachability." },
+            { term: "Type 2", def: "MAC/IP advertisement route: this MAC (and IP) lives behind this VTEP." },
+            { term: "Type 3", def: "Inclusive multicast Ethernet tag route: this VTEP has this VNI — the flood list." },
+            { term: "Ingress replication", def: "The ingress leaf sends one copy of a broadcast to every remote VTEP of the VNI." },
+            { term: "RD / RT", def: "Keeps a route unique / decides whether a leaf imports it." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="ev-recap" eyebrow="Reference" title="Recap" tone="success">
+        <ChecklistCard tone="success" title="You can now" mark="✓" items={["separate underlay, tunnel and overlay", "map VLANs to VNIs and keep VLAN numbers local", "read a VXLAN packet", "explain Type 3 and Type 2 routes", "tell local from remote MACs", "find, fix and prove a route-target fault"]} />
+      </GuideSection>
+
+      <GuideSection id="ev-practice" eyebrow="Next" title="Practice it" tone="violet">
+        <p>The Deep Dive tab covers EVPN-VXLAN in full: the two planes, the VXLAN header, EVPN&apos;s routes and instance model, MAC-only versus MAC+IP, the VTEP as next hop, Junos configuration and verification, and every failure signature with real evidence. The lab lets you operate it.</p>
+        <LessonLabBridge />
+        <PresentationBridge>Rewatch the EVPN-VXLAN presentation.</PresentationBridge>
+      </GuideSection>
+    </div>
   );
 }

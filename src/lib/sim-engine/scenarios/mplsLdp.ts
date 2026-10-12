@@ -188,8 +188,8 @@ function buildIgpRoutes(): Partial<Record<RouterId, RouteEntry>> {
 export function createMplsState(): MplsState {
   return {
     ldp: { "PE1-P1": "DOWN", "P1-P2": "DOWN", "P2-PE2": "DOWN" },
-    // The provider IGP (OSPF) is already converged — see brief §1: don't
-    // re-teach OSPF, just present the result as inspectable state.
+    // The provider IGP (IS-IS) is already converged — see brief §1: don't
+    // re-teach IS-IS, just present the result as inspectable state.
     igpRoutes: buildIgpRoutes(),
     lib: { CE1: [], PE1: [], P1: [], P2: [], PE2: [], CE2: [] },
     lfib: { CE1: [], PE1: [], P1: [], P2: [], PE2: [], CE2: [] },
@@ -300,7 +300,7 @@ export const mplsSteps: ScenarioStep<MplsState>[] = [
     id: "igp-converged",
     label: "IGP Already Converged",
     narrative:
-      "The provider core already runs OSPF (covered in its own lesson) — it's fully converged. Every provider router already has an IP route to every other provider loopback, including PE2's 4.4.4.4/32. MPLS doesn't replace this: LDP will distribute labels for destinations the IGP already knows how to reach.",
+      "The provider core already runs IS-IS (covered in its own lesson) — it's fully converged. Every provider router already has an IP route to every other provider loopback, including PE2's 4.4.4.4/32. MPLS doesn't replace this: LDP will distribute labels for destinations the IGP already knows how to reach.",
   },
   {
     id: "fec-intro",
@@ -470,7 +470,7 @@ export const mplsSteps: ScenarioStep<MplsState>[] = [
     id: "lib-vs-lfib",
     label: "LIB vs. LFIB",
     narrative:
-      "The LIB (Label Information Base) is control-plane bookkeeping — every label binding heard from every LDP neighbor, whether or not it's used. The LFIB (Label Forwarding Information Base) is the forwarding plane — only the entries actually used to switch packets. And to be clear: LDP didn't discover that PE2 is reachable — OSPF did. LDP only distributes labels for FECs the IGP already knows how to reach.",
+      "The LIB (Label Information Base) is control-plane bookkeeping — every label binding heard from every LDP neighbor, whether or not it's used. The LFIB (Label Forwarding Information Base) is the forwarding plane — only the entries actually used to switch packets. And to be clear: LDP didn't discover that PE2 is reachable — IS-IS did. LDP only distributes labels for FECs the IGP already knows how to reach.",
   },
   {
     id: "predict-ingress",
@@ -631,14 +631,14 @@ export const mplsSteps: ScenarioStep<MplsState>[] = [
     id: "control-vs-data",
     label: "Control Plane vs. Data Plane",
     narrative:
-      "OSPF (control plane) tells every router how to reach the FEC. LDP (control plane) tells every router which label is associated with that FEC. Neither of those touches a single customer packet. MPLS forwarding (data plane) is the mechanical PUSH → SWAP → POP you just watched, using only the LFIB those two control-plane protocols built.",
+      "IS-IS (control plane) tells every router how to reach the FEC. LDP (control plane) tells every router which label is associated with that FEC. Neither of those touches a single customer packet. MPLS forwarding (data plane) is the mechanical PUSH → SWAP → POP you just watched, using only the LFIB those two control-plane protocols built.",
   },
   {
     id: "predict-igp-dependency",
     label: "Predict",
-    narrative: "Suppose the OSPF route to PE2's loopback disappeared entirely.",
+    narrative: "Suppose the IS-IS route to PE2's loopback disappeared entirely.",
     question: {
-      prompt: "If the OSPF route to PE2 (4.4.4.4/32) disappears, what should happen to the LDP/MPLS forwarding state for that FEC?",
+      prompt: "If the IS-IS route to PE2 (4.4.4.4/32) disappears, what should happen to the LDP/MPLS forwarding state for that FEC?",
       options: [
         { id: "nothing", label: "Nothing — MPLS forwarding is independent of the IGP" },
         { id: "withdraw", label: "The LFIB entries for that FEC become invalid and should be withdrawn" },
@@ -647,7 +647,7 @@ export const mplsSteps: ScenarioStep<MplsState>[] = [
       ],
       correctOptionId: "withdraw",
       explanation:
-        "LDP labels FECs the IGP says are reachable. If OSPF withdraws the route, the FEC is no longer valid, and LDP must withdraw the associated label bindings — the LFIB entries built from them are no longer usable. MPLS forwarding depends on IGP reachability; it doesn't replace it.",
+        "LDP labels FECs the IGP says are reachable. If IS-IS withdraws the route, the FEC is no longer valid, and LDP must withdraw the associated label bindings — the LFIB entries built from them are no longer usable. MPLS forwarding depends on IGP reachability; it doesn't replace it.",
     },
   },
   {
@@ -658,7 +658,7 @@ export const mplsSteps: ScenarioStep<MplsState>[] = [
   {
     id: "fault-injected",
     label: "LDP Session Dropped (P1 ↔ P2)",
-    narrative: "The LDP session between P1 and P2 goes down. OSPF is untouched — PE1 can still reach PE2's loopback by IP. But the label binding P1 needs for its LFIB is gone.",
+    narrative: "The LDP session between P1 and P2 goes down. IS-IS is untouched — PE1 can still reach PE2's loopback by IP. But the label binding P1 needs for its LFIB is gone.",
     run: (state) => ({
       state: {
         ...state,
@@ -683,18 +683,18 @@ export const mplsSteps: ScenarioStep<MplsState>[] = [
   {
     id: "trouble-question",
     label: "Troubleshoot",
-    narrative: "OSPF is fine. Something in the MPLS control plane specifically is broken.",
+    narrative: "IS-IS is fine. Something in the MPLS control plane specifically is broken.",
     question: {
       prompt: "Where is the actual problem?",
       options: [
         { id: "l1", label: "Layer 1 — the physical link between P1 and P2 is down" },
-        { id: "ospf", label: "OSPF — P1 and P2 have lost their IGP adjacency" },
+        { id: "ospf", label: "IS-IS — P1 and P2 have lost their IGP adjacency" },
         { id: "ldp", label: "LDP — the P1↔P2 LDP session is down" },
         { id: "customer", label: "Customer IP addressing behind CE1 or CE2" },
       ],
       correctOptionId: "ldp",
       explanation:
-        "IGP reachability to 4.4.4.4/32 is confirmed healthy — this isn't Layer 1 or OSPF. The LDP session between P1 and P2 is down, so no label was ever advertised for this FEC on that link — P1 has no LFIB entry to swap into.",
+        "IGP reachability to 4.4.4.4/32 is confirmed healthy — this isn't Layer 1 or IS-IS. The LDP session between P1 and P2 is down, so no label was ever advertised for this FEC on that link — P1 has no LFIB entry to swap into.",
       hints: [
         "Hint 1: First confirm IP reachability through the provider core.",
         "Hint 2: Compare the IGP adjacency state with the LDP adjacency state on the same link.",
@@ -844,7 +844,7 @@ export function buildMplsCliCommands(state: MplsState, router: RouterId): CliCom
   const igp = state.igpRoutes[router];
   const routeCisco: CliOutput = {
     cmd: `show ip route ${FEC.split("/")[0]}`,
-    output: igp ? `Routing entry for ${FEC}\n  Known via "ospf", metric ${igp.cost}\n  Routing Descriptor Blocks:\n  * via ${igp.nextHop}` : "% Network not in table",
+    output: igp ? `Routing entry for ${FEC}\n  Known via "isis CORE", metric ${igp.cost}\n  Routing Descriptor Blocks:\n  * via ${igp.nextHop}` : "% Network not in table",
   };
 
   const neighborRowsJunos = links

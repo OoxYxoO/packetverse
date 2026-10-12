@@ -1,24 +1,93 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, FieldTable, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DiagramFrame, DiagramSvg, FailureSignatures, FieldTable, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { DStack } from "@/components/lesson/MplsGuideSvg";
 import { DHeaderColumn, SRV6_HEX_POS, Srv6Topology, type Srv6Link } from "@/components/lesson/Srv6GuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import { STable } from "@/components/sp-lab/SpUi";
+import { TO_R6, VIA_R3, createSxNet, endSid, sxApply, sxTicket, sxTicketState, type SxAction, type SxR, type SxRtr, type SxState } from "@/lib/sim-engine/scenarios/sxNet";
+import { sxSets, sxStaticApi } from "./sx-lab/sxCli";
 
 export const SRV6F_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "lf-mission", label: "The mission" },
-  { id: "lf-active", label: "Where the active segment lives" },
-  { id: "lf-sid", label: "Anatomy of this lesson's SIDs" },
-  { id: "lf-locator", label: "Locator route vs local SID" },
-  { id: "lf-topology", label: "Topology and underlay" },
-  { id: "lf-single", label: "One SID toward R6" },
-  { id: "lf-srh", label: "Encoding ⟨R3, R6⟩" },
-  { id: "lf-walk", label: "Walking ⟨R3, R6⟩" },
-  { id: "lf-locexp", label: "The locator experiment" },
-  { id: "lf-three", label: "Three segments" },
-  { id: "lf-fault", label: "The broken program" },
-  { id: "lf-mistakes", label: "Common mistakes" },
-  { id: "lf-glossary", label: "Glossary" },
-  { id: "lf-recap", label: "Mental model" },
+  { id: "xl-mission", label: "What this lesson teaches" },
+  { id: "xl-network", label: "The network of this lesson" },
+  { id: "xl-ideas", label: "Three ideas you need" },
+  { id: "xl-sid", label: "A SID is an address" },
+  { id: "xl-locator", label: "Locator route vs local SID" },
+  { id: "xl-underlay", label: "The underlay first" },
+  { id: "xl-single", label: "One SID, no SRH" },
+  { id: "xl-srh", label: "A segment list: the SRH" },
+  { id: "xl-end", label: "End at work" },
+  { id: "xl-three", label: "Three SIDs" },
+  { id: "xl-path", label: "Same SID, another path" },
+  { id: "xl-incident", label: "The missing-SID incident" },
+  { id: "xl-mtu", label: "Room for the headers" },
+  { id: "xl-working", label: "What working looks like" },
+  { id: "xl-other", label: "Other ways it fails" },
+  { id: "xl-model", label: "Mental model" },
+  { id: "xl-glossary", label: "Glossary" },
+  { id: "xl-recap", label: "Recap" },
+  { id: "xl-practice", label: "Practice it" },
 ];
+
+/** Real IOS XR output and test results on this page come from the SRv6 Foundations Lab — the guided lesson's hexagon. */
+const X0: SxState = createSxNet(0);
+const run = (s: SxState, ...a: SxAction[]) => a.reduce((acc, x) => sxApply(acc, x), s);
+const set = (text: string, changes: { dev: SxR; f: (c: SxRtr) => void }[]): SxAction => ({ type: "set", text, changes });
+const PLAIN = run(X0, { type: "plain" });
+const ONE = run(X0, { type: "send", sids: TO_R6 });
+const TWO = run(X0, { type: "send", sids: VIA_R3 });
+const THREE = run(X0, { type: "send", sids: [endSid(5), endSid(3), endSid(6)] });
+const MOVED = run(X0, set("R4–R5 metric 50", [{ dev: "R4", f: (c) => void (c.ifs["ge-0/0/1"]!.metric = 50) }, { dev: "R5", f: (c) => void (c.ifs["ge-0/0/0"]!.metric = 50) }]), { type: "send", sids: TO_R6 });
+const INC = sxTicket("nosid").repro.reduce((acc, a) => sxApply(acc, a), sxTicketState("nosid", 0));
+const INC_FIX = run(INC, set("R3: locator back in IS-IS, Loopback1 removed", [{ dev: "R3", f: (c) => void Object.assign(c, { isisLoc: true, lo1: false }) }]), { type: "send", sids: VIA_R3 });
+const MTU = sxTicket("mtu").repro.reduce((acc, a) => sxApply(acc, a), sxTicketState("mtu", 0));
+export function sxCli(s: SxState, r: SxR, command: string) {
+  return runGuideCli(sxSets(sxStaticApi(s, r), r).cisco, command);
+}
+export function sxOnly(s: SxState, r: SxR, command: string, match: RegExp, keep = 0) {
+  const x = sxCli(s, r, command);
+  return { ...x, output: pickLines(x.output, match, keep) };
+}
+/** A block of an output: from the first line matching `start` up to the next line matching `stop`. */
+export function sxBlock(s: SxState, r: SxR, command: string, start: RegExp, stop: RegExp) {
+  const x = sxCli(s, r, command);
+  const lines = x.output.split(NL);
+  const i = lines.findIndex((l) => start.test(l));
+  const j = lines.findIndex((l, k) => k > i && stop.test(l));
+  return { ...x, output: lines.slice(i, j < 0 ? undefined : j).join(NL) };
+}
+const NL = String.fromCharCode(10);
+/** One test, as the lab reports it. */
+export function SxResult({ s, title }: { s: SxState; title: string }) {
+  const t = s.tests[s.tests.length - 1];
+  return (
+    <Callout tone={t.ok ? "success" : "danger"} title={title} icon={t.ok ? "✓" : "!"}>
+      {t.kind === "srv6" ? `H1 → H6 via [${t.sids.join(", ")}]` : t.kind === "plain" ? "H1 → H6, plain IPv6" : `ping ${t.dst} from ${t.from}`}: {t.ok ? `delivered via ${t.path.join(" → ")}` : t.why}
+    </Callout>
+  );
+}
+/** The headers of the last test, hop by hop, as the lab shows them. */
+export function SxHeaders({ s }: { s: SxState }) {
+  const t = s.tests[s.tests.length - 1];
+  const rows = t.trace.map((h) => [h.from === h.to ? `at ${h.from}` : `${h.from} → ${h.to}`, h.outer ? h.da : `inner → ${h.da}`, h.sl === undefined ? (h.outer ? "no SRH" : "—") : String(h.sl), h.list ? h.list.map((x, i) => `[${i}] ${x}`).join(" ") : "—", `${h.bytes} B`]);
+  return (
+    <div className="min-w-0 overflow-x-auto rounded-lg border border-white/10 p-2">
+      <STable cols={["Where", "Destination address", "Segments Left", "SRH Segment List", "Size"]} rows={rows} />
+    </div>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the SRv6 Foundations Lab" onPractice={openLab}>
+      The hexagon of this lesson on IOS XR: locators, local SIDs, segment lists from R1 with the headers hop by hop, MTUs, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
 
 const LINKS: Srv6Link[] = [
   { a: "R1", b: "R2", label: "10" },
@@ -191,170 +260,181 @@ function FaultMethodDiagram() {
   );
 }
 
+
 export function Srv6FoundationsLessonGuideContent() {
   return (
-    <>
-      <GuideSection id="lf-mission" eyebrow="Introduction" title="The mission: segment routing on the IPv6 data plane" tone="ip">
+    <div className="space-y-12">
+      <GuideSection id="xl-mission" eyebrow="This lesson" title="What this lesson teaches" tone="mpls">
         <p>
-          You already know SR-MPLS: an ordered list of segments carried as a label stack. This lesson builds the same idea on IPv6: a segment is a 128-bit IPv6 SID, the packet is forwarded by ordinary IPv6 routing, and the SID&apos;s owner runs a local behavior. Only the basic <Mono>End</Mono> behavior is used here.
+          Every segment so far has been an MPLS label: a 20-bit number, meaningful only inside an SRGB, pushed and swapped by MPLS routers. This lesson keeps the segment routing ideas — segments, segment lists, a headend that writes the path into the packet — and moves them into the IPv6 data plane. In <b className="text-pv-text">SRv6</b> a segment is an IPv6 address: a <b className="text-pv-text">SID</b>.
         </p>
-        <Callout tone="cyan" title="Scope of this simulation" icon="i">
-          Six routers (R1 headend, R6 destination), /64 locators under <Mono>2001:db8:100::/48</Mono>, 16-bit functions, no argument bits, and a full SRH when more than one segment is needed. No headend encapsulation, service behaviors or compressed SIDs are modeled — those are later lessons.
-        </Callout>
+        <p>You will take a SID apart, follow one through a network of routers that know nothing about SRv6, build a segment list and watch the Segment Routing Header change hop by hop — and end with an incident where everything routes to R3 and R3 still throws the packet away.</p>
+        <ChecklistCard tone="violet" title="By the end of this lesson you can" mark="→" items={["split a SID into locator and function and say what each does", "tell a locator route from a local SID", "explain why transit routers need only IPv6", "read an SRH: the reversed list, Segments Left, the active SID in the DA", "walk End, PSP and USD hop by hop", "find an SRv6 fault from evidence, fix it and prove it"]} />
       </GuideSection>
 
-      <GuideSection id="lf-active" eyebrow="Concepts" title="Where the active segment lives" tone="mpls">
-        <DiagramFrame caption="Same idea — an ordered program — carried two different ways.">
-          <ActiveSegmentDiagram />
-        </DiagramFrame>
-      </GuideSection>
-
-      <GuideSection id="lf-sid" eyebrow="SID anatomy" title="Anatomy of this lesson's SIDs" tone="violet">
-        <DiagramFrame caption="A SID is derived from its owner's locator plus a function — not typed by hand.">
-          <SidAnatomyDiagram />
-        </DiagramFrame>
-        <p>
-          A SID only exists once its owner instantiates it in its Local SID Table and binds a behavior to it. In this lesson R3, R5 and R6 each instantiate one End SID with function <Mono>0x1</Mono>.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="lf-locator" eyebrow="Control plane" title="Locator route vs local SID" tone="ip">
-        <CompareCards
-          items={[
-            { title: "Locator route", tone: "ospf", tag: "every router", points: ["2001:db8:100:N::/64 in the IGP", "Answers: how do I reach the owner?", "One aggregate FIB route per locator", "Used by transit routers"] },
-            { title: "Local SID entry", tone: "violet", tag: "owner only", points: ["One exact 128-bit SID", "Answers: what does the owner do with it?", "Bound to a behavior (here End)", "Lives in the owner's Local SID Table"] },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lf-topology" eyebrow="Setup" title="Topology and underlay" tone="ospf">
-        <DiagramFrame caption="The lesson's hexagon. Every packet rides this IPv6 underlay.">
+      <GuideSection id="xl-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="The hexagon: the bottom is cheaper.">
           <TopologyDiagram />
         </DiagramFrame>
-        <p>
-          The underlay comes first: IGP adjacencies, locator reachability, and each router&apos;s IPv6 FIB. A router whose DA is not one of its own local SIDs forwards like any IPv6 router.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="lf-single" eyebrow="Data plane" title="One SID toward R6" tone="ip">
-        <FlowSteps
-          steps={[
-            { title: "R1 classifies", body: <>DA = <Mono>2001:db8:100:6:1::</Mono> (R6 End SID).</>, tone: "ip" },
-            { title: "R1, R4, R5", body: "No local SID match — ordinary IPv6 FIB forwarding toward R6's locator.", tone: "ospf" },
-            { title: "R6", body: "Its Local SID Table matches the DA; End completes and the packet is delivered.", tone: "success" },
-          ]}
-        />
-        <p>Watch the Packet Inspector here: it lists exactly the headers this packet carries, and nothing it does not.</p>
-      </GuideSection>
-
-      <GuideSection id="lf-srh" eyebrow="Data plane" title="Encoding ⟨R3, R6⟩" tone="warning">
-        <DiagramFrame caption="Visit R3 first, then R6 — a program the DA alone cannot express.">
-          <SrhEncodingDiagram />
-        </DiagramFrame>
-        <FieldTable
-          title="SRH fields used in this lesson"
-          accent="violet"
-          columns={["Field", "Meaning here"]}
-          rows={[
-            ["Routing Type", <Mono key="rt">4 (SRH)</Mono>],
-            ["Segments Left", "Index of the active segment in the Segment List"],
-            ["Last Entry", "Index of the last element of the Segment List"],
-            ["Segment List[i]", "SIDs stored in reverse order of visit"],
-            ["Flags / Tag", <Mono key="f">0x00 / 0</Mono>],
-            ["Hdr Ext Len", "2 per 128-bit SID (8-octet units, first 8 octets excluded)"],
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lf-walk" eyebrow="Data plane" title="Walking ⟨R3, R6⟩" tone="ip">
-        <DiagramFrame caption="Physical path R1 → R2 → R3 → R6 for two segments.">
-          <WalkDiagram />
-        </DiagramFrame>
-        <FlowSteps
-          steps={[
-            { title: "Local SID match", body: "R3's table matches the DA — that match, not arrival, triggers End.", tone: "violet" },
-            { title: "Execute End", body: "SL 1 → 0, and Segment List[0] is copied into the DA.", tone: "warning" },
-            { title: "FIB forward", body: "R3 looks up the new DA's locator: directly connected R6.", tone: "ospf" },
-            { title: "Final End", body: "At R6 SL is already 0 — no further decrement; the packet is delivered.", tone: "success" },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lf-locexp" eyebrow="Experiment" title="The locator experiment" tone="ospf">
-        <p>
-          The lesson raises the R4-R5 metric and resends the same single SID toward R6, then restores it. Compare the Local SID entry at R6, the DA in the packet, and the path R1&apos;s FIB picks before and after the change.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="lf-three" eyebrow="Data plane" title="Three segments: ⟨R3, R5, R6⟩" tone="warning">
-        <FieldTable
-          title="Stage by stage (Segment List stays [0] R6 · [1] R5 · [2] R3)"
-          accent="warning"
-          columns={["Stage", "DA", "SL / LE"]}
-          rows={[
-            ["R1 → R2 → R3", <Mono key="a">R3 End · 2001:db8:100:3:1::</Mono>, "2 / 2"],
-            ["End at R3", <Mono key="b">R5 End · 2001:db8:100:5:1::</Mono>, "1 / 2"],
-            ["R3 → R6 → R5 (R6 is transit)", <Mono key="c">R5 End</Mono>, "1 / 2"],
-            ["End at R5", <Mono key="d">R6 End · 2001:db8:100:6:1::</Mono>, "0 / 2"],
-            ["R5 → R6, final End", <Mono key="e">R6 End</Mono>, "0 / 2"],
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lf-fault" eyebrow="Troubleshooting" title="The broken program" tone="danger">
-        <DiagramFrame caption="A method, not an answer.">
-          <FaultMethodDiagram />
-        </DiagramFrame>
-        <ChecklistCard
-          tone="danger"
-          title="How to reason about it (no spoilers)"
-          mark="→"
-          items={[
-            "Confirm what still works: pings, the locator route, transit forwarding.",
-            "Find the exact router where the program stops advancing.",
-            "At that router, compare the packet's DA and SRH with every table the router uses.",
-            "For each candidate cause, predict what the packet would do — and compare with what you observed.",
-            "After any fix, resend the same program and follow it to R6 — a table change alone is not proof.",
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lf-mistakes" eyebrow="Troubleshooting" title="Common mistakes" tone="warning">
-        <ChecklistCard
-          tone="warning"
-          title="Avoid these"
-          mark="!"
-          items={[
-            "Reading the highlighted SRH row as the active segment instead of the DA.",
-            "Reading Segment List[0] as the first segment to visit.",
-            "Expecting every router on the path to change the SRH.",
-            "Treating Segments Left as a hop counter.",
-            "Assuming every SRv6 packet must carry an SRH.",
-            "Treating a locator route as proof that a SID is instantiated.",
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lf-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
-        <Glossary
-          items={[
-            { term: "SRv6 SID", def: "A 128-bit IPv6 address instantiated by a node and bound to a behavior." },
-            { term: "Locator", def: "Routable prefix of a node's SIDs (here 2001:db8:100:N::/64)." },
-            { term: "Function", def: "Bits after the locator identifying the local behavior (here 0x1 = End)." },
-            { term: "Local SID Table", def: "A node's own instantiated SIDs and their behaviors." },
-            { term: "SRH", def: "Segment Routing Header, an IPv6 Routing header of type 4 carrying the Segment List." },
-            { term: "Segments Left (SL)", def: "Index of the active segment in the Segment List." },
-            { term: "Last Entry (LE)", def: "Index of the last Segment List element." },
-            { term: "End", def: "Basic endpoint: decrement SL, copy the next SID into the DA, forward by FIB." },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="lf-recap" eyebrow="Recap" title="Mental model" tone="success">
-        <Callout tone="success" title="One sentence" icon="✓">
-          The locator gets the packet to the owner by plain IPv6 routing; the owner&apos;s Local SID Table decides what the SID means; and End advances the program by moving the next SID into the Destination Address.
+        <p>Six routers in a hexagon. The top (R1–R2–R3–R6) costs 10 per link, the bottom (R1–R4–R5–R6) 5 per link, so IS-IS sends everything to R6 over the bottom by default. Every router runs IS-IS for IPv6 and owns an SRv6 locator <Mono>2001:db8:100:N::/64</Mono>. H1 (<Mono>2001:db8:1::10</Mono>) sits behind R1, H6 (<Mono>2001:db8:6::20</Mono>) behind R6, and R1 can encapsulate H1&apos;s traffic with any segment list.</p>
+        <Callout tone="cyan" title="IOS XR in the lab" icon="i">
+          The SRv6 Foundations Lab runs IOS XR on every router: <Mono>segment-routing srv6 locators</Mono>, the locator under <Mono>router isis</Mono>, and an encapsulation source address on R1. Junos implements the same RFCs under <Mono>routing-options source-packet-routing srv6</Mono>; this lesson shows IOS XR only.
         </Callout>
       </GuideSection>
-    </>
+
+      <GuideSection id="xl-ideas" eyebrow="This lesson" title="Three ideas you need" tone="violet">
+        <CompareCards
+          items={[
+            { title: "SID", tone: "violet", tag: "the instruction", points: ["locator: where", "function: what"] },
+            { title: "Plain IPv6 transit", tone: "mpls", tag: "the underlay", points: ["forward on the DA", "no SRv6 needed"] },
+            { title: "SRH", tone: "warning", tag: "the program", points: ["list stored in reverse", "Segments Left: what's next"] },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="xl-sid" eyebrow="The SID" title="A SID is an address" tone="violet">
+        <DiagramFrame caption="Locator, then function.">
+          <SidAnatomyDiagram />
+        </DiagramFrame>
+        <p>R3&apos;s End SID <Mono>2001:db8:100:3:1::</Mono> is 64 bits of locator (<Mono>2001:db8:100:3</Mono>) and a function (<Mono>1</Mono>). Function 1 means <b className="text-pv-text">End</b>: “I am an endpoint — move on to the next segment.” IS-IS allocated it, together with one <b className="text-pv-text">End.X</b> SID per adjacency (“move on, and leave through this link”).</p>
+        <CliPanel run={sxCli(X0, "R3", "show segment-routing srv6 sid")} caption="IOS XR · R3 — its local SID table: End and two End.X" />
+      </GuideSection>
+
+      <GuideSection id="xl-locator" eyebrow="The SID" title="Locator route vs local SID" tone="warning">
+        <p>Two different things make a SID work. The <b className="text-pv-text">locator route</b> — R3 advertises <Mono>2001:db8:100:3::/64</Mono> in IS-IS — answers “how do I get to R3?” for every router. The <b className="text-pv-text">local SID entry</b> on R3 answers “what does R3 do with this exact address?”. An address inside the locator that R3 hasn&apos;t instantiated is routed to R3 and dropped there.</p>
+        <CliPanel run={sxOnly(X0, "R1", "show isis database verbose R3.00-00", /LSPID|^R3|SRv6 Locator|END SID|End\.X SID/)} caption="IOS XR · R1 reading R3's LSP — the SRv6 Locator TLV with the End SID, and End.X SIDs on its adjacencies" />
+      </GuideSection>
+
+      <GuideSection id="xl-underlay" eyebrow="The underlay" title="The underlay first" tone="success">
+        <p>Before any SRv6, IS-IS has to route IPv6. H1 → H6 takes the bottom, cost 15. The same IS-IS also installs every locator: R1 reaches R6&apos;s SIDs through the route for <Mono>2001:db8:100:6::/64</Mono>.</p>
+        <SxResult s={PLAIN} title="The lab: H1 → H6, plain IPv6" />
+        <CliPanel run={sxCli(X0, "R1", "show route ipv6 2001:db8:100:6:1::")} caption="IOS XR · R1 — R6's SID is reached through R6's locator route, toward R4" />
+      </GuideSection>
+
+      <GuideSection id="xl-single" eyebrow="One SID" title="One SID, no SRH" tone="mpls">
+        <p>R1 encapsulates H1&apos;s packet: an outer IPv6 header with source <Mono>2001:db8::1</Mono> (its <Mono>encapsulation source-address</Mono>) and destination R6&apos;s End SID. One segment needs no SRH. R4 and R5 forward on the destination address like any IPv6 packet. R6 matches it in its local SID table — End, with no segments left — removes the outer header (<b className="text-pv-text">USD</b>) and delivers the original packet.</p>
+        <SxResult s={ONE} title="The lab: H1 → H6 via [R6 End]" />
+        <SxHeaders s={ONE} />
+      </GuideSection>
+
+      <GuideSection id="xl-srh" eyebrow="A segment list" title="A segment list: the SRH" tone="violet">
+        <DiagramFrame caption="Written left to right, stored right to left.">
+          <SrhEncodingDiagram />
+        </DiagramFrame>
+        <p>For <Mono>[R3 End, R6 End]</Mono> R1 adds a <b className="text-pv-text">Segment Routing Header</b> (RFC 8754). The list is stored in reverse — the last segment at index 0 — and <b className="text-pv-text">Segments Left</b> says how many are still to execute. The active segment is always in the destination address; routers forward on that.</p>
+        <DiagramFrame caption="Where the active segment lives: the top label vs the destination address.">
+          <ActiveSegmentDiagram />
+        </DiagramFrame>
+        <Callout tone="cyan" title="Reduced encapsulation" icon="i">
+          The guided lesson shows the full SRH, with every segment in the list. IOS XR uses <b>H.Encaps.Red</b> by default: the first SID lives only in the destination address, so the SRH here holds just R6&apos;s SID, with Segments Left 1. It saves 16 bytes; the processing is identical.
+        </Callout>
+        <SxResult s={TWO} title="The lab: H1 → H6 via [R3 End, R6 End]" />
+      </GuideSection>
+
+      <GuideSection id="xl-end" eyebrow="End" title="End at work" tone="success">
+        <DiagramFrame caption="Segments Left changes only where a SID is executed.">
+          <WalkDiagram />
+        </DiagramFrame>
+        <p>R2 forwards on the DA (R3&apos;s SID) and changes nothing else. R3 matches its End SID: Segments Left 1 → 0, copy Segment List[0] — R6&apos;s SID — into the DA. With nothing left, R3 removes the SRH (<b className="text-pv-text">PSP</b>, penultimate segment pop). R6 then does End with no segments left: USD, deliver.</p>
+        <SxHeaders s={TWO} />
+      </GuideSection>
+
+      <GuideSection id="xl-three" eyebrow="End" title="Three SIDs" tone="mpls">
+        <p>With <Mono>[R5, R3, R6]</Mono> the packet takes the bottom to R5. R5&apos;s End sets the DA to R3&apos;s SID — and R5&apos;s best route to R3&apos;s locator goes through R6. R6 forwards it as a transit router: the DA isn&apos;t its SID. R3 executes End and the packet comes back to R6 to finish. A node is an endpoint only when the DA is one of its SIDs.</p>
+        <SxResult s={THREE} title="The lab: H1 → H6 via [R5 End, R3 End, R6 End]" />
+      </GuideSection>
+
+      <GuideSection id="xl-path" eyebrow="Behavior" title="Same SID, another path" tone="cyan">
+        <p>Raise R4–R5 to metric 50 and the best route to R6&apos;s locator moves to the top. Send to R6&apos;s End SID again: same SID, same encapsulation, different path. A SID names a node and an instruction; how the packet gets there is ordinary routing.</p>
+        <SxResult s={MOVED} title="The lab: [R6 End] after R4–R5 became expensive" />
+      </GuideSection>
+
+      <GuideSection id="xl-incident" eyebrow="Incident" title="The missing-SID incident" tone="danger">
+        <p>The guided lesson&apos;s incident: traffic steered through R3 disappears; plain IPv6 and the default path work. R3 was migrated last night, and its locator range still answers a ping to <Mono>2001:db8:100:3::1</Mono>.</p>
+        <DiagramFrame caption="Check the layers in order.">
+          <FaultMethodDiagram />
+        </DiagramFrame>
+        <SxResult s={INC} title="The lab: [R3 End, R6 End] (the ticket)" />
+        <TroubleshootingFlow
+          steps={[
+            { question: "Does the packet reach R3?", look: "Yes — R1 and R2 route it on 2001:db8:100:3::/64." },
+            { question: "Who advertises that /64?", look: "R3 — but as a plain Loopback1 prefix, not as an SRv6 locator." },
+            { question: "Does R3 have the SID?", look: "No: its local SID table is empty." },
+            { question: "Why?", look: "The locator is no longer enabled under IS-IS, so no End SID was allocated." },
+          ]}
+        />
+        <CliPanel run={sxCli(INC, "R3", "show isis segment-routing srv6 locators")} caption="IOS XR · R3 — IS-IS advertises no SRv6 locator, so no End SID was allocated" />
+        <CliPanel run={sxCli(INC, "R1", "ping 2001:db8:100:3:1::")} caption="IOS XR · R1 — the SID doesn't answer (the Loopback1 address does)" />
+        <CliPanel run={{ prompt: "RP/0/RP0/CPU0:R3(config)#", command: "router isis CORE address-family ipv6 unicast segment-routing srv6", output: "RP/0/RP0/CPU0:R3(config-isis-srv6)#locator MAIN\nRP/0/RP0/CPU0:R3(config-isis-srv6)#root\nRP/0/RP0/CPU0:R3(config)#router isis CORE\nRP/0/RP0/CPU0:R3(config-isis)#no interface Loopback1\nRP/0/RP0/CPU0:R3(config-isis)#root\nRP/0/RP0/CPU0:R3(config)#no interface Loopback1\nRP/0/RP0/CPU0:R3(config)#commit" }} caption="IOS XR · R3 — the repair" />
+        <SxResult s={INC_FIX} title="The lab: a fresh test after the fix" />
+        <ChecklistCard tone="success" title="Proved, not assumed" mark="✓" items={["R3's End SID is back in its local SID table", "R3's locator is advertised as a locator again", "[R3 End, R6 End] reaches H6 over the top"]} />
+      </GuideSection>
+
+      <GuideSection id="xl-mtu" eyebrow="Operations" title="Room for the headers" tone="warning">
+        <p>Encapsulation makes packets bigger: 40 bytes of outer header, plus 8 + 16 per SRH entry. A 1460-byte packet fits a 1500-byte IPv6 MTU on its own, but with two SIDs it is 1524 bytes. SRv6 cores run jumbo MTUs (here <Mono>mtu 9216</Mono>) for exactly this reason — one link left at the default and big packets vanish.</p>
+        <SxResult s={MTU} title="The lab: 1460 bytes via [R5 End, R6 End] with R4's MTU at 1514" />
+      </GuideSection>
+
+      <GuideSection id="xl-working" eyebrow="Evidence" title="What working looks like" tone="success">
+        <FieldTable
+          title="Healthy, in five questions (IOS XR)"
+          accent="success"
+          columns={["Question", "Command", "Healthy answer"]}
+          rows={[
+            ["Does the router own its SIDs?", <Mono key="1">show segment-routing srv6 sid</Mono>, "End + End.X per adjacency, InUse"],
+            ["Is the locator advertised?", <Mono key="2">show isis segment-routing srv6 locators</Mono>, "MAIN · 2001:db8:100:N::/64 · Active"],
+            ["Can the headend reach the SID?", <Mono key="3">show route ipv6 &lt;sid&gt;</Mono>, "the owner's locator route"],
+            ["Can the headend encapsulate?", <Mono key="4">show segment-routing srv6 manager</Mono>, "source address 2001:db8::1"],
+            ["Does it work?", "a test from R1 / ping <sid>", "delivered / !!!!!"],
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="xl-other" eyebrow="Beyond this incident" title="Other ways it fails" tone="warning">
+        <FailureSignatures
+          items={[
+            { tag: "PFX", title: "Wrong locator prefix", tone: "danger", points: ["documented SID has no route", "dropped at the headend"] },
+            { tag: "ISIS", title: "Locator not in IS-IS", tone: "danger", points: ["locator Up locally", "no route anywhere, no SID"] },
+            { tag: "ENC", title: "No encapsulation source", tone: "violet", points: ["nothing leaves the headend"] },
+            { tag: "MTU", title: "No headroom", tone: "warning", points: ["small packets fine", "big ones: Packet Too Big"] },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Each is a ticket in the SRv6 Foundations Lab, together with this incident.</p>
+      </GuideSection>
+
+      <GuideSection id="xl-model" eyebrow="Mental model" title="Mental model" tone="cyan">
+        <p>
+          Think of SRv6 SIDs as street addresses with an apartment number. The street part (the locator) is on every map: any driver can get you to the building without knowing anyone inside. The apartment number (the function) only means something to the building&apos;s concierge, who keeps a list of which apartments are occupied and what to do with mail for each (the local SID table). A courier with several stops carries a sealed itinerary (the SRH), reads it backwards, and keeps the next address on the outside of the envelope (the DA) so drivers on the way just follow street signs. At each building the concierge crosses off a stop and writes the next address on the envelope; at the last stop they open the envelope and hand over the letter inside. And if the building is still on the map but the apartment is empty, the mail comes back.
+        </p>
+        <Callout tone="cyan" title="When it breaks, ask in this order" icon="→">
+          Does plain IPv6 work? Can the headend encapsulate? Is every locator advertised, with the documented prefix? Does every SID in the list exist on its owner? Is there room for the headers?
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="xl-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
+        <Glossary
+          items={[
+            { term: "SID", def: "A 128-bit IPv6 address bound to a behavior on the node that instantiated it." },
+            { term: "Locator", def: "The routable prefix of a node's SIDs (here a /64)." },
+            { term: "Function", def: "The bits after the locator that select the behavior." },
+            { term: "Local SID table", def: "A node's instantiated SIDs and their behaviors." },
+            { term: "SRH", def: "Segment Routing Header (RFC 8754): Segment List (reversed), Segments Left, Last Entry." },
+            { term: "End / End.X", def: "Endpoint: next segment / next segment out of a given link (RFC 8986)." },
+            { term: "PSP / USD", def: "Penultimate segment pop (remove the SRH) / ultimate segment decapsulation (remove the outer header)." },
+            { term: "H.Encaps.Red", def: "Headend encapsulation with the first SID only in the DA." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="xl-recap" eyebrow="Reference" title="Recap" tone="success">
+        <ChecklistCard tone="success" title="You can now" mark="✓" items={["split a SID into locator and function", "tell a locator route from a local SID", "explain plain-IPv6 transit", "read an SRH and Segments Left", "walk End, PSP and USD", "find, fix and prove a missing SID"]} />
+      </GuideSection>
+
+      <GuideSection id="xl-practice" eyebrow="Next" title="Practice it" tone="violet">
+        <p>The Deep Dive tab covers SRv6 in full: the network-programming model, SID structure and allocation, IS-IS SRv6 TLVs, the SRH fields, End and its flavors, headend encapsulation modes, MTU and hop limit, ICMPv6, configuration and verification on IOS XR, and every failure signature with real evidence. The lab lets you send the packets yourself.</p>
+        <LessonLabBridge />
+        <PresentationBridge>Rewatch the SRv6 Foundations presentation.</PresentationBridge>
+      </GuideSection>
+    </div>
   );
 }

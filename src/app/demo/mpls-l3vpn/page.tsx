@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -59,6 +59,11 @@ import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3
 import type { PacketVisual } from "@/lib/sim-engine/types";
 import { explainNode } from "./explain";
 import { interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { L3vpnPresentation } from "./L3vpnPresentation";
+import { L3vpnLabWorkspace } from "./l3-lab/L3vpnLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { l3vpnCallout } from "./callout";
 import { L3VPN_BRIEFING_NOTES, L3VPN_BRIEFING_PHASES } from "./briefing";
 import { L3VPN_LESSON_SECTIONS, L3vpnLessonGuideContent } from "./LessonGuideContent";
@@ -169,6 +174,20 @@ export default function MplsL3vpnDemo() {
   const [rrQuestionAnswer, setRrQuestionAnswer] = useState<"yes" | "no" | undefined>(undefined);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the L3VPN Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection ("Historical Timeline Inspection Fix" §3) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -665,8 +684,26 @@ export default function MplsL3vpnDemo() {
           carry two labels across the exact same core you already built.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="MPLS L3VPN" subtitle="CUST-A · PE1 ↔ PE2 · VPNv4 · 2-label stack" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice L3VPN" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="MPLS L3VPN" subtitle="CUST-A · PE1 ↔ PE2 · VPNv4 · 2-label stack" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <L3vpnPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the L3VPN Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <L3vpnLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="MPLS L3VPN" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "L3VPN Lab", buttonLabel: "Practice L3VPN", description: "Two customers with the same addresses on one provider core: trace their packets through the VRFs and the two-label stack, share a service with route targets, rebuild a VRF; open every router (IOS XR or Junos) and solve five tickets from evidence." }} contextNote={currentStep && ["rd-intro", "mpbgp-intro", "journey-recap", "fault-injected", "repair-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -697,7 +734,7 @@ export default function MplsL3vpnDemo() {
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
             className={clsx(
-              "h-1.5 flex-1 min-w-3 rounded-full transition-colors",
+              "h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-3",
               i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10",
             )}
           />
@@ -785,9 +822,9 @@ export default function MplsL3vpnDemo() {
         {showPlanes && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode === "3d" ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

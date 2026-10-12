@@ -402,18 +402,18 @@ const INTERFACES: Record<RouterId, IfaceDef[]> = {
   CE1: [{ id: "CE1-pe1", name: "ge-0/0/0", ip: "10.1.1.10/24", neighborId: "PE1", neighborLabel: "PE1", linkType: "Access", mtu: 1500, protocols: ["Static"] }],
   PE1: [
     { id: "PE1-ce", name: "ge-0/0/0", ip: "10.1.1.1/24", neighborId: "CE1", neighborLabel: "CE1", linkType: "Access (VRF CUST-A)", mtu: 1500, protocols: ["Static"] },
-    { id: "PE1-p1", name: "xe-0/1/0", ip: "10.0.12.1/30", neighborId: "P1", neighborLabel: "P1", linkType: "Core (LSP)", mtu: 9192, protocols: ["OSPF", "LDP"] },
+    { id: "PE1-p1", name: "xe-0/1/0", ip: "10.0.12.1/30", neighborId: "P1", neighborLabel: "P1", linkType: "Core (LSP)", mtu: 9192, protocols: ["IS-IS", "LDP"] },
   ],
   P1: [
-    { id: "P1-pe1", name: "xe-0/0/0", ip: "10.0.12.2/30", neighborId: "PE1", neighborLabel: "PE1", linkType: "Core (LSP)", mtu: 9192, protocols: ["OSPF", "LDP"] },
-    { id: "P1-p2", name: "xe-0/1/0", ip: "10.0.23.1/30", neighborId: "P2", neighborLabel: "P2", linkType: "Core (LSP)", mtu: 9192, protocols: ["OSPF", "LDP"] },
+    { id: "P1-pe1", name: "xe-0/0/0", ip: "10.0.12.2/30", neighborId: "PE1", neighborLabel: "PE1", linkType: "Core (LSP)", mtu: 9192, protocols: ["IS-IS", "LDP"] },
+    { id: "P1-p2", name: "xe-0/1/0", ip: "10.0.23.1/30", neighborId: "P2", neighborLabel: "P2", linkType: "Core (LSP)", mtu: 9192, protocols: ["IS-IS", "LDP"] },
   ],
   P2: [
-    { id: "P2-p1", name: "xe-0/0/0", ip: "10.0.23.2/30", neighborId: "P1", neighborLabel: "P1", linkType: "Core (LSP)", mtu: 9192, protocols: ["OSPF", "LDP"] },
-    { id: "P2-pe2", name: "xe-0/1/0", ip: "10.0.24.1/30", neighborId: "PE2", neighborLabel: "PE2", linkType: "Core (LSP)", mtu: 9192, protocols: ["OSPF", "LDP"] },
+    { id: "P2-p1", name: "xe-0/0/0", ip: "10.0.23.2/30", neighborId: "P1", neighborLabel: "P1", linkType: "Core (LSP)", mtu: 9192, protocols: ["IS-IS", "LDP"] },
+    { id: "P2-pe2", name: "xe-0/1/0", ip: "10.0.24.1/30", neighborId: "PE2", neighborLabel: "PE2", linkType: "Core (LSP)", mtu: 9192, protocols: ["IS-IS", "LDP"] },
   ],
   PE2: [
-    { id: "PE2-p2", name: "xe-0/0/0", ip: "10.0.24.2/30", neighborId: "P2", neighborLabel: "P2", linkType: "Core (LSP)", mtu: 9192, protocols: ["OSPF", "LDP"] },
+    { id: "PE2-p2", name: "xe-0/0/0", ip: "10.0.24.2/30", neighborId: "P2", neighborLabel: "P2", linkType: "Core (LSP)", mtu: 9192, protocols: ["IS-IS", "LDP"] },
     { id: "PE2-ce", name: "ge-0/1/0", ip: "10.2.2.1/24", neighborId: "CE2", neighborLabel: "CE2", linkType: "Access (VRF CUST-A)", mtu: 1500, protocols: ["Static"] },
   ],
   CE2: [{ id: "CE2-pe2", name: "ge-0/0/0", ip: "10.2.2.20/24", neighborId: "PE2", neighborLabel: "PE2", linkType: "Access", mtu: 1500, protocols: ["Static"] }],
@@ -470,7 +470,7 @@ export function linkDetailFor(linkId: string, state: L3VpnState): LinkDetail | u
     bInterface: { id: bIface.id, name: bIface.name, status: "up", ip: bIface.ip, neighborId: a, neighborLabel: a, linkType: bIface.linkType, mtu: bIface.mtu, protocols: bIface.protocols, role: "idle" },
     status: "up",
     mtu: aIface.mtu,
-    protocols: isCore ? [{ label: "IGP", value: "OSPF" }, { label: "LDP", value: "UP" }, { label: "MPLS", value: "Enabled" }] : [{ label: "VRF", value: "CUST-A" }, { label: "Import/Export RT", value: CUST_A_RT }],
+    protocols: isCore ? [{ label: "IGP", value: "IS-IS" }, { label: "LDP", value: "UP" }, { label: "MPLS", value: "Enabled" }] : [{ label: "VRF", value: "CUST-A" }, { label: "Import/Export RT", value: CUST_A_RT }],
     currentTraffic: currentlyCarrying,
   };
 }

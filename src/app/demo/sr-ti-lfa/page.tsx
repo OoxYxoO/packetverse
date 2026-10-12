@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -78,13 +78,18 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { TlPresentation } from "./TlPresentation";
+import { TlLabWorkspace } from "./tl-lab/TlLabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { TILFA_BRIEFING_NOTES, TILFA_BRIEFING_PHASES } from "./briefing";
 import { TILFA_LESSON_SECTIONS, TiLfaLessonGuideContent } from "./LessonGuideContent";
 import { TILFA_DEEP_DIVE_SECTIONS, TiLfaDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "PLR R2 · protects R2-R4 · repair via PQ node", sections: TILFA_LESSON_SECTIONS, content: <TiLfaLessonGuideContent /> },
-  { id: "deep", label: "TI-LFA Deep Dive", hint: "Topology-Independent LFA in general", sections: TILFA_DEEP_DIVE_SECTIONS, content: <TiLfaDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "PLR R2 · protects R2–R4 and R4 · repair via PQ node R5 · real IOS XR / Junos output", sections: TILFA_LESSON_SECTIONS, content: <TiLfaLessonGuideContent /> },
+  { id: "deep", label: "TI-LFA Deep Dive", hint: "TI-LFA in depth · RFC 9855 · IOS XR and Junos", sections: TILFA_DEEP_DIVE_SECTIONS, content: <TiLfaDeepDiveContent /> },
 ];
 
 const DEVICE_ROUTERS: RouterId[] = ["R1", "R2", "R3", "R4", "R5", "R6"];
@@ -142,6 +147,20 @@ export default function SrTiLfaDemo() {
   const [xrayMode, setXrayMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the SR TI-LFA Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection (mirrors mpls-ldp's "Historical Timeline Inspection Fix") — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -621,8 +640,26 @@ export default function SrTiLfaDemo() {
           selects a PQ repair point, and builds a minimal SR repair segment list — all before any failure happens.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SR TI-LFA" subtitle="PLR R2 · protected R2-R4 · repair 16005 on top of 16006 · no PHP modeled" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice TI-LFA" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SR TI-LFA" subtitle="PLR R2 · protects R2–R4 and R4 · repair 16005 on top of 16006" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <TlPresentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the SR TI-LFA Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <TlLabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="SR TI-LFA" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "SR TI-LFA Lab", buttonLabel: "Practice TI-LFA", description: "The lesson's six routers on IOS XR or Junos with TI-LFA and BFD: read every router's backup and repair labels, fail the silent R2–R4 link, the router R4 or any other link and measure the loss in both directions, compare classic LFA with TI-LFA, remove BFD and watch detection take 30 s; open every router and solve five tickets from evidence." }} contextNote={currentStep && ["protection-ready", "protection-comparison", "classic-lfa-vs-tilfa", "diagnostic-ladder", "repair-challenge", "engineer-challenge-intro", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -653,7 +690,7 @@ export default function SrTiLfaDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-3 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 flex-1 min-w-1.5 rounded-full transition-colors sm:min-w-3", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
@@ -697,9 +734,9 @@ export default function SrTiLfaDemo() {
         {showViews && <PlaneViewSwitcher value={planeView} onChange={setPlaneView} />}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

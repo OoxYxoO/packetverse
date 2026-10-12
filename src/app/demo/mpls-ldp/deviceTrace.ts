@@ -343,7 +343,7 @@ export function traceFor(router: RouterId, state: MplsState, currentStepId: stri
       completedStageIds: [],
       lookupType: "LDP Session",
       lookupResult: "Down — binding withdrawn",
-      reason: "The LDP session between P1 and P2 goes down. OSPF is untouched — only the label binding P1 needs for its LFIB is gone.",
+      reason: "The LDP session between P1 and P2 goes down. IS-IS is untouched — only the label binding P1 needs for its LFIB is gone.",
       forwardingAction: router === "P1" ? "P1's LIB/LFIB entries for 4.4.4.4/32 are withdrawn." : "P2's Hello toward P1 is no longer answered.",
     };
   }
@@ -421,7 +421,7 @@ export function interfacesFor(router: RouterId, state: MplsState): DeviceInterfa
       neighborLabel: neighbor,
       linkType: linkId ? "Core (MPLS domain)" : "Access",
       mtu: linkId ? 9192 : 1500,
-      protocols: linkId ? ["OSPF", "LDP", "MPLS"] : ["IP"],
+      protocols: linkId ? ["IS-IS", "LDP", "MPLS"] : ["IP"],
       role: "idle",
       extra,
     };
@@ -454,7 +454,7 @@ export function linkDetailFor(linkId: string, state: MplsState): LinkDetail | un
     protocols: ldpLink
       ? [
           { label: "Link Type", value: "Core (MPLS domain)" },
-          { label: "IGP", value: "OSPF" },
+          { label: "IGP", value: "IS-IS" },
           { label: "LDP", value: LDP_STATE_LABEL[state.ldp[ldpLink]] },
         ]
       : [{ label: "Link Type", value: "Access (outside MPLS domain)" }],

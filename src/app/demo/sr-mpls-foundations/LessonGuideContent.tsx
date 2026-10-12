@@ -1,25 +1,87 @@
-import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DNode, DPill, DiagramFrame, DiagramSvg, FieldTable, FlowSteps, Glossary, GuideSection, Mono } from "@/components/lesson/GuideBlocks";
+import { Callout, ChecklistCard, CompareCards, DArrow, DIAGRAM as D, DNode, DPill, DiagramFrame, DiagramSvg, FailureSignatures, FieldTable, Glossary, GuideSection, Mono, TroubleshootingFlow } from "@/components/lesson/GuideBlocks";
 import { DStack } from "@/components/lesson/MplsGuideSvg";
 import { SrTopology, type SrLink } from "@/components/lesson/SrGuideSvg";
 import type { LessonGuideSectionLink } from "@/components/lesson/LessonGuideDialog";
+import { PracticeBridge } from "@/components/lesson/GuideInteractive";
+import { usePracticeLabOpener } from "@/components/lesson/FundamentalsLessonShell";
+import { PresentationBridge } from "@/components/presentation/LessonPresentation";
+import { CliPair, CliPanel, pickLines, runGuideCli } from "@/components/lesson/GuideCli";
+import type { CliVendor } from "@/lib/cli/types";
+import { createSrNet, srApply, srTicket, srTicketState, type SrOs, type SrR, type SrState } from "@/lib/sim-engine/scenarios/srNet";
+import { srSets, srStaticApi } from "./sr-lab/srCli";
 
 export const SRF_LESSON_SECTIONS: LessonGuideSectionLink[] = [
-  { id: "sf-mission", label: "The mission" },
-  { id: "sf-topology", label: "Topology and IGP" },
-  { id: "sf-srgb", label: "SRGB: index → label" },
-  { id: "sf-control", label: "How SIDs are learned" },
-  { id: "sf-node", label: "Node-SID forwarding" },
-  { id: "sf-metric", label: "When the IGP changes" },
-  { id: "sf-adj", label: "The local Adj-SID" },
-  { id: "sf-list", label: "Logical list vs wire stack" },
-  { id: "sf-php", label: "PHP in this lesson" },
-  { id: "sf-planes", label: "Control vs data plane" },
-  { id: "sf-fault", label: "The failing segment list" },
-  { id: "sf-mistakes", label: "Common mistakes" },
-  { id: "sf-challenge", label: "The engineer challenge" },
-  { id: "sf-glossary", label: "Glossary" },
-  { id: "sf-recap", label: "Mental model" },
+  { id: "sl-mission", label: "What this lesson teaches" },
+  { id: "sl-network", label: "The network of this lesson" },
+  { id: "sl-ideas", label: "Three ideas you need" },
+  { id: "sl-srgb", label: "An index becomes a label" },
+  { id: "sl-igp", label: "The IGP carries it all" },
+  { id: "sl-node", label: "Following 16006" },
+  { id: "sl-metric", label: "When the IGP changes" },
+  { id: "sl-adj", label: "The local Adjacency SID" },
+  { id: "sl-list", label: "A segment list" },
+  { id: "sl-incident", label: "The failing segment list" },
+  { id: "sl-customer", label: "Why customer traffic needs it" },
+  { id: "sl-working", label: "What working looks like" },
+  { id: "sl-break", label: "When a router has no SR" },
+  { id: "sl-other", label: "Other ways it fails" },
+  { id: "sl-model", label: "Mental model" },
+  { id: "sl-glossary", label: "Glossary" },
+  { id: "sl-recap", label: "Recap" },
+  { id: "sl-practice", label: "Practice it" },
 ];
+
+/**
+ * Real CLI output and test results on this page come from the SR-MPLS Lab — the same six routers, SRGB, Node SIDs and
+ * Adjacency SIDs as the guided lesson.
+ */
+export const SR0: SrState = createSrNet(0);
+export const SR0_JN: SrState = createSrNet(0, "junos");
+const SR_PING = srApply(SR0, { type: "ping", from: "H1" });
+const SR_STEER = srApply(SR0, { type: "probe", stack: [16003, 24035, 16006] });
+const SR_BAD = srApply(SR0, { type: "probe", stack: [24035, 16006] });
+const SR_METRIC = srApply(srApply(SR0, { type: "set", text: "R2–R4 metric 50", changes: [{ dev: "R2", f: (c) => void (c.ifs["ge-0/0/1"]!.metric = 50) }, { dev: "R4", f: (c) => void (c.ifs["ge-0/0/0"]!.metric = 50) }] }), { type: "ping", from: "H1" });
+const fault = (os: SrOs) => srTicket("srdisabled").repro.reduce((acc, a) => srApply(acc, a), srTicketState("srdisabled", 0, os));
+const SR_FAULT = fault("xr");
+const SR_FAULT_JN = fault("junos");
+const SR_FIXED = srApply(srApply(SR_FAULT, { type: "set", text: "R4: segment routing on", changes: [{ dev: "R4", f: (c) => void (c.sr = true) }] }), { type: "ping", from: "H1" });
+export function srCli(s: SrState, r: SrR, vendor: CliVendor, command: string) {
+  return runGuideCli(srSets(srStaticApi(s, r), r)[vendor], command);
+}
+export function srOnly(s: SrState, r: SrR, vendor: CliVendor, command: string, match: RegExp, keep = 0) {
+  const x = srCli(s, r, vendor, command);
+  return { ...x, output: pickLines(x.output, match, keep) };
+}
+/** One block of an output: from the first line matching `start`, `n` lines (or up to the next unindented line). */
+export function srSection(s: SrState, r: SrR, vendor: CliVendor, command: string, start: RegExp, n?: number) {
+  const x = srCli(s, r, vendor, command);
+  const lines = x.output.split("\n");
+  const i = lines.findIndex((l) => start.test(l));
+  if (i < 0) return { ...x, output: "" };
+  let j = i + 1;
+  if (n) j = i + n;
+  else while (j < lines.length && /^\s/.test(lines[j])) j++;
+  return { ...x, output: lines.slice(i, j).join("\n") };
+}
+/** One test, as the lab reports it. */
+export function SrResult({ s, title }: { s: SrState; title: string }) {
+  const t = s.tests[s.tests.length - 1];
+  const what = t.kind === "ping" ? `${t.from} → ${t.dst}` : `R1 → ${t.dst} with [${t.stack?.join(", ")}]`;
+  return (
+    <Callout tone={t.ok ? "success" : "danger"} title={title} icon={t.ok ? "✓" : "!"}>
+      {what}: {t.ok ? `delivered, path ${t.path.join(" → ")}` : t.why}
+    </Callout>
+  );
+}
+
+function LessonLabBridge() {
+  const openLab = usePracticeLabOpener();
+  return (
+    <PracticeBridge label="Open the SR-MPLS Lab" onPractice={openLab}>
+      The six routers of this lesson running IS-IS with segment routing, IOS XR or Junos, your own copy. Nothing you do there changes your lesson progress.
+    </PracticeBridge>
+  );
+}
 
 const LINKS: SrLink[] = [
   { a: "R1", b: "R2", label: "10" },
@@ -148,164 +210,190 @@ function FaultDiagram() {
 
 export function SrFoundationsLessonGuideContent() {
   return (
-    <>
-      <GuideSection id="sf-mission" eyebrow="Introduction" title="The mission: steer with instructions, not signaling" tone="mpls">
+    <div className="space-y-12">
+      <GuideSection id="sl-mission" eyebrow="This lesson" title="What this lesson teaches" tone="mpls">
         <p>
-          LDP follows the IGP shortest path; RSVP-TE signals an engineered LSP hop by hop. This lesson asks whether MPLS traffic can be steered by a short, ordered list of instructions imposed once at the headend (R1) — with no per-LSP signaling.
+          In the LDP lesson, labels followed the IGP shortest path and nothing else. In the RSVP-TE lessons, you could steer traffic — but every engineered path was an LSP that each router along the way had to signal and remember. This lesson asks a simpler question: can the headend steer traffic with a short list of instructions written into the packet, while the core keeps <b className="text-pv-text">no state for the path at all</b>?
         </p>
-        <Callout tone="cyan" title="Scope of this simulation" icon="i">
-          Six routers, one SRGB shared by all of them, one local Adj-SID (R3→R5). The IGP is kept protocol-neutral: SR extensions carry SIDs the same way under OSPF or IS-IS. This lesson models penultimate-hop popping (implicit-null) for every Node SID.
-        </Callout>
+        <p>That is <b className="text-pv-text">segment routing</b>. You will watch IS-IS hand out the labels, follow a Node SID through the network, move it with a metric, use an Adjacency SID to force one link, and build a segment list — then meet the mistake the guided lesson ends on, and a router that forgot segment routing.</p>
+        <ChecklistCard tone="violet" title="By the end of this lesson you can" mark="→" items={["explain where SR labels come from: SRGB + index, carried by the IGP", "follow a Node SID hop by hop — swap, then PHP", "explain why a Node SID moves when a metric changes", "say where an Adjacency SID is valid, and where it isn't", "build a segment list that forces a path", "find a segment-routing fault from evidence, fix it and prove it"]} />
       </GuideSection>
 
-      <GuideSection id="sf-topology" eyebrow="Setup" title="Topology and IGP" tone="ospf">
-        <DiagramFrame caption="Numbers are IGP metrics. The green top path is the IGP shortest path.">
+      <GuideSection id="sl-network" eyebrow="This lesson" title="The network of this lesson" tone="cyan">
+        <DiagramFrame caption="Numbers are IS-IS metrics. The green top path is the shortest path, cost 30; the bottom path costs 45.">
           <TopologyDiagram />
         </DiagramFrame>
-        <p>
-          Loopbacks are <Mono>10.0.0.1/32</Mono> … <Mono>10.0.0.6/32</Mono>. Plain IP from <Mono>192.168.1.10</Mono> to <Mono>192.168.6.20</Mono> follows R1 → R2 → R4 → R6, cost 30. SR never replaces this IGP; it rides on top of it.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="sf-srgb" eyebrow="Control plane" title="SRGB: index → label" tone="violet">
-        <DiagramFrame caption="The SID index is advertised; the label is derived locally from the SRGB.">
-          <SrgbDiagram />
-        </DiagramFrame>
-        <p>
-          A Node SID is simply the Prefix-SID of a router&apos;s own loopback. R6&apos;s index is <Mono>6</Mono>, so its label in this SRGB is <Mono>16006</Mono>. This lesson uses one SRGB everywhere for clarity; real networks are not required to.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="sf-control" eyebrow="Control plane" title="How SIDs are learned" tone="violet">
-        <FlowSteps
-          steps={[
-            { title: "IGP adjacency", body: "Routers exchange link state as usual.", tone: "ospf" },
-            { title: "SR extensions", body: "The IGP also carries SR capability, the SRGB, Prefix-SID indexes and Adj-SIDs.", tone: "violet" },
-            { title: "SID database", body: "Each router records every SID: Node SIDs global, ordinary Adj-SIDs local to their owner.", tone: "cyan" },
-            { title: "MPLS forwarding", body: "Each router programs its own LFIB from its own shortest paths.", tone: "mpls" },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="sf-node" eyebrow="Data plane" title="Node-SID forwarding" tone="mpls">
-        <DiagramFrame caption="The packet as it leaves each router. 16006 is a single label, so it is also the bottom (S=1).">
-          <NodeSidDiagram />
-        </DiagramFrame>
-        <p>
-          R1 imposes one segment, <Mono>16006</Mono>: &quot;reach R6 by the current shortest path.&quot; Every transit router forwards toward R6 using its <b className="text-pv-text">own</b> shortest path; the label stays the same because every router agrees what 16006 means. R4, the penultimate hop, pops it because R6 advertised implicit-null.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="sf-metric" eyebrow="Data plane" title="When the IGP changes" tone="warning">
-        <p>
-          The lesson raises R2-R4 from 10 to 50. The top path now costs 70, the bottom path 45. You then send the same single segment again and watch which routers carry it and which router becomes the penultimate hop. Use this to decide what a Node SID really promises before the lesson asks you.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="sf-adj" eyebrow="Control plane" title="The local Adj-SID" tone="violet">
-        <FieldTable
-          title="SIDs used in this lesson"
-          accent="violet"
-          columns={["SID", "Type", "Owner / scope", "Meaning"]}
-          rows={[
-            [<Mono key="a">16003</Mono>, "Node (Prefix-SID)", "R3 · global", "Reach R3 by the shortest path"],
-            [<Mono key="b">16006</Mono>, "Node (Prefix-SID)", "R6 · global", "Reach R6 by the shortest path"],
-            [<Mono key="c">24035</Mono>, "Adjacency SID", "R3 · local", "At R3, send over the R3→R5 link"],
-          ]}
-        />
-        <Callout tone="warning" title="Local means local" icon="!">
-          24035 is known in the SR domain, but only R3 can execute it. At any other router it is not an instruction to &quot;go to R3 and then use R3→R5&quot;.
+        <p>R1 to R6 over two paths. Loopbacks are <Mono>10.0.0.1</Mono> … <Mono>10.0.0.6</Mono>; links are <Mono>10.1.XY.0/24</Mono> (R1–R2 is 10.1.12.0/24, R1 on .1). Host H1 (<Mono>192.168.1.10</Mono>) sits behind R1, host H6 (<Mono>192.168.6.20</Mono>) behind R6. R1 and R6 exchange those two prefixes by iBGP; R2–R5 run no BGP and no LDP at all.</p>
+        <Callout tone="cyan" title="The lab uses the same network" icon="i">
+          IS-IS Level 2, SRGB 16000–23999 on every router, Prefix-SID index = router number. Every output on this page comes from the SR-MPLS Lab, in IOS XR or Junos form.
         </Callout>
       </GuideSection>
 
-      <GuideSection id="sf-list" eyebrow="Data plane" title="Logical list vs wire stack" tone="mpls">
-        <FieldTable
-          title="Logical segment list at R1 (top first)"
-          accent="mpls"
-          columns={["#", "SID", "Instruction", "Completes"]}
-          rows={[
-            ["1 · TOP / ACTIVE", <Mono key="a">16003</Mono>, "Reach R3", "By PHP at R1 (R1 is R3's penultimate hop)"],
-            ["2", <Mono key="b">24035</Mono>, "At R3, use R3→R5", "At R3, its owner"],
-            ["3 · BOTTOM / LAST", <Mono key="c">16006</Mono>, "Reach R6", "By PHP at R5 (R5 is R6's penultimate hop)"],
-          ]}
-        />
-        <DiagramFrame caption="What each wire actually carries. 16003 never crosses R1 → R3; 16006 never reaches R6.">
-          <WireStackDiagram />
-        </DiagramFrame>
-        <p>
-          The logical list is R1&apos;s instruction list and does not change. The wire stack is only what the next router must read: R3 receives <Mono>24035 S0 / 16006 S1</Mono>, executes its own Adj-SID, and sends <Mono>16006 S1</Mono> over R3→R5. R5 pops 16006 and R6 receives plain IP.
-        </p>
-      </GuideSection>
-
-      <GuideSection id="sf-php" eyebrow="Data plane" title="PHP in this lesson" tone="mpls">
-        <FieldTable
-          title="Where each Node SID leaves the packet"
-          accent="mpls"
-          columns={["Flow", "Node SID", "Popped by (penultimate hop)", "Target receives"]}
-          rows={[
-            ["Top path", <Mono key="a">16006</Mono>, "R4", "R6: plain IP"],
-            ["After R2-R4 = 50", <Mono key="b">16006</Mono>, "R5", "R6: plain IP"],
-            ["Steered list", <Mono key="c">16003</Mono>, "R1 (never imposed)", "R3: 24035 on top"],
-            ["Steered list", <Mono key="d">16006</Mono>, "R5", "R6: plain IP"],
-          ]}
-        />
-        <p>PHP is a property of the SID a router advertises and of each LFIB entry — not of a headend&apos;s segment list. The same label always gets the same treatment at the same router.</p>
-      </GuideSection>
-
-      <GuideSection id="sf-planes" eyebrow="Model" title="Control plane vs data plane" tone="cyan">
+      <GuideSection id="sl-ideas" eyebrow="This lesson" title="Three ideas you need" tone="violet">
         <CompareCards
           items={[
-            { title: "Control plane", tone: "violet", tag: "learned in advance", points: ["IGP topology and metrics", "SR capability and SRGB", "Prefix-SID indexes and Adj-SIDs", "Each router's LFIB"] },
-            { title: "Data plane", tone: "mpls", tag: "per packet", points: ["R1 imposes the stack once", "Transit routers act on the top label only", "Node SID: forward on own shortest path", "Adj-SID: owner pops it and uses that link"] },
+            { title: "Node SID", tone: "mpls", tag: "global", points: ["“reach this router”", "along the IGP shortest path"] },
+            { title: "Adjacency SID", tone: "warning", tag: "local", points: ["“use this link”", "only at the router that owns it"] },
+            { title: "Segment list", tone: "violet", tag: "the path", points: ["written once, by the headend", "executed top label first"] },
           ]}
         />
       </GuideSection>
 
-      <GuideSection id="sf-fault" eyebrow="Troubleshooting" title="The failing segment list" tone="danger">
-        <DiagramFrame caption="Everything is healthy except that the first active SID cannot be executed where it becomes active.">
-          <FaultDiagram />
+      <GuideSection id="sl-srgb" eyebrow="Control plane" title="An index becomes a label" tone="violet">
+        <DiagramFrame caption="The index is advertised; the label is computed by each router from its SRGB.">
+          <SrgbDiagram />
         </DiagramFrame>
-        <ChecklistCard
-          tone="danger"
-          title="How to reason about it (no spoilers)"
-          mark="→"
-          items={["Confirm the IGP, SR capability and Node-SID forwarding are healthy first.", "Write down which SID is on top at the router that must act on it.", "For that SID, ask: who owns it, and is it global or local?", "A fix must make every SID executable at the router where it becomes active.", "Verify with a real packet after any change."]}
-        />
-      </GuideSection>
-
-      <GuideSection id="sf-mistakes" eyebrow="Troubleshooting" title="Common mistakes" tone="warning">
-        <ChecklistCard
-          tone="warning"
-          title="Avoid these"
-          mark="!"
-          items={["Treating a Node SID as a fixed path — it follows the current shortest path.", "Treating a local Adj-SID as globally executable.", "Confusing a SID index with the MPLS label.", "Reading the logical segment list as the wire stack when PHP applies.", "Expecting the destination to pop its own Node SID when it advertised implicit-null."]}
-        />
-      </GuideSection>
-
-      <GuideSection id="sf-challenge" eyebrow="Challenge" title="The engineer challenge" tone="violet">
-        <p>Deliver R1 → R6 through R3, specifically over R3→R5. Build it from what you proved: which instruction reaches a router, which instruction pins a link, and at which router each one becomes active.</p>
-      </GuideSection>
-
-      <GuideSection id="sf-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
-        <Glossary
-          items={[
-            { term: "Segment", def: "One instruction, e.g. \"reach R6\" or \"at R3, use R3→R5\"." },
-            { term: "SID", def: "Segment identifier; in SR-MPLS it is encoded as an MPLS label." },
-            { term: "Prefix-SID / Node SID", def: "Global SID for a prefix; a Node SID is the Prefix-SID of a router's loopback." },
-            { term: "Adj-SID", def: "SID for one adjacency; ordinary Adj-SIDs are local to their owner." },
-            { term: "SRGB", def: "Label block a router derives Prefix-SID labels from (here 16000–23999)." },
-            { term: "Active SID", def: "The label on top of the stack — the instruction being executed now." },
-            { term: "PHP / implicit-null", def: "The penultimate hop pops the target's SID so the target receives the payload." },
-            { term: "Headend", def: "The router that imposes the segment list (R1)." },
-          ]}
-        />
-      </GuideSection>
-
-      <GuideSection id="sf-recap" eyebrow="Recap" title="Mental model" tone="success">
-        <Callout tone="success" title="One sentence" icon="✓">
-          The IGP learns the SIDs; the headend writes an ordered list; each router only ever executes the SID on top — a Node SID by its own shortest path, a local Adj-SID only at its owner — and PHP removes a Node SID one hop early.
+        <p>Each router reserves a block of labels for global segments, the <b className="text-pv-text">SRGB</b> — 16000–23999 here, the IOS XR default. R6 advertises one fact about its loopback: <b className="text-pv-text">Prefix-SID index 6</b>. Every router turns that into a label with its own SRGB: 16000 + 6 = <Mono>16006</Mono>. Since every SRGB is the same, every router lands on the same number.</p>
+        <CliPair cisco={srOnly(SR0, "R1", "cisco", "show isis segment-routing label table", /Label|----|^\d/)} junos={srOnly(SR0_JN, "R1", "juniper", "show route table inet.3", /inet\.3|\/32|Push|>/)} ciscoCaption="IOS XR · R1 — one label per Node SID, its own (16001) on Loopback0" junosCaption="Junos · R1 — the SR routes to every loopback, with the label R1 pushes" />
+        <Callout tone="cyan" title="Index, not label" icon="i">
+          If R4 used 17000–24999, its label for index 6 would be 17006 — and every neighbor sending to R4 would use 17006. Same SRGBs only make the labels easy to read.
         </Callout>
       </GuideSection>
-    </>
+
+      <GuideSection id="sl-igp" eyebrow="Control plane" title="The IGP carries it all" tone="ospf">
+        <p>There is no label protocol beside the IGP. IS-IS itself (RFC 8667) carries each router&apos;s SRGB in its Router Capability TLV, the Prefix-SID index on its loopback prefix, and an Adjacency SID for each neighbor. One flooding mechanism, one database:</p>
+        <CliPanel run={srSection(SR0, "R1", "cisco", "show isis database verbose", /^R6\.00-00/)} caption="IOS XR · R1 — R6's LSP: SRGB, neighbors with Adjacency SIDs, loopback with index 6" />
+        <p>Each router then programs its own label table from its own shortest paths. Nothing is negotiated with neighbors, nothing is signaled per path.</p>
+      </GuideSection>
+
+      <GuideSection id="sl-node" eyebrow="Data plane" title="Following 16006" tone="mpls">
+        <DiagramFrame caption="The packet as it leaves each router.">
+          <NodeSidDiagram />
+        </DiagramFrame>
+        <p>R1 pushes <Mono>16006</Mono> and sends it to R2 — its shortest path to R6. R2 looks up 16006: next hop R4, whose label for index 6 is also 16006, so R2 swaps 16006 → 16006. R4&apos;s next hop is R6, the owner: R4 pops the label (penultimate-hop popping), and R6 receives plain IP.</p>
+        <CliPair cisco={srOnly(SR0, "R2", "cisco", "show mpls forwarding", /Local|Label  |----|^16006|^16004/)} junos={srSection(SR0_JN, "R4", "juniper", "show route table mpls.0", /^16006 /, 2)} ciscoCaption="IOS XR · R2 — 16006 swapped to 16006 toward R4; 16004 popped (R4 is the owner)" junosCaption="Junos · R4 — 16006: Pop toward R6" />
+        <CliPanel run={srCli(SR0, "R1", "cisco", "traceroute sr-mpls 10.0.0.6/32")} caption="IOS XR · R1 — the labeled path, hop by hop" />
+      </GuideSection>
+
+      <GuideSection id="sl-metric" eyebrow="Data plane" title="When the IGP changes" tone="warning">
+        <p>The guided lesson raises the R2–R4 metric from 10 to 50. The top path now costs 70, the bottom 45. Every router reruns SPF — and nothing else happens. R1 still pushes <Mono>16006</Mono>, but now sends it to R3; R3 and R5 do the swapping, R5 is now the penultimate hop.</p>
+        <SrResult s={SR_PING} title="The lab: H1 → H6 with the original metrics" />
+        <SrResult s={SR_METRIC} title="The lab: the same ping after R2–R4 goes to 50" />
+        <p>A Node SID promises a destination, not a path: <b className="text-pv-text">the IGP decides the path</b>. That is a feature — no re-signaling after a failure — and a limit: to force a path, you need more than Node SIDs.</p>
+      </GuideSection>
+
+      <GuideSection id="sl-adj" eyebrow="Control plane" title="The local Adjacency SID" tone="violet">
+        <FieldTable
+          title="The segments this lesson uses"
+          accent="violet"
+          columns={["SID", "Type", "Owner · scope", "Meaning"]}
+          rows={[
+            [<Mono key="a">16003</Mono>, "Node (Prefix-SID)", "R3 · global", "reach R3 by the shortest path"],
+            [<Mono key="b">16006</Mono>, "Node (Prefix-SID)", "R6 · global", "reach R6 by the shortest path"],
+            [<Mono key="c">24035</Mono>, "Adjacency SID", "R3 · local", "at R3: pop, out of the R3→R5 link"],
+          ]}
+        />
+        <p>Each router allocates one label per IS-IS adjacency. R3&apos;s label for its link to R5 is <Mono>24035</Mono> (in the lab, Junos numbers it 299811). Only R3 programs it:</p>
+        <CliPair cisco={srOnly(SR0, "R3", "cisco", "show isis adjacency detail", /^R5|Adjacency SID|^R1/)} junos={srOnly(SR0, "R1", "cisco", "show mpls forwarding", /Local|Label  |----|SR Adj/)} ciscoCaption="IOS XR · R3 — Adjacency SID 24035 toward R5" junosCaption="IOS XR · R1 — R1's own Adjacency SIDs: 24012 and 24013, no 24035" />
+      </GuideSection>
+
+      <GuideSection id="sl-list" eyebrow="Data plane" title="A segment list" tone="mpls">
+        <DiagramFrame caption="The wire stack on each link of the steered path.">
+          <WireStackDiagram />
+        </DiagramFrame>
+        <p>To force the bottom path, R1 sends <Mono>[16003, 24035, 16006]</Mono>: reach R3, take R3&apos;s link to R5, reach R6. R1 executes the first segment itself — R3 is its neighbor, so 16003 is popped right away and the packet leaves with <Mono>24035 | 16006</Mono>. R3 executes its own Adjacency SID, R5 pops 16006 for R6.</p>
+        <SrResult s={SR_STEER} title="The lab: R1 sends [16003, 24035, 16006]" />
+        <p>R3 and R5 didn&apos;t learn about this path, store it or refresh it. That is the whole point: <b className="text-pv-text">the path lives in the packet</b>.</p>
+      </GuideSection>
+
+      <GuideSection id="sl-incident" eyebrow="Incident" title="The failing segment list" tone="danger">
+        <DiagramFrame caption="R1 is asked to execute a segment it doesn't own.">
+          <FaultDiagram />
+        </DiagramFrame>
+        <p>The guided lesson&apos;s engineer wants the R3→R5 link and writes <Mono>[24035, 16006]</Mono>. Traffic dies at R1.</p>
+        <SrResult s={SR_BAD} title="The lab: R1 sends [24035, 16006]" />
+        <TroubleshootingFlow
+          steps={[
+            { question: "Where does the packet stop?", look: "At R1, before it leaves." },
+            { question: "What is R1 asked to execute?", look: "The top label: 24035." },
+            { question: "Does R1 have 24035?", look: "No — R1's Adjacency SIDs are 24012 and 24013. 24035 is R3's." },
+            { question: "What is missing?", look: "A segment that brings the packet to R3 first." },
+          ]}
+        />
+        <ChecklistCard tone="success" title="The repair" mark="✓" items={["put R3's Node SID in front: [16003, 24035, 16006]", "R1 executes 16003, R3 executes 24035, R5 executes 16006", "a fresh test arrives via R3 and R5"]} />
+      </GuideSection>
+
+      <GuideSection id="sl-customer" eyebrow="Data plane" title="Why customer traffic needs it" tone="mpls">
+        <p>H1&apos;s packets for <Mono>192.168.6.20</Mono> don&apos;t use a segment list — they use R6&apos;s Node SID. R1 knows 192.168.6.0/24 by iBGP, next hop 10.0.0.6, and resolves that next hop over the SR label. The core routers don&apos;t know 192.168.6.0/24 at all: a packet that reaches them unlabeled is dropped.</p>
+        <CliPair cisco={srOnly(SR0, "R1", "cisco", "show cef 192.168.6.0/24", /^192|via 10\.0\.0\.6|labels imposed/)} junos={srOnly(SR0_JN, "R1", "juniper", "show route 192.168.6.20", /^192|Push|BGP/)} ciscoCaption="IOS XR · R1 — via 10.0.0.6, labels imposed {16006}" junosCaption="Junos · R1 — BGP route, Push 16006" />
+      </GuideSection>
+
+      <GuideSection id="sl-working" eyebrow="Evidence" title="What working looks like" tone="success">
+        <FieldTable
+          title="Healthy, in five questions"
+          accent="success"
+          columns={["Question", "IOS XR", "Junos", "Healthy answer"]}
+          rows={[
+            ["Is IS-IS up, which path is shortest?", <Mono key="1">show isis adjacency</Mono>, <Mono key="2">show isis adjacency</Mono>, "two adjacencies per router; R1→R6 via R2, R4"],
+            ["Is every router SR-capable?", <Mono key="3">show isis database verbose</Mono>, <Mono key="4">show isis database extensive</Mono>, "SRGB 16000–23999 in every LSP"],
+            ["Does every loopback have its own index?", <Mono key="5">show isis segment-routing label table</Mono>, <Mono key="6">show route table inet.3</Mono>, "16001–16006, one each"],
+            ["Is 16006 programmed hop by hop?", <Mono key="7">show mpls forwarding</Mono>, <Mono key="8">show route table mpls.0</Mono>, "swap on R2, pop on R4"],
+            ["Does R1 push it for the customer?", <Mono key="9">show cef 192.168.6.0/24</Mono>, <Mono key="10">show route 192.168.6.20</Mono>, "labels imposed / Push 16006"],
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="sl-break" eyebrow="Incident" title="When a router has no SR" tone="danger">
+        <p>R4 was rebuilt from a backup. Its IS-IS adjacencies are up and every loopback is in every routing table — but H1 can&apos;t reach H6.</p>
+        <SrResult s={SR_FAULT} title="The lab: H1 pings H6" />
+        <TroubleshootingFlow
+          steps={[
+            { question: "Is IS-IS up?", look: "Yes: every adjacency, every loopback route." },
+            { question: "Is every router SR-capable?", look: "No: R4's LSP has no SRGB." },
+            { question: "What does R2 do with 16006?", look: "IOS XR: Unlabelled toward R4. Junos: no entry at all." },
+            { question: "Why does that kill the packet?", look: "R4 receives plain IP for 192.168.6.20 and runs no BGP." },
+          ]}
+        />
+        <CliPair cisco={srOnly(SR_FAULT, "R2", "cisco", "show mpls forwarding", /Local|Label  |----|^16006|^16004/)} junos={srOnly(SR_FAULT_JN, "R2", "juniper", "show route table mpls.0", /mpls\.0|^16\d+/)} ciscoCaption="IOS XR · R2 — 16006 Unlabelled toward R4" junosCaption="Junos · R2 — no entry for 16006" />
+        <CliPair cisco={{ prompt: "RP/0/RP0/CPU0:R4(config)#", command: "router isis CORE", output: "RP/0/RP0/CPU0:R4(config-isis)#address-family ipv4 unicast\nRP/0/RP0/CPU0:R4(config-isis-af)#segment-routing mpls\nRP/0/RP0/CPU0:R4(config-isis-af)#commit" }} junos={{ prompt: "admin@R4# ", command: "set protocols isis source-packet-routing srgb start-label 16000 index-range 8000", output: "\n[edit]\nadmin@R4# set protocols isis source-packet-routing node-segment ipv4-index 4\n\n[edit]\nadmin@R4# commit and-quit\ncommit complete\nExiting configuration mode" }} ciscoCaption="IOS XR · R4" junosCaption="Junos · R4" />
+        <SrResult s={SR_FIXED} title="The lab: a fresh ping after the fix" />
+      </GuideSection>
+
+      <GuideSection id="sl-other" eyebrow="Beyond this incident" title="Other ways it fails" tone="warning">
+        <FailureSignatures
+          items={[
+            { tag: "SRGB", title: "SRGB too small", tone: "danger", points: ["indexes beyond the range", "no label for them on that router"] },
+            { tag: "SID", title: "No Prefix-SID", tone: "danger", points: ["IS-IS route, no label", "customer traffic unlabeled"] },
+            { tag: "DUP", title: "Duplicate index", tone: "violet", points: ["conflict in the database", "the lower prefix keeps it"] },
+            { tag: "IGP", title: "Wrong metric", tone: "warning", points: ["everything works", "the Node SID takes the long way"] },
+          ]}
+        />
+        <p className="text-sm text-pv-text-muted">Each is a ticket in the SR-MPLS Lab, together with this incident.</p>
+      </GuideSection>
+
+      <GuideSection id="sl-model" eyebrow="Mental model" title="Mental model" tone="cyan">
+        <p>
+          Think of the network as a city where every crossroads has the same street map (the IGP). Each landmark has a number everyone agrees on — R6&apos;s is 6 — and every driver turns a landmark number into a route by reading their own map: that is a Node SID. Each crossroads also has numbered exits that only make sense standing at that crossroads — &quot;take exit 35 here&quot; — those are Adjacency SIDs. A traveller (the packet) carries a little card of instructions written by the first driver: &quot;go to landmark 3, take exit 35, then go to landmark 6&quot;. Each driver along the way reads only the top line, does it, and tears it off. No driver needs to remember the traveller. And if the first line says &quot;take exit 35&quot; while you&apos;re still standing at the first crossroads — there is no exit 35 here.
+        </p>
+        <Callout tone="cyan" title="When it breaks, ask in this order" icon="→">
+          Where does the packet stop? Is IS-IS up, and which path is shortest? Is every router SR-capable, with an SRGB that fits? Does every loopback have its own index? Is the label programmed hop by hop? Does the headend push it?
+        </Callout>
+      </GuideSection>
+
+      <GuideSection id="sl-glossary" eyebrow="Reference" title="Glossary" tone="cyan">
+        <Glossary
+          items={[
+            { term: "Segment", def: "One instruction in a packet; in SR-MPLS, one MPLS label." },
+            { term: "SID", def: "Segment identifier: the number that names a segment." },
+            { term: "SRGB", def: "Segment Routing Global Block: the label range a router reserves for global segments." },
+            { term: "Prefix-SID", def: "A global segment attached to a prefix, advertised as an index into the SRGB." },
+            { term: "Node SID", def: "The Prefix-SID of a router's loopback: reach that router by the shortest path." },
+            { term: "Adjacency SID", def: "A local segment: at its owner, pop and send out of one specific link." },
+            { term: "Segment list", def: "The ordered segments the headend imposes; the top label is the active segment." },
+            { term: "PHP", def: "Penultimate-hop popping: the hop before the owner removes the Node SID." },
+          ]}
+        />
+      </GuideSection>
+
+      <GuideSection id="sl-recap" eyebrow="Reference" title="Recap" tone="success">
+        <ChecklistCard tone="success" title="You can now" mark="✓" items={["derive a Node SID label from SRGB and index", "follow 16006 hop by hop and say who pops it", "explain why a metric change moves a Node SID", "say where an Adjacency SID is valid", "build and repair a segment list", "find, fix and prove a router without segment routing"]} />
+      </GuideSection>
+
+      <GuideSection id="sl-practice" eyebrow="Next" title="Practice it" tone="violet">
+        <p>The Deep Dive tab covers SR-MPLS in full: the architecture, SID types, SRGB and SRLB, the IS-IS extensions, ECMP, conflicts, PHP and explicit-null, configuration on IOS XR and Junos, verification and every failure signature with real evidence. The lab lets you operate it.</p>
+        <LessonLabBridge />
+        <PresentationBridge>Rewatch the SR-MPLS presentation.</PresentationBridge>
+      </GuideSection>
+    </div>
   );
 }

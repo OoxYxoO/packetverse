@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import { useScenarioEngine } from "@/lib/sim-engine/useScenarioEngine";
@@ -64,14 +64,19 @@ import { layoutTo3D } from "@/components/network3d/layout";
 import type { ActivePacket3D, CameraMode, FocusTarget3D, InspectorSurface, Link3DData, Node3DStatus, PacketStackFrame } from "@/components/network3d/types";
 import { explainNode } from "./explain";
 import { PRIMARY_TRANSITION_ROUTER, deviceForStep, interfacesFor, linkDetailFor, packetFramesFor, traceFor } from "./deviceTrace";
+import { T6Presentation } from "./T6Presentation";
+import { T6LabWorkspace } from "./t6-lab/T6LabWorkspace";
+import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
+import { PracticeLabButton, PracticeLabCard, usePracticeLab } from "@/components/practice-lab/PracticeLabLauncher";
+import { PracticeLabOpenerContext } from "@/components/lesson/FundamentalsLessonShell";
 import { tiLfaAddressNames } from "./addressNames";
 import { SRV6T_BRIEFING_NOTES, SRV6T_BRIEFING_PHASES } from "./briefing";
 import { SRV6T_LESSON_SECTIONS, Srv6TiLfaLessonGuideContent } from "./LessonGuideContent";
 import { SRV6T_DEEP_DIVE_SECTIONS, Srv6TiLfaDeepDiveContent } from "./DeepDiveContent";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "PLR P1 · protected P1-P2 · OIF P1→P3 + P4 End.X+USD", sections: SRV6T_LESSON_SECTIONS, content: <Srv6TiLfaLessonGuideContent /> },
-  { id: "deep", label: "SRv6 TI-LFA Deep Dive", hint: "TI-LFA (RFC 9855) on SRv6 in general", sections: SRV6T_DEEP_DIVE_SECTIONS, content: <Srv6TiLfaDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "Stale tables → post-convergence path → SIDs → drill · real IOS XR output", sections: SRV6T_LESSON_SECTIONS, content: <Srv6TiLfaLessonGuideContent /> },
+  { id: "deep", label: "SRv6 TI-LFA Deep Dive", hint: "RFC 9855 TI-LFA on SRv6 in depth · IOS XR", sections: SRV6T_DEEP_DIVE_SECTIONS, content: <Srv6TiLfaDeepDiveContent /> },
 ];
 
 const DEVICE_ROUTERS: RouterId[] = ["PE1", "P1", "P3", "P4", "P2", "PE2"];
@@ -134,6 +139,20 @@ export default function Srv6TiLfaDemo() {
   const [packetSelected, setPacketSelected] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  /** Presentation ("understand it first") and the SRv6 TI-LFA Lab, as in the shared lesson shell: opening the lab plays the presentation first once per visit. Neither touches the engine or progress. */
+  const practiceLab = usePracticeLab(() => setAutoPlay(false));
+  const presentation = usePresentationFlow(() => setAutoPlay(false));
+  const { openLab: openLabRaw } = practiceLab;
+  const { gate: gatePresentation, show: showPresentation } = presentation;
+  const openLab = useCallback(() => gatePresentation(openLabRaw), [gatePresentation, openLabRaw]);
+  const openLabFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    openLab();
+  }, [openLab]);
+  const openPresentationFromGuide = useCallback(() => {
+    setGuideOpen(false);
+    showPresentation();
+  }, [showPresentation]);
   const [focusedObject, setFocusedObject] = useState<FocusTarget3D | undefined>(undefined);
   /** Presentation cursor for HopTimeline inspection (ARCHITECTURE.md §18) — a step INDEX, never mutates the live lesson. undefined = inspecting the current/live hop. */
   const [historicalIndex, setHistoricalIndex] = useState<number | undefined>(undefined);
@@ -527,8 +546,26 @@ export default function Srv6TiLfaDemo() {
           instant it detects a failure — while P3 and P4 are still completely unaware anything happened.
         </p>
       </div>
-        <LessonGuideButton onClick={() => setGuideOpen(true)} />
-        <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 TI-LFA" subtitle="PE1 → PE2 · PLR P1 · protected link P1-P2 · repair P4 End.X+USD" tabs={GUIDE_TABS} />
+        <div className="flex flex-wrap items-center gap-2">
+          <PresentationButton onOpen={() => showPresentation()} />
+          <PracticeLabButton label="Practice SRv6 TI-LFA" onOpen={openLab} />
+          <LessonGuideButton onClick={() => setGuideOpen(true)} />
+        </div>
+        <PracticeLabOpenerContext.Provider value={openLabFromGuide}>
+          <PresentationOpenerContext.Provider value={openPresentationFromGuide}>
+            <LessonGuideDialog open={guideOpen} onClose={() => setGuideOpen(false)} title="SRv6 TI-LFA" subtitle="Local repair at P1 · the post-convergence path in SIDs · End.X with USD at P4" tabs={GUIDE_TABS} />
+          </PresentationOpenerContext.Provider>
+        </PracticeLabOpenerContext.Provider>
+        {presentation.mounted && <T6Presentation open={presentation.open} onClose={presentation.close} onFinish={presentation.finish} finishLabel={presentation.hasNext ? "Open the SRv6 TI-LFA Lab →" : "Start the lesson →"} />}
+        {practiceLab.mounted && <T6LabWorkspace open={practiceLab.open} onClose={practiceLab.closeLab} />}
+      </div>
+
+      <div className="mb-4">
+        <PresentationCard topic="SRv6 TI-LFA" seen={presentation.seen} onOpen={() => showPresentation()} />
+      </div>
+
+      <div className="mb-4">
+        <PracticeLabCard entry={{ title: "SRv6 TI-LFA Lab", buttonLabel: "Practice SRv6 TI-LFA", description: "The lesson's network on IOS XR: read P1's precomputed TI-LFA backups and their SRv6 repair SIDs, drill link and router failures and see each flow's PLR, detection time and repair, compare TI-LFA with hand-built repairs that loop, see the repair header nested over the VPN packet; open every router and solve five tickets from evidence."}} contextNote={currentStep && ["protection-ready", "loop-free-recap", "node-protection-intro", "repair-challenge", "complete"].includes(currentStep.id) ? "Want to experiment instead of only watching?" : undefined} onOpen={openLab} />
       </div>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-4">
@@ -540,7 +577,7 @@ export default function Srv6TiLfaDemo() {
         ))}
       </div>
 
-      <div className="mb-4 flex gap-1 overflow-x-auto pb-2">
+      <div className="mb-4 flex gap-px pb-2 sm:gap-1">
         {srv6TiLfaSteps.map((step, i) => (
           <button
             key={step.id}
@@ -548,23 +585,25 @@ export default function Srv6TiLfaDemo() {
             disabled={i > index}
             onClick={() => i < index && engine.goTo(i)}
             title={step.label}
-            className={clsx("h-1.5 flex-1 min-w-3 rounded-full transition-colors", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
+            className={clsx("h-1.5 min-w-0 flex-1 rounded-full transition-colors sm:min-w-1", i < index ? "bg-pv-success/70 hover:bg-pv-success cursor-pointer" : i === index ? "bg-pv-cyan" : "bg-white/10")}
           />
         ))}
       </div>
 
-      <div className="mb-6 flex flex-wrap gap-3">
-        <TopologyModeSwitcher
-          options={[
-            { value: "physical", label: "Physical" },
-            { value: "preConvergence", label: "Pre-Convergence" },
-            { value: "repairSpaces", label: "Repair Spaces" },
-            { value: "repairProgram", label: "Repair Program" },
-            { value: "recovery", label: "Recovery" },
-          ]}
-          value={topoView}
-          onChange={setTopoView}
-        />
+      <div className="mb-6 flex min-w-0 flex-wrap gap-3">
+        <div className="max-w-full overflow-x-auto">
+          <TopologyModeSwitcher
+            options={[
+              { value: "physical", label: "Physical" },
+              { value: "preConvergence", label: "Pre-Convergence" },
+              { value: "repairSpaces", label: "Repair Spaces" },
+              { value: "repairProgram", label: "Repair Program" },
+              { value: "recovery", label: "Recovery" },
+            ]}
+            value={topoView}
+            onChange={setTopoView}
+          />
+        </div>
         <TopologyModeSwitcher options={[{ value: "off", label: "2D" }, { value: "on", label: "3D View" }]} value={viewMode3D ? "on" : "off"} onChange={(v) => handleView3DChange(v === "on")} tone="violet" />
         {viewMode3D && (
           <>
@@ -583,9 +622,9 @@ export default function Srv6TiLfaDemo() {
         )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* MAIN COLUMN */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {viewMode3D ? (
             <>
               <TopologyFrame questionActive={questionActive} onExpand={() => setFocusMode(true)}>

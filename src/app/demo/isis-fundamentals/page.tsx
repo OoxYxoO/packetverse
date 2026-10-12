@@ -14,10 +14,12 @@ import { isisNames } from "./addressNames";
 import { IsisPanel } from "./IsisPanel";
 import { ISIS_LESSON_SECTIONS, IsisLessonGuideContent } from "./LessonGuideContent";
 import { ISIS_DEEP_DIVE_SECTIONS, IsisDeepDiveContent } from "./DeepDiveContent";
+import { IsisPresentation } from "./IsisPresentation";
+import { IsisLabWorkspace } from "./isis-lab/IsisLabWorkspace";
 
 const GUIDE_TABS: LessonGuideTab[] = [
-  { id: "lesson", label: "This Lesson", hint: "PE1 · P1 · P2 · PE2 · Level-2 P2P adjacencies, LSP flooding, SPF and a level-mismatch incident", sections: ISIS_LESSON_SECTIONS, content: <IsisLessonGuideContent /> },
-  { id: "deep", label: "IS-IS Deep Dive", hint: "IS-IS in general — levels, DIS, PDUs, TLVs, operations", sections: ISIS_DEEP_DIVE_SECTIONS, content: <IsisDeepDiveContent /> },
+  { id: "lesson", label: "This Lesson", hint: "PE1 — P1 — P2 — PE2 · neighbors, one map, SPF, then a level mismatch that splits the core", sections: ISIS_LESSON_SECTIONS, content: <IsisLessonGuideContent /> },
+  { id: "deep", label: "IS-IS Deep Dive", hint: "The full study course · hellos, levels, LSPs, flooding, SPF, metrics, overload, configuration, five faults", sections: ISIS_DEEP_DIVE_SECTIONS, content: <IsisDeepDiveContent /> },
 ];
 
 const ISIS_HEX = "#22d3ee";
@@ -112,6 +114,12 @@ const config: FundamentalsLessonConfig<IsisState> = {
     },
   },
   sidePanel: (s) => <IsisPanel s={s} />,
+  practiceLab: {
+    entry: { title: "IS-IS Lab", buttonLabel: "Practice IS-IS", description: "A six-router Level-2 core with two paths: watch hellos, adjacencies, LSP flooding and SPF happen; change metrics, set the overload bit, break levels, MTUs and keys; open every router (IOS XR or Junos, commit-based) and solve five tickets from evidence." },
+    contextNote: (stepId) => (stepId && ["all-adjacencies", "others-flood", "lsdb", "spf-pe1", "rib", "incident-intro", "diagnostic-layers", "repair-challenge"].includes(stepId) ? "Want to experiment instead of only watching?" : undefined),
+    render: ({ open, onClose }) => <IsisLabWorkspace open={open} onClose={onClose} />,
+  },
+  presentation: { topic: "IS-IS in a provider core", render: (p) => <IsisPresentation {...p} /> },
   complete: { badge: "Lesson Complete", title: "You can build and read an IS-IS core", message: "NETs, point-to-point hellos over Layer 2, three-way adjacencies, LSP flooding with CSNP/PSNP, SPF with the two-way check — and a level mismatch you can tell apart from a broken link." },
 };
 
