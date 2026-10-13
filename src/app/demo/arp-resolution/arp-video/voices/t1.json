@@ -1,0 +1,1301 @@
+{
+ "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+ "lines": {
+  "bcast.ask": {
+   "file": "bcast.ask.mp3",
+   "ms": 5789,
+   "hash": "6d217045",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2880
+   ]
+  },
+  "bcast.ff": {
+   "file": "bcast.ff.mp3",
+   "ms": 8386,
+   "hash": "f9b3139e",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "all": 2780
+   },
+   "sents": [
+    0,
+    2740,
+    5720
+   ]
+  },
+  "bcast.pcb": {
+   "file": "bcast.pcb.mp3",
+   "ms": 8915,
+   "hash": "4fea6394",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "all": 6280
+   },
+   "sents": [
+    0,
+    3560,
+    4980
+   ]
+  },
+  "bcast.zero": {
+   "file": "bcast.zero.mp3",
+   "ms": 12826,
+   "hash": "398675a",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "inside": 2560,
+    "all": 10800
+   },
+   "sents": [
+    0,
+    5840,
+    8020,
+    10760
+   ]
+  },
+  "flood.all": {
+   "file": "flood.all.mp3",
+   "ms": 6870,
+   "hash": "568411a5",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "back": 3220
+   },
+   "sents": [
+    0,
+    1300,
+    3200
+   ]
+  },
+  "flood.ask": {
+   "file": "flood.ask.mp3",
+   "ms": 2718,
+   "hash": "2196e45b",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0
+   ]
+  },
+  "flood.flood": {
+   "file": "flood.flood.mp3",
+   "ms": 4637,
+   "hash": "3bca3ae0",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    840,
+    3460
+   ]
+  },
+  "flood.pcb": {
+   "file": "flood.pcb.mp3",
+   "ms": 11103,
+   "hash": "c740e67c",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2000,
+    8400
+   ]
+  },
+  "forward.ask": {
+   "file": "forward.ask.mp3",
+   "ms": 1805,
+   "hash": "c2aca41e",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0
+   ]
+  },
+  "forward.flood": {
+   "file": "forward.flood.mp3",
+   "ms": 8542,
+   "hash": "f86c023d",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "mem": 2240
+   },
+   "sents": [
+    0,
+    2180,
+    6900
+   ]
+  },
+  "forward.p3": {
+   "file": "forward.p3.mp3",
+   "ms": 4560,
+   "hash": "43b6fc4b",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    1880
+   ]
+  },
+  "forward.r1": {
+   "file": "forward.r1.mp3",
+   "ms": 5717,
+   "hash": "d680152c",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    4460
+   ]
+  },
+  "gateway.ask": {
+   "file": "gateway.ask.mp3",
+   "ms": 4494,
+   "hash": "6f293199",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2740
+   ]
+  },
+  "gateway.gw": {
+   "file": "gateway.gw.mp3",
+   "ms": 7279,
+   "hash": "77ee379d",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    1920,
+    2980,
+    5740
+   ]
+  },
+  "gateway.pcb": {
+   "file": "gateway.pcb.mp3",
+   "ms": 9799,
+   "hash": "79f34168",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2620,
+    6100
+   ]
+  },
+  "gateway.server.1": {
+   "file": "gateway.server.1.mp3",
+   "ms": 8426,
+   "hash": "aa2e1e5f",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "wall": 5420
+   },
+   "sents": [
+    0,
+    4260
+   ]
+  },
+  "gateway.server.2": {
+   "file": "gateway.server.2.mp3",
+   "ms": 9988,
+   "hash": "22254e9d",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "gw": 7720
+   },
+   "sents": [
+    0,
+    2600,
+    4500
+   ]
+  },
+  "missing.ask": {
+   "file": "missing.ask.mp3",
+   "ms": 1957,
+   "hash": "ab45b57b",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0
+   ]
+  },
+  "missing.ip.1": {
+   "file": "missing.ip.1.mp3",
+   "ms": 7714,
+   "hash": "7d59528e",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "ip": 3860
+   },
+   "sents": [
+    0,
+    3000
+   ]
+  },
+  "missing.ip.2": {
+   "file": "missing.ip.2.mp3",
+   "ms": 7356,
+   "hash": "82e8b43a",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "mac": 1140
+   },
+   "sents": [
+    0,
+    4720,
+    6120
+   ]
+  },
+  "missing.mac": {
+   "file": "missing.mac.mp3",
+   "ms": 6483,
+   "hash": "441c439b",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "ip": 1020,
+    "mac": 2160
+   },
+   "sents": [
+    0,
+    1080,
+    4480
+   ]
+  },
+  "missing.none.1": {
+   "file": "missing.none.1.mp3",
+   "ms": 7197,
+   "hash": "b0d5d432",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "sw": 2040
+   },
+   "sents": [
+    0,
+    2000,
+    4760
+   ]
+  },
+  "missing.none.2": {
+   "file": "missing.none.2.mp3",
+   "ms": 4174,
+   "hash": "ea4d2ff6",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "mac": 2240
+   },
+   "sents": [
+    0
+   ]
+  },
+  "missing.own": {
+   "file": "missing.own.mp3",
+   "ms": 11672,
+   "hash": "27b03585",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "src": 2720,
+    "dst": 7340
+   },
+   "sents": [
+    0,
+    5120,
+    7460
+   ]
+  },
+  "n1": {
+   "file": "n1.mp3",
+   "ms": 9300,
+   "hash": "cd648d3d",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "ping": 2640
+   },
+   "sents": [
+    0,
+    1060,
+    2720
+   ]
+  },
+  "n10": {
+   "file": "n10.mp3",
+   "ms": 5233,
+   "hash": "caa9eee",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "bc": 2180
+   },
+   "sents": [
+    0,
+    2200
+   ]
+  },
+  "n11": {
+   "file": "n11.mp3",
+   "ms": 10149,
+   "hash": "5b3209f4",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "out": 0
+   },
+   "sents": [
+    0,
+    1920,
+    6600
+   ]
+  },
+  "n12": {
+   "file": "n12.mp3",
+   "ms": 9087,
+   "hash": "8537353",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "sw": 2160
+   },
+   "sents": [
+    0,
+    2180,
+    6820
+   ]
+  },
+  "n13": {
+   "file": "n13.mp3",
+   "ms": 7753,
+   "hash": "2b284622",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    3380,
+    6200
+   ]
+  },
+  "n14": {
+   "file": "n14.mp3",
+   "ms": 5163,
+   "hash": "450eaa36",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "v": 0
+   },
+   "sents": [
+    0,
+    2780
+   ]
+  },
+  "n15": {
+   "file": "n15.mp3",
+   "ms": 9734,
+   "hash": "33171375",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "mem": 3020
+   },
+   "sents": [
+    0,
+    2920,
+    6460
+   ]
+  },
+  "n16": {
+   "file": "n16.mp3",
+   "ms": 5024,
+   "hash": "8ffa16e2",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2280
+   ]
+  },
+  "n17": {
+   "file": "n17.mp3",
+   "ms": 7838,
+   "hash": "30974044",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "go": 0,
+    "cmp": 3780
+   },
+   "sents": [
+    0,
+    2320,
+    3800,
+    5820
+   ]
+  },
+  "n18": {
+   "file": "n18.mp3",
+   "ms": 9343,
+   "hash": "d8d5de4c",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "one": 3880
+   },
+   "sents": [
+    0,
+    1360,
+    6820
+   ]
+  },
+  "n19": {
+   "file": "n19.mp3",
+   "ms": 8746,
+   "hash": "5e584cbf",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "mem": 2460,
+    "table": 4580
+   },
+   "sents": [
+    0,
+    2600,
+    4600
+   ]
+  },
+  "n2": {
+   "file": "n2.mp3",
+   "ms": 8277,
+   "hash": "2759ad8d",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "ip": 2600
+   },
+   "sents": [
+    0,
+    2600,
+    4720
+   ]
+  },
+  "n20": {
+   "file": "n20.mp3",
+   "ms": 5137,
+   "hash": "8dca2865",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "done": 0
+   },
+   "sents": [
+    0,
+    3500
+   ]
+  },
+  "n21": {
+   "file": "n21.mp3",
+   "ms": 8163,
+   "hash": "edfa06e2",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "go": 5980
+   },
+   "sents": [
+    0,
+    2680,
+    4140,
+    5980
+   ]
+  },
+  "n22": {
+   "file": "n22.mp3",
+   "ms": 4131,
+   "hash": "55fcad63",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "to": 1480
+   },
+   "sents": [
+    0
+   ]
+  },
+  "n23": {
+   "file": "n23.mp3",
+   "ms": 2436,
+   "hash": "6fd76d3a",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "go": 0
+   },
+   "sents": [
+    0
+   ]
+  },
+  "n24": {
+   "file": "n24.mp3",
+   "ms": 8042,
+   "hash": "52eae0da",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "go": 2880
+   },
+   "sents": [
+    0,
+    2820,
+    6040
+   ]
+  },
+  "n25": {
+   "file": "n25.mp3",
+   "ms": 3995,
+   "hash": "2713d703",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "race": 2480
+   },
+   "sents": [
+    0,
+    2720
+   ]
+  },
+  "n26": {
+   "file": "n26.mp3",
+   "ms": 4740,
+   "hash": "f4646876",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "go": 0
+   },
+   "sents": [
+    0,
+    1740,
+    3420
+   ]
+  },
+  "n27": {
+   "file": "n27.mp3",
+   "ms": 12980,
+   "hash": "e1a11869",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    4840,
+    8320
+   ]
+  },
+  "n3": {
+   "file": "n3.mp3",
+   "ms": 10915,
+   "hash": "eff4132c",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "eth": 4320,
+    "mac": 8980
+   },
+   "sents": [
+    0,
+    1580,
+    6120,
+    9020
+   ]
+  },
+  "n4": {
+   "file": "n4.mp3",
+   "ms": 5082,
+   "hash": "9ace3cd1",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "stuck": 3600
+   },
+   "sents": [
+    0,
+    3720
+   ]
+  },
+  "n5": {
+   "file": "n5.mp3",
+   "ms": 8506,
+   "hash": "b970c31e",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "mem": 5100
+   },
+   "sents": [
+    0,
+    4600,
+    7340
+   ]
+  },
+  "n6": {
+   "file": "n6.mp3",
+   "ms": 5857,
+   "hash": "243cca75",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2160,
+    2920,
+    3840
+   ]
+  },
+  "n7": {
+   "file": "n7.mp3",
+   "ms": 8760,
+   "hash": "30d882c8",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "ask": 2680
+   },
+   "sents": [
+    0,
+    2660,
+    4100,
+    7900
+   ]
+  },
+  "n8": {
+   "file": "n8.mp3",
+   "ms": 5291,
+   "hash": "816171e2",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "to": 3140
+   },
+   "sents": [
+    0,
+    3220
+   ]
+  },
+  "n9": {
+   "file": "n9.mp3",
+   "ms": 2986,
+   "hash": "87fa291",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "go": 1400
+   },
+   "sents": [
+    0,
+    1480
+   ]
+  },
+  "o1": {
+   "file": "o1.mp3",
+   "ms": 3064,
+   "hash": "91927023",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0
+   ]
+  },
+  "o10": {
+   "file": "o10.mp3",
+   "ms": 9853,
+   "hash": "403e4f30",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "arp": 3060,
+    "m3": 5960,
+    "m4": 6880,
+    "m5": 8660
+   },
+   "sents": [
+    0,
+    3900
+   ]
+  },
+  "o11": {
+   "file": "o11.mp3",
+   "ms": 6832,
+   "hash": "4578cfd",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "wall": 2420
+   },
+   "sents": [
+    0,
+    2440,
+    5620
+   ]
+  },
+  "o2": {
+   "file": "o2.mp3",
+   "ms": 5220,
+   "hash": "f8100282",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "note": 1900
+   },
+   "sents": [
+    0,
+    2900
+   ]
+  },
+  "o3": {
+   "file": "o3.mp3",
+   "ms": 7679,
+   "hash": "5e7f94f8",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "faces": 1580
+   },
+   "sents": [
+    0,
+    1500,
+    3340,
+    4780,
+    6360
+   ]
+  },
+  "o4": {
+   "file": "o4.mp3",
+   "ms": 7085,
+   "hash": "b1dfa0d2",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "shout": 4320
+   },
+   "sents": [
+    0,
+    2200,
+    4180
+   ]
+  },
+  "o5": {
+   "file": "o5.mp3",
+   "ms": 9123,
+   "hash": "95cd3709",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "look": 400,
+    "shrug": 1460,
+    "hand": 5520
+   },
+   "sents": [
+    0,
+    1560,
+    3640,
+    5600,
+    8320
+   ]
+  },
+  "o6": {
+   "file": "o6.mp3",
+   "ms": 7076,
+   "hash": "2e18d684",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "beam": 3420
+   },
+   "sents": [
+    0,
+    3680
+   ]
+  },
+  "o7": {
+   "file": "o7.mp3",
+   "ms": 6911,
+   "hash": "8ea48b30",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "write": 1280
+   },
+   "sents": [
+    0,
+    2580,
+    3780
+   ]
+  },
+  "o8": {
+   "file": "o8.mp3",
+   "ms": 8304,
+   "hash": "3fa5524f",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "morph": 7760
+   },
+   "sents": [
+    0,
+    2800,
+    7580
+   ]
+  },
+  "o9": {
+   "file": "o9.mp3",
+   "ms": 7932,
+   "hash": "6ab6d0ff",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "tags": 0,
+    "desks": 3000,
+    "room": 5560
+   },
+   "sents": [
+    0,
+    3040,
+    5500
+   ]
+  },
+  "owner.ask": {
+   "file": "owner.ask.mp3",
+   "ms": 3122,
+   "hash": "d04f16ca",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    1560
+   ]
+  },
+  "owner.pcb": {
+   "file": "owner.pcb.mp3",
+   "ms": 6075,
+   "hash": "4c59fed8",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    1680,
+    4360
+   ]
+  },
+  "owner.pcc": {
+   "file": "owner.pcc.mp3",
+   "ms": 8766,
+   "hash": "412becd0",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "ip": 3040
+   },
+   "sents": [
+    0,
+    5560,
+    7360
+   ]
+  },
+  "owner.r1": {
+   "file": "owner.r1.mp3",
+   "ms": 8476,
+   "hash": "cc8295a0",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "ip": 1960
+   },
+   "sents": [
+    0,
+    1940,
+    7020
+   ]
+  },
+  "r1": {
+   "file": "r1.mp3",
+   "ms": 7250,
+   "hash": "cfa7783b",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "far": 4480
+   },
+   "sents": [
+    0,
+    1440,
+    2900,
+    4460
+   ]
+  },
+  "r10": {
+   "file": "r10.mp3",
+   "ms": 8138,
+   "hash": "a4c4affe",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "arp": 6500
+   },
+   "sents": [
+    0,
+    3940,
+    6460
+   ]
+  },
+  "r11": {
+   "file": "r11.mp3",
+   "ms": 13838,
+   "hash": "ca43c525",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "off": 1720,
+    "new": 3900,
+    "ttl": 8040
+   },
+   "sents": [
+    0,
+    1760,
+    8060,
+    10140
+   ]
+  },
+  "r12": {
+   "file": "r12.mp3",
+   "ms": 6276,
+   "hash": "62efe886",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "go": 0,
+    "home": 2760
+   },
+   "sents": [
+    0,
+    2740,
+    5160
+   ]
+  },
+  "r2": {
+   "file": "r2.mp3",
+   "ms": 8468,
+   "hash": "51290636",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    5380
+   ]
+  },
+  "r3": {
+   "file": "r3.mp3",
+   "ms": 11245,
+   "hash": "44dc2d4a",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "letter": 2460,
+    "desk": 8380
+   },
+   "sents": [
+    0,
+    2500,
+    5600,
+    8420,
+    9580
+   ]
+  },
+  "r4": {
+   "file": "r4.mp3",
+   "ms": 5182,
+   "hash": "e0c10cea",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "run": 0
+   },
+   "sents": [
+    0,
+    3680
+   ]
+  },
+  "r5": {
+   "file": "r5.mp3",
+   "ms": 10674,
+   "hash": "2a35dd84",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "net": 0,
+    "cmp": 2280
+   },
+   "sents": [
+    0,
+    2280,
+    5260,
+    6040
+   ]
+  },
+  "r6": {
+   "file": "r6.mp3",
+   "ms": 4565,
+   "hash": "8e9e26ad",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2420
+   ]
+  },
+  "r7": {
+   "file": "r7.mp3",
+   "ms": 8230,
+   "hash": "df607f4a",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "ask": 0,
+    "wall": 3000,
+    "ans": 4880
+   },
+   "sents": [
+    0,
+    1680,
+    4920
+   ]
+  },
+  "r8": {
+   "file": "r8.mp3",
+   "ms": 10787,
+   "hash": "555b453b",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "ip": 4120,
+    "mac": 7060
+   },
+   "sents": [
+    0,
+    4260,
+    7340
+   ]
+  },
+  "r9": {
+   "file": "r9.mp3",
+   "ms": 8948,
+   "hash": "c07e7fee",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "go": 2080,
+    "look": 3700
+   },
+   "sents": [
+    0,
+    2100,
+    3620
+   ]
+  },
+  "remember.ask": {
+   "file": "remember.ask.mp3",
+   "ms": 4386,
+   "hash": "a5d70a7c",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2520
+   ]
+  },
+  "remember.port": {
+   "file": "remember.port.mp3",
+   "ms": 7059,
+   "hash": "136baae9",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "sw": 3380
+   },
+   "sents": [
+    0,
+    3420,
+    5940
+   ]
+  },
+  "remember.right": {
+   "file": "remember.right.mp3",
+   "ms": 4829,
+   "hash": "421d1b92",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    1600
+   ]
+  },
+  "remember.self": {
+   "file": "remember.self.mp3",
+   "ms": 9834,
+   "hash": "6fa8a913",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    1360,
+    4480
+   ]
+  },
+  "room.all.1": {
+   "file": "room.all.1.mp3",
+   "ms": 5845,
+   "hash": "41c16f03",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "chaos": 2340
+   },
+   "sents": [
+    0,
+    2100,
+    3700
+   ]
+  },
+  "room.all.2": {
+   "file": "room.all.2.mp3",
+   "ms": 4541,
+   "hash": "962b0864",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "only": 1980
+   },
+   "sents": [
+    0,
+    2100
+   ]
+  },
+  "room.ask": {
+   "file": "room.ask.mp3",
+   "ms": 3108,
+   "hash": "cb51b576",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2000
+   ]
+  },
+  "room.near": {
+   "file": "room.near.mp3",
+   "ms": 9303,
+   "hash": "90ae6f1a",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "only": 3940
+   },
+   "sents": [
+    0,
+    3880,
+    7880
+   ]
+  },
+  "room.sam": {
+   "file": "room.sam.mp3",
+   "ms": 6162,
+   "hash": "b078b618",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    680,
+    1700
+   ]
+  },
+  "two-dest.ask": {
+   "file": "two-dest.ask.mp3",
+   "ms": 6069,
+   "hash": "c365d3e",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    4580
+   ]
+  },
+  "two-dest.r1": {
+   "file": "two-dest.r1.mp3",
+   "ms": 8764,
+   "hash": "afa74477",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    3960,
+    6840
+   ]
+  },
+  "two-dest.right": {
+   "file": "two-dest.right.mp3",
+   "ms": 7367,
+   "hash": "667f7c98",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2720,
+    4960
+   ]
+  },
+  "two-dest.server": {
+   "file": "two-dest.server.mp3",
+   "ms": 13056,
+   "hash": "5c67ce4d",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    2240,
+    9140,
+    11000
+   ]
+  },
+  "unicast.ask": {
+   "file": "unicast.ask.mp3",
+   "ms": 3229,
+   "hash": "1df81995",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0
+   ]
+  },
+  "unicast.bc": {
+   "file": "unicast.bc.mp3",
+   "ms": 8582,
+   "hash": "7b8d4071",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "learned": 3100
+   },
+   "sents": [
+    0,
+    3120,
+    5100
+   ]
+  },
+  "unicast.sw": {
+   "file": "unicast.sw.mp3",
+   "ms": 8209,
+   "hash": "c68ce2ea",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    4740
+   ]
+  },
+  "unicast.uni": {
+   "file": "unicast.uni.mp3",
+   "ms": 4868,
+   "hash": "23a008cb",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {},
+   "sents": [
+    0,
+    1400,
+    2780
+   ]
+  },
+  "z1": {
+   "file": "z1.mp3",
+   "ms": 8922,
+   "hash": "d0fe6a78",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "c1": 2120,
+    "c2": 3480,
+    "c3": 5520,
+    "c4": 7760
+   },
+   "sents": [
+    0,
+    2220,
+    3620,
+    4380,
+    5600,
+    7780
+   ]
+  },
+  "z2": {
+   "file": "z2.mp3",
+   "ms": 10735,
+   "hash": "3bef4121",
+   "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+   "marks": {
+    "gw": 2620
+   },
+   "sents": [
+    0,
+    4320,
+    9700
+   ]
+  }
+ }
+}

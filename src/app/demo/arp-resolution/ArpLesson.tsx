@@ -53,6 +53,8 @@ import type { CliVendor } from "@/lib/cli/types";
 import { firstConnectionCliSets } from "@/components/connection-network/cliAdapter";
 import { ArpLabWorkspace } from "./arp-lab/ArpLabWorkspace";
 import { ArpPresentationOverlay } from "./arp-presentation/ArpPresentation";
+import { ArpVideoTheater } from "./arp-video/ArpVideoTheater";
+import { VideoButton, VideoPosterCard } from "./arp-video/VideoEntry";
 import { PresentationButton, PresentationCard, PresentationOpenerContext } from "@/components/presentation/LessonPresentation";
 import { PracticeLabButton, PracticeLabCard, usePracticeLab, type PracticeLabEntry } from "@/components/practice-lab/PracticeLabLauncher";
 
@@ -163,6 +165,12 @@ export function ArpLesson() {
    */
   const arpIntro = usePracticeLab(() => setAutoPlay(false));
   const [arpIntroSeen, setArpIntroSeen] = useState(false);
+  /** Prototype: the ARP interactive video, mounted on first open and kept (so closing and reopening resumes). */
+  const [video, setVideo] = useState({ mounted: false, open: false });
+  const openVideo = useCallback(() => {
+    setAutoPlay(false);
+    setVideo({ mounted: true, open: true });
+  }, []);
   const { openLab: openArpIntro, closeLab: closeArpIntro } = arpIntro;
   const { openLab: openArpLabDirect } = arpLab;
   const openArpFlow = useCallback(() => {
@@ -479,6 +487,8 @@ export function ArpLesson() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <PresentationButton onOpen={() => openArpIntro()} />
+          {/* Prototype: the interactive video, a theater over this page (no lesson progress). */}
+          <VideoButton onOpen={openVideo} />
           <PracticeLabButton label={ARP_LAB_ENTRY.buttonLabel} onOpen={openArpFlow} />
           <LessonGuideButton onClick={() => setGuideOpen(true)} />
         </div>
@@ -487,6 +497,9 @@ export function ArpLesson() {
       {/* "Understand it first": the ARP presentation. */}
       <div className="mb-6">
         <PresentationCard topic="ARP" seen={arpIntroSeen} onOpen={() => openArpIntro()} />
+        <div className="mt-3">
+          <VideoPosterCard onOpen={openVideo} />
+        </div>
       </div>
 
       <div className="mb-6 flex gap-1.5 overflow-x-auto pb-2">
@@ -900,6 +913,16 @@ export function ArpLesson() {
         />
       )}
 
+      {video.mounted && (
+        <ArpVideoTheater
+          open={video.open}
+          onClose={() => setVideo({ mounted: true, open: false })}
+          onOpenLab={() => {
+            setVideo({ mounted: true, open: false });
+            enterArpLab();
+          }}
+        />
+      )}
       {arpIntro.mounted && (
         <ArpPresentationOverlay
           open={arpIntro.open}

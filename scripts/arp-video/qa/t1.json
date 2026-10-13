@@ -1,0 +1,878 @@
+{
+ "voice": "chatterbox:echo-ref:ex0.25:cfg0.3",
+ "lines": {
+  "bcast.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "It doesn't know PCB's MAC yet, so which destination MAC goes on the ARP request?",
+   "asr": "small.en"
+  },
+  "bcast.ff": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 1,
+   "resets": 0,
+   "takes": 1,
+   "heard": "That's it, the broadcast address. All Fs means everyone on this network. That's your Who's Sam to the whole room.",
+   "asr": "small.en"
+  },
+  "bcast.pcb": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Careful. That's the very address we're trying to find. We can't use it yet. When you don't know who to ask, you ask everyone. All Fs.",
+   "asr": "small.en"
+  },
+  "bcast.zero": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Good eye. Zeros do appear, but inside the request, in the target field. They mean, please fill this in. As a destination, they'd reach nobody. The frame goes to all Fs.",
+   "asr": "small.en"
+  },
+  "flood.all": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Almost. Every port except one. The laptop sent it so it doesn't need its own question back.",
+   "asr": "small.en"
+  },
+  "flood.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "What does the switch do with a broadcast?",
+   "asr": "small.en"
+  },
+  "flood.flood": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Right. Every port except the one it came in on. Now watch it happen.",
+   "asr": "small.en"
+  },
+  "flood.pcb": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "That would be handy, wouldn't it? But the switch never reads the question inside, and the destination literally says, everyone. So it copies the frame out of every other port.",
+   "asr": "small.en"
+  },
+  "forward.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Where does the switch send it?",
+   "asr": "small.en"
+  },
+  "forward.flood": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "That was true for the broadcast. But this frame carries a specific Mac, and the Switch learned it on port 3. So, one port.",
+   "asr": "small.en"
+  },
+  "forward.p3": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Right, just port 3. The switch learned that when the reply passed through...",
+   "asr": "small.en"
+  },
+  "forward.r1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "PCB is right here on the same network, so the router isn't involved. Straight out port 3.",
+   "asr": "small.en"
+  },
+  "gateway.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 5,
+   "heard": "The laptop needs to send to the server. Whose Mac address does it need?",
+   "asr": "small.en"
+  },
+  "gateway.gw": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Yes, the front desk. The router. The frame only needs to reach the next stop. The router takes it from there.",
+   "asr": "small.en"
+  },
+  "gateway.pcb": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "That note is for PCB. A frame with PCB's Mac goes to PCB. For anything leaving the network, the laptop needs the router's Mac.",
+   "asr": "small.en"
+  },
+  "gateway.server.1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "That's the most common mix-up with ARP, so I'm glad we're looking at it. Remember? A question asked in this room stays in this room.",
+   "asr": "small.en"
+  },
+  "gateway.server.2": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "The broadcast stops at the router, the server never hears it, and the laptop doesn't need the server's Mac anyway, the frame only has to reach the router.",
+   "asr": "small.en"
+  },
+  "missing.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "What is the laptop missing?",
+   "asr": "small.en"
+  },
+  "missing.ip.1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 2,
+   "heard": "Not quite, but I see why you picked that. Look here. The destination IP is already filled in. Dot 20.",
+   "asr": "small.en"
+  },
+  "missing.ip.2": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 1,
+   "resets": 0,
+   "takes": 1,
+   "heard": "What's missing is this field. The MAC address Ethernet needs. The name is known. The desk isn't.",
+   "asr": "small.en"
+  },
+  "missing.mac": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "You've got it. The IP is there, but the destination MAC is empty. That's the desk number we still need.",
+   "asr": "small.en"
+  },
+  "missing.none.1": {
+   "word_errors": 1,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "That's a really common assumption, but the switch only reads MAC addresses, and IP address alone means nothing to it.",
+   "asr": "small.en"
+  },
+  "missing.none.2": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "So without PCBs Mac, this frame simply can't leave.",
+   "asr": "small.en"
+  },
+  "missing.own": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Close, but look at the source field. The laptop's own Mac is already there. It's burned into its network card. What's missing is the other end. PCB's Mac.",
+   "asr": "small.en"
+  },
+  "n1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "Okay, let's make it real. The laptop wants to send a ping to PCB at 192.168.10.20.",
+   "asr": "small.en"
+  },
+  "n10": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "The frame arrives on port 1. The switch reads the destination. Everyone.",
+   "asr": "small.en"
+  },
+  "n11": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "And there it goes. PCB, PCC, and the router all get a copy. That's a broadcast. One sender, everyone listening.",
+   "asr": "small.en"
+  },
+  "n12": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "And here's something you might miss. The Switch just learned where the laptop lives. Port 1. It read the sender's address on the way in.",
+   "asr": "small.en"
+  },
+  "n13": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Three devices are now holding the same question. Remember the office? Heads turned. So who's going to raise a hand?",
+   "asr": "small.en"
+  },
+  "n14": {
+   "word_errors": 1,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "PCC and the router ignore it. PCB recognizes its own address.",
+   "asr": "small.en"
+  },
+  "n15": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "And here's a detail people often miss. Before answering, PCB writes down who asked. The laptops IP and Mac were right there in the request.",
+   "asr": "small.en"
+  },
+  "n16": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Now PCB replies. And remember, it knows exactly who asked.",
+   "asr": "small.en"
+  },
+  "n17": {
+   "word_errors": 1,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 2,
+   "heard": "Dot20 is at this Mac. Can you see the difference? The request went to everyone. The reply goes to just one.",
+   "asr": "small.en"
+  },
+  "n18": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "And the Switch? It already knew the laptop was on port 1, so this time, it used just that port. And it learned PCBs port on the way.",
+   "asr": "small.en"
+  },
+  "n19": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 2,
+   "heard": "So the laptop writes its note. .20, this Mac. And in networking language, that note is an entry in the ARP cache.",
+   "asr": "small.en"
+  },
+  "n2": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Look at what the laptop knows right now. It knows PCB's IP address, so it starts building the packet. From me, to .20.",
+   "asr": "small.en"
+  },
+  "n20": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "And look, the empty field is filled. The frame is ready to go.",
+   "asr": "small.en"
+  },
+  "n21": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Here's the part I want you to remember. Arp was never the message, it only found the desk. Now, the real ping can leave.",
+   "asr": "small.en"
+  },
+  "n22": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "It reaches the switch, addressed to PCB's Mac this time.",
+   "asr": "small.en"
+  },
+  "n23": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 1,
+   "resets": 0,
+   "takes": 2,
+   "heard": "Out port 3 and nowhere else.",
+   "asr": "small.en"
+  },
+  "n24": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "and PCB answers straight away. No need to ask, it wrote the laptop down earlier, just like Sam knowing where you sit.",
+   "asr": "small.en"
+  },
+  "n25": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Now let's ping PCB again. Remember that sticky note?",
+   "asr": "small.en"
+  },
+  "n26": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 3,
+   "takes": 1,
+   "heard": "This is where it pays off. No question, no answer. The ping just goes.",
+   "asr": "small.en"
+  },
+  "n27": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "That's why ARP usually happens once, and then the data simply flows. One small caveat. People change desks. So these notes expire after a while, and the laptop simply asks again.",
+   "asr": "small.en"
+  },
+  "n3": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "But here's the catch. On a local network, that packet travels inside an Ethernet frame. And Ethernet doesn't deliver to IP addresses, it delivers to MAC addresses.",
+   "asr": "small.en"
+  },
+  "n4": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "So, the laptop already knows where this is going. Why can't it just send it?",
+   "asr": "small.en"
+  },
+  "n5": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "So, we're right back in the office. Name known, desk unknown. First, the laptop checks its own notes. It's ARPCASH.",
+   "asr": "small.en"
+  },
+  "n6": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Anything for dot 20? Nope. Empty. These two have never talked before.",
+   "asr": "small.en"
+  },
+  "n7": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "So the laptop does just what you did. It asks the room. That question is called an ARP request. Who has dot 20? Tell dot 10.",
+   "asr": "small.en"
+  },
+  "n8": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Now, here's an interesting little problem. Who should this frame be addressed to?",
+   "asr": "small.en"
+  },
+  "n9": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Let's follow it. Keep your eye on the switch.",
+   "asr": "small.en"
+  },
+  "o1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Imagine it's your first day in a new office.",
+   "asr": "small.en"
+  },
+  "o10": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 3,
+   "takes": 1,
+   "heard": "The trick your computer uses to find the right desk is called ARP, and it works just like you did. Ask everyone, only the owner answers, and write it down.",
+   "asr": "small.en"
+  },
+  "o11": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 2,
+   "heard": "One more thing to keep in your head. A question asked in this room stays in this room. We'll need that later.",
+   "asr": "small.en"
+  },
+  "o2": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Your manager walks over and hands you a note. It says, please give this to Sam.",
+   "asr": "small.en"
+  },
+  "o3": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Easy, right? Except you've never met Sam. You know the name. But which of these people is Sam and which desk?",
+   "asr": "small.en"
+  },
+  "o4": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 3,
+   "heard": "So, what would you do? You could walk desk to desk. Or you could just stand up and ask, who's Sam?",
+   "asr": "small.en"
+  },
+  "o5": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Head's turn. Priya shakes her head, not her name. The front desk shrugs too. And Sam raises a hand. That's me, desk 20.",
+   "asr": "small.en"
+  },
+  "o6": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Notice something nice here. Sam doesn't shout back. Sam saw exactly who asked, so the answer comes straight to you.",
+   "asr": "small.en"
+  },
+  "o7": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "And because you're smart, you write it down. Sam, desk 20. Next time, no shouting. You'll walk straight there.",
+   "asr": "small.en"
+  },
+  "o8": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Hold on to that little story. Because your computer runs into almost exactly the same problem many times a day, watch.",
+   "asr": "small.en"
+  },
+  "o9": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "The name tags turn into IP addresses, the desk numbers turn into Mac addresses, and the room becomes your local network.",
+   "asr": "small.en"
+  },
+  "owner.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Who answers? Tap the device that replies.",
+   "asr": "small.en"
+  },
+  "owner.pcb": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Yes, PCB. The only one whose address is dot 20. That's Sam raising a hand.",
+   "asr": "small.en"
+  },
+  "owner.pcc": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Like Priya in the office. PCC heard it but it's dot 30, not dot 20, so it stays quiet. PCB answers.",
+   "asr": "small.en"
+  },
+  "owner.r1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "The router heard it too. But its address here is .1, and it only answers for its own addresses. PCB answers.",
+   "asr": "small.en"
+  },
+  "r1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Okay, local ARP makes sense. Now let's make it harder. What if the destination isn't in this room at all?",
+   "asr": "small.en"
+  },
+  "r10": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "And now, the router has the same problem the laptop had. New network. Unknown Mac. So the router asks too.",
+   "asr": "small.en"
+  },
+  "r11": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "Here's the envelope trick. The router throws away the old outer envelope and puts the same letter into a new one, addressed to the server. The letter inside doesn't change. Well, almost. Its TTL counts down by one.",
+   "asr": "small.en"
+  },
+  "r12": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "The server gets it and replies. The router sends the answer home. Ping successful.",
+   "asr": "small.en"
+  },
+  "r2": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 2,
+   "heard": "The laptop wants to reach the server at 10.20.20.20. It lives on a different network behind the router.",
+   "asr": "small.en"
+  },
+  "r3": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 4,
+   "heard": "Quick trip back to the office. Say your note is for Alex in another building. Would you stand up in here and shout, Who's Alex? Of course not. You'd take it to the front desk.",
+   "asr": "small.en"
+  },
+  "r4": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 2,
+   "heard": "The front desk knows how to get things out of the building. That's their whole job.",
+   "asr": "small.en"
+  },
+  "r5": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "The laptop thinks the same way. Is 10.20.20.20 on my network? No. So it hands the packet to its front desk. It's default gateway, the router.",
+   "asr": "small.en"
+  },
+  "r6": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 2,
+   "heard": "It still needs ARP first. And here's where a lot of people go wrong.",
+   "asr": "small.en"
+  },
+  "r7": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Who has DOT 1? The question floods the room and stops at the wall. The router answers. And the laptop writes another note.",
+   "asr": "small.en"
+  },
+  "r8": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "If this feels strange at first, focus on one thing. IP tells us the final destination. MAC gets the frame to the next device on this network.",
+   "asr": "small.en"
+  },
+  "r9": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "Let's follow the packet together. It reaches the router. The frame is addressed to the router, so the router opens it and finds a packet for the server.",
+   "asr": "small.en"
+  },
+  "remember.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "The reply reaches the laptop. What does the laptop write down?",
+   "asr": "small.en"
+  },
+  "remember.port": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "That's the switch's kind of memory, Mac to port. The laptop remembers something different, IP to Mac.",
+   "asr": "small.en"
+  },
+  "remember.right": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "That's the one. It's sticky note dot 20 at PCBsMac.",
+   "asr": "small.en"
+  },
+  "remember.self": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "Close. That's actually PCB's note about the laptop. The laptop writes down the other side, PCB's IP, and PCB's Mac.",
+   "asr": "small.en"
+  },
+  "room.all.1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Picture that for a second. Everyone answering at once, you'd be no closer to finding Sam.",
+   "asr": "small.en"
+  },
+  "room.all.2": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Everyone hears the question. But only the person with that name answers.",
+   "asr": "small.en"
+  },
+  "room.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Everyone in the room heard you. Who should answer?",
+   "asr": "small.en"
+  },
+  "room.near": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 1,
+   "heard": "I see the logic. The closest person is easy to reach. But they're not Sam, and your note would land on the wrong desk. Only Sam answers.",
+   "asr": "small.en"
+  },
+  "room.sam": {
+   "word_errors": 1,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Right, just Sam. Everyone else hears the question, realizes it isn't their name, and gets back to work.",
+   "asr": "small.en"
+  },
+  "two-dest.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Okay, the ping is ready to leave for the server. So, what does its frame say?",
+   "asr": "small.en"
+  },
+  "two-dest.r1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "Careful, then the router would think the packet was meant for itself. The IP stays the server, the whole way. Only the MAC points at the router.",
+   "asr": "small.en"
+  },
+  "two-dest.right": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "That's it, and it's the key idea. The Mac says who gets it next, the IP says where it's finally going.",
+   "asr": "small.en"
+  },
+  "two-dest.server": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "That's a very natural guess. But the laptop never learns the server's Mac and couldn't use it. A frame only travels inside one network. The Mac points at the router. The IP still points at the server.",
+   "asr": "small.en"
+  },
+  "unicast.ask": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "So how does PCB send the ARP reply?",
+   "asr": "small.en"
+  },
+  "unicast.bc": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "That would make sense if PCB didn't know who asked, but it just wrote the laptop down, so it answers directly, one-to-one, just like Sam.",
+   "asr": "small.en"
+  },
+  "unicast.sw": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 1,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Frames aren't addressed to the switch, it just passes them along. PCB sends the reply straight to the laptop's Mac.",
+   "asr": "small.en"
+  },
+  "unicast.uni": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 0,
+   "takes": 1,
+   "heard": "Exactly. One-to-one. No need to bother the whole room.",
+   "asr": "small.en"
+  },
+  "z1": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 2,
+   "takes": 1,
+   "heard": "So, let's put it all together. Check your notes first. Nothing there, ask the whole room. Only the owner answers straight to you. And you write it down.",
+   "asr": "small.en"
+  },
+  "z2": {
+   "word_errors": 0,
+   "odd_gaps": 0,
+   "extra_pauses": 0,
+   "resets": 1,
+   "takes": 5,
+   "heard": "And if the destination is in another building, you don't shout for it. You ask for the front desk, your default gateway, and let it take it from there. That's ARP.",
+   "asr": "small.en"
+  }
+ }
+}
