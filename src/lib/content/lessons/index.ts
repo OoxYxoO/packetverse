@@ -1,4 +1,5 @@
 import type { Lesson } from "../types";
+import { ccnaLessons } from "./ccnaLessons";
 
 /**
  * Seed lesson catalog. Each object is pure content — adding a lesson
@@ -14,6 +15,7 @@ export const lessons: Lesson[] = [
     prerequisites: [],
     estimatedMinutes: 15,
     simulationPath: "/demo/ethernet-switching",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Two hosts on the same wire need to reach each other, but IP means nothing to a switch — it only sees frames." },
@@ -29,6 +31,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ethernet-switching"],
     estimatedMinutes: 10,
     simulationPath: "/demo/arp-resolution",
+    features: { guided: true, lab: true, video: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Your PC knows the gateway's IP address, but Ethernet frames are addressed with MAC addresses, not IPs." },
@@ -44,6 +47,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ipv4-basics"],
     estimatedMinutes: 12,
     simulationPath: "/demo/tcp-udp",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "IP alone gives no guarantee packets arrive, arrive once, or arrive in order." },
@@ -59,6 +63,7 @@ export const lessons: Lesson[] = [
     prerequisites: [],
     estimatedMinutes: 20,
     simulationPath: "/demo/ipv4-basics",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Every host can't be its own broadcast domain — networks need to be grouped and routed between." },
@@ -74,6 +79,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ipv4-basics"],
     estimatedMinutes: 30,
     simulationPath: "/demo/subnetting-design",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Four networks of very different sizes must share one /24 without wasting space or overlapping." },
@@ -89,6 +95,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ipv4-basics", "subnetting-design"],
     estimatedMinutes: 30,
     simulationPath: "/demo/icmp-diagnostics",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "When something doesn't work, you need the network itself to tell you whether a host is reachable, which path packets take, and why large packets vanish." },
@@ -104,6 +111,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ipv4-basics", "tcp-three-way-handshake"],
     estimatedMinutes: 35,
     simulationPath: "/demo/dhcp-dns",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "A freshly booted device has no address, gateway or DNS server, and people want to use names rather than IP addresses." },
@@ -119,6 +127,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ethernet-switching"],
     estimatedMinutes: 35,
     simulationPath: "/demo/switching-fundamentals",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Real LANs chain several switches, and each one decides on its own — so a frame can be known at one switch, unknown at the next, and a second active cable between them can make frames circulate forever." },
@@ -134,6 +143,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ipv4-basics", "subnetting-design"],
     estimatedMinutes: 40,
     simulationPath: "/demo/routing-fundamentals",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "A router often holds several routes that all describe the same destination — a /24, a /16 and a default — and one wrong static route can silently drop part of a subnet." },
@@ -149,6 +159,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ethernet-switching"],
     estimatedMinutes: 18,
     simulationPath: "/demo/vlan-fundamentals",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Every device in one broadcast domain sees every broadcast — that doesn't scale, and it doesn't separate departments." },
@@ -164,6 +175,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["switching-fundamentals", "vlan-fundamentals"],
     estimatedMinutes: 35,
     simulationPath: "/demo/stp-rstp",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Redundant links between switches create physical loops, and Ethernet frames have no TTL to stop a Layer-2 loop." },
@@ -179,6 +191,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["switching-fundamentals"],
     estimatedMinutes: 35,
     simulationPath: "/demo/lacp-link-aggregation",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Parallel links between two switches should add capacity and survive failures, but as independent links they would form a loop." },
@@ -194,6 +207,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ipv4-basics"],
     estimatedMinutes: 25,
     simulationPath: "/demo/ospf-area0",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "R1 only knows its directly connected networks. How does it learn what's behind R2, without an administrator typing every route by hand?" },
@@ -209,6 +223,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["ospf-fundamentals"],
     estimatedMinutes: 30,
     simulationPath: "/demo/bgp-enterprise",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "pro",
     sections: [
       { id: "problem", heading: "The problem", body: "Two organizations, each running their own IGP, need to exchange reachability without trusting each other's internal routing." },
@@ -224,6 +239,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["tcp-three-way-handshake", "routing-fundamentals"],
     estimatedMinutes: 38,
     simulationPath: "/demo/firewall-stateful-security",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "A site must reach Internet services from private addresses, let exactly the replies back in, and refuse connections nobody asked for — and a firewall that says ALLOW can still fail to deliver." },
@@ -239,6 +255,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["routing-fundamentals", "firewall-stateful-security"],
     estimatedMinutes: 42,
     simulationPath: "/demo/ipsec-site-to-site-vpn",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Two private sites must exchange traffic across the public Internet without anyone being able to read, alter or replay it." },
@@ -254,6 +271,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["routing-fundamentals"],
     estimatedMinutes: 38,
     simulationPath: "/demo/sdwan-path-selection",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["cisco", "junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "A branch has two Internet circuits. Both can be up while one is too slow or lossy for voice — and link state alone can't tell the difference." },
@@ -734,6 +752,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["tcp-three-way-handshake", "icmp-diagnostics"],
     estimatedMinutes: 38,
     simulationPath: "/demo/troubleshooting-packet-analysis",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Users report that a TCP service sometimes takes over a second to open. The symptom alone points everywhere — the server, the port, the network — and guessing wastes hours." },
@@ -749,6 +768,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["troubleshooting-packet-analysis"],
     estimatedMinutes: 37,
     simulationPath: "/demo/troubleshooting-layer1",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "Transfers stall and pings occasionally fail, yet every interface is up and nothing was changed." },
@@ -764,6 +784,7 @@ export const lessons: Lesson[] = [
     prerequisites: ["troubleshooting-layer1", "switching-fundamentals", "vlan-fundamentals"],
     estimatedMinutes: 43,
     simulationPath: "/demo/troubleshooting-layer2",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "One host cannot reach another in the same VLAN. Every link is up, the topology is redundant, and spanning tree is the obvious suspect." },
@@ -779,12 +800,14 @@ export const lessons: Lesson[] = [
     prerequisites: ["troubleshooting-layer2", "ipv4-basics", "routing-fundamentals"],
     estimatedMinutes: 42,
     simulationPath: "/demo/troubleshooting-layer3",
+    features: { guided: true, lab: true, presentation: true, deepDive: true, cli: ["junos"] },
     tier: "free",
     sections: [
       { id: "problem", heading: "The problem", body: "After a reimage, a client reaches one remote server but not another behind the same routers." },
       { id: "solution", heading: "How to find it", body: "Start at the sender's own routing decision: a wrong prefix length creates a connected route that swallows the remote address, so the client ARPs for it on its own segment and never sends a packet to the gateway. Fix the mask and verify with the packet that was never sent before." },
     ],
   },
+  ...ccnaLessons,
 ];
 
 export const getLessonById = (id: string) => lessons.find((l) => l.id === id);

@@ -9,6 +9,7 @@ import type { CliVendor } from "@/lib/cli/types";
 import { BPDU_DST, LINK_COST } from "@/lib/sim-engine/scenarios/stpRstp";
 import { stApply, stTicket, stTicketState, stWarm, type StState, type StSw, type StTicketId } from "@/lib/sim-engine/scenarios/stpNet";
 import { candOfSw, stSwitchSets, type StCliApi } from "./stp-lab/stCli";
+import { LoopGuardSection } from "./MoreGuards";
 import { ClaimsDiagram, DataPathDiagram, DesignatedDiagram, ElectionDiagram, FailoverDiagram, IncidentDiagram, LoopDiagram, RepairDiagram, RootPortDiagram, TreeDiagram } from "./LessonGuideContent";
 
 /**
@@ -362,6 +363,7 @@ export const STP_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "std-tc", label: "Topology change", group: G.conv },
   { id: "std-failover", label: "When a link fails", group: G.conv },
   { id: "std-guards", label: "BPDU guard and root guard", group: G.protect },
+  { id: "std-loopguard", label: "Loop Guard and BPDU filter", group: G.protect },
   { id: "std-state", label: "The state each switch keeps", group: G.ops },
   { id: "std-verify", label: "How to verify: four questions", group: G.ops },
   { id: "std-normal", label: "What healthy looks like", group: G.ops },
@@ -613,6 +615,7 @@ export function StpDeepDiveContent() {
         </Callout>
       </GuideSection>
 
+      <LoopGuardSection />
       <GuideSection id="std-state" eyebrow="Operations" title="The state each switch keeps" tone="cyan">
         <p>Each switch keeps a few facts about the tree. Every verification and every fault below is about one of them:</p>
         <FlowSteps

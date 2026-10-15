@@ -7,6 +7,8 @@ import { GlassPanel } from "@/components/ui/GlassPanel";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { ProgressBar } from "@/components/ui/ProgressBar";
+import { CCNA } from "@/lib/content/certifications";
+import { CertProgressCard } from "@/components/certifications/CertProgressCard";
 import { ACHIEVEMENTS, levelForXp, xpIntoLevel, useProgressStore } from "@/lib/state/useProgressStore";
 
 export default function DashboardPage() {
@@ -51,9 +53,12 @@ export default function DashboardPage() {
 
       <div className="mt-10 grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="space-y-6">
+          {/* CERTIFICATION PROGRESS */}
+          <CertProgressCard cert={CCNA} />
+
           {/* TRACK PROGRESS */}
           <GlassPanel strong className="p-6">
-            <h2 className="mb-4 text-sm font-semibold text-pv-text">Learning Paths</h2>
+            <h2 className="mb-4 text-sm font-semibold text-pv-text">Career Tracks</h2>
             <div className="space-y-5">
               {learningPaths.map((path) => {
                 // Distinct lesson IDs: two roadmap concepts served by one lesson count once.

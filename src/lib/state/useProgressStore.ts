@@ -60,6 +60,17 @@ export interface ArenaResult {
   timestamp: number;
 }
 
+/** The latest attempt at one certification domain checkpoint (key: `${certId}:${domainId}`). */
+export interface CheckpointResult {
+  correct: number;
+  total: number;
+  /** Question ids answered wrongly — each points at the lesson to revisit. */
+  missed: string[];
+  /** Best score so far, in percent. */
+  best: number;
+  at: number;
+}
+
 interface ProgressState {
   xp: number;
   streak: number;
@@ -68,11 +79,14 @@ interface ProgressState {
   packetsInspected: number;
   quizScore: { correct: number; total: number };
   arenaResults: ArenaResult[];
+  /** Certification domain checkpoints. Additive: older saved progress simply has none. No XP is awarded for them. */
+  checkpoints: Record<string, CheckpointResult>;
   completeLesson: (lessonId: string, xpAward?: number) => void;
   recordAnswer: (correct: boolean) => void;
   inspectPacket: () => void;
   unlockAchievement: (id: string) => void;
   recordArenaResult: (result: { seed: string; faultIds: string[]; categories: string[]; difficulty: "associate" | "professional" | "expert"; score: number; hintsUsed: number }) => number;
+  recordCheckpoint: (key: string, result: { correct: number; total: number; missed: string[] }) => void;
   reset: () => void;
 }
 
@@ -88,6 +102,7 @@ export const useProgressStore = create<ProgressState>()(
       packetsInspected: 0,
       quizScore: { correct: 0, total: 0 },
       arenaResults: [],
+      checkpoints: {},
       completeLesson: (lessonId, xpAward = 100) =>
         set((s) => ({
           xp: s.xp + (s.completedLessons.includes(lessonId) ? 0 : xpAward),
@@ -127,8 +142,13 @@ export const useProgressStore = create<ProgressState>()(
         });
         return xpAwarded;
       },
+      recordCheckpoint: (key, { correct, total, missed }) =>
+        set((s) => {
+          const pct = total ? Math.round((correct / total) * 100) : 0;
+          return { checkpoints: { ...s.checkpoints, [key]: { correct, total, missed, best: Math.max(pct, s.checkpoints[key]?.best ?? 0), at: Date.now() } } };
+        }),
       reset: () =>
-        set({ xp: 0, streak: 1, completedLessons: [], achievements: [], packetsInspected: 0, quizScore: { correct: 0, total: 0 }, arenaResults: [] }),
+        set({ xp: 0, streak: 1, completedLessons: [], achievements: [], packetsInspected: 0, quizScore: { correct: 0, total: 0 }, arenaResults: [], checkpoints: {} }),
     }),
     { name: "packetverse-progress" },
   ),

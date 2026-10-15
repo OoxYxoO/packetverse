@@ -10,6 +10,7 @@ import { LACP_DST, LACP_ETHERTYPE, LAG1_KEY, LAG_NAME, SYSTEMS } from "@/lib/sim
 import { lcApply, lcClone, lcTicket, lcTicketState, lcWarm, type LcState, type LcSw, type LcTicketId } from "@/lib/sim-engine/scenarios/lacpNet";
 import { lcSwitchSets, type LcCliApi } from "./lacp-lab/lcCli";
 import { LagPair } from "./guideSvg";
+import { PagpSection } from "./PagpSection";
 import { ActorPartnerDiagram, BeforeDiagram, FailDiagram, FlowsDiagram, LogicalDiagram, PduDiagram, RestoreDiagram, StatesDiagram } from "./LessonGuideContent";
 
 /**
@@ -339,6 +340,7 @@ export const LACP_DEEP_DIVE_SECTIONS: LessonGuideSectionLink[] = [
   { id: "lcd-ids", label: "Actor, Partner and the key", group: G.proto },
   { id: "lcd-bits", label: "State flags, link-up to forwarding", group: G.proto },
   { id: "lcd-modes", label: "Active, passive and static", group: G.proto },
+  { id: "lcd-pagp", label: "PAgP and every mode pair", group: G.proto },
   { id: "lcd-timeout", label: "The LACP rate", group: G.proto },
   { id: "lcd-dist", label: "Distribution and hashing", group: G.traffic },
   { id: "lcd-fail", label: "When a member fails", group: G.traffic },
@@ -506,6 +508,7 @@ export function LacpDeepDiveContent() {
         />
       </GuideSection>
 
+      <PagpSection />
       <GuideSection id="lcd-timeout" eyebrow="The protocol" title="The LACP rate" tone="cyan">
         <DiagramFrame caption="How fast a silently failed partner is noticed.">
           <TimeoutDiagram />

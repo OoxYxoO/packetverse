@@ -3,6 +3,7 @@ import { HeroTopology } from "@/components/hero/HeroTopology";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { CCNA } from "@/lib/content/certifications";
 
 const FLOW_STEPS = ["Explore", "Learn", "Visualize", "Configure", "Break", "Troubleshoot", "Test"];
 
@@ -12,7 +13,7 @@ const DIFFERENTIATORS = [
   { title: "Break the Network", desc: "Inject a real fault — wrong VLAN, missing route, ASN mismatch — into a working topology and find it yourself.", tone: "danger" as const },
   { title: "Troubleshooting Arena", desc: "A CLI, a broken topology, and a complaint. Your methodology is scored, not just your final answer.", tone: "warning" as const },
   { title: "Multi-Vendor CLI", desc: "The same concept shown in Cisco IOS, Junos, Palo Alto and the RFC's own language, side by side.", tone: "success" as const },
-  { title: "Certification Tracks", desc: "Structured paths toward CCNA, CCNP, JNCIA through JNCIE-SP — original questions, same depth.", tone: "cyan" as const },
+  { title: "Certification Journeys", desc: "CCNA today, CCNP next: every exam topic as interactive lessons, with exam-style checkpoints per domain — original questions, real understanding.", tone: "cyan" as const },
 ];
 
 const ENTERPRISE_PATH = ["Access — VLAN, STP, LACP, 802.1X, DHCP", "Distribution — Inter-VLAN, FHRP, OSPF", "Core — OSPF, IS-IS, BGP", "Firewall — Policies, NAT, VPN", "WAN — Internet, SD-WAN, MPLS VPN, Cloud"];
@@ -41,8 +42,8 @@ export default function Home() {
             visual labs — not another wall of documentation.
           </p>
           <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <Link href="/learn">
-              <Button size="lg">Explore Network</Button>
+            <Link href="/certifications/ccna">
+              <Button size="lg">Study for CCNA</Button>
             </Link>
             <Link href="/demo/arp-resolution">
               <Button size="lg" variant="secondary">
@@ -50,6 +51,43 @@ export default function Home() {
               </Button>
             </Link>
           </div>
+        </div>
+      </section>
+
+      {/* STUDY BY CERTIFICATION */}
+      <section className="border-b border-pv-border px-6 py-20">
+        <div className="mx-auto grid max-w-6xl gap-8 lg:grid-cols-[1fr_1.2fr] lg:items-center">
+          <div>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-pv-cyan-soft">Study by certification</p>
+            <h2 className="text-balance text-2xl font-semibold text-pv-text sm:text-3xl">Preparing for CCNA? Every exam topic, as a journey you can see.</h2>
+            <p className="mt-4 text-sm leading-relaxed text-pv-text-muted">
+              Choose the certification and PacketVerse lays out its exam domains as interactive lessons — in an order that teaches, with your progress and weakest domain always in view. You learn the networking itself, in Cisco IOS and Junos, so it carries past the exam.
+            </p>
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+              <Link href="/certifications/ccna">
+                <Button size="lg">Open the CCNA journey</Button>
+              </Link>
+              <Link href="/certifications">
+                <Button size="lg" variant="secondary">
+                  All certifications
+                </Button>
+              </Link>
+            </div>
+          </div>
+          <GlassPanel strong className="p-5 sm:p-6">
+            <p className="pv-mono text-xs text-pv-text-muted">
+              {CCNA.vendor} {CCNA.title} · {CCNA.examCode}
+            </p>
+            <ol className="mt-3 divide-y divide-pv-border">
+              {CCNA.domains.map((d) => (
+                <li key={d.id} className="flex items-center gap-3 py-2.5">
+                  <span className="pv-mono w-8 text-xs text-pv-text-faint">{d.number}.0</span>
+                  <span className="flex-1 text-sm text-pv-text">{d.title}</span>
+                  <span className="pv-mono text-xs text-pv-text-muted">{d.weight}%</span>
+                </li>
+              ))}
+            </ol>
+          </GlassPanel>
         </div>
       </section>
 
@@ -157,7 +195,7 @@ export default function Home() {
           </div>
           <div className="mt-8 text-center">
             <Link href="/learn">
-              <Button variant="secondary">View the full learning map</Button>
+              <Button variant="secondary">View the career tracks</Button>
             </Link>
           </div>
         </div>

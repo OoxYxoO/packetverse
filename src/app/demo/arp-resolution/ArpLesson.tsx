@@ -1,5 +1,6 @@
 "use client";
 
+import { CertNextStep, CertTrail } from "@/components/certifications/CertTrail";
 import { useCallback, useMemo, useState, useEffect } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
@@ -480,6 +481,7 @@ export function ArpLesson() {
             Fundamentals · ARP
           </Badge>
           <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">ARP: Resolving IP to MAC</h1>
+          <CertTrail lessonId="arp-resolution" className="mt-2" />
           <p className="mt-1 pv-mono text-xs text-pv-text-faint">Laptop → Switch → Router → Server</p>
           <p className="mt-2 max-w-2xl text-sm text-pv-text-muted">
             You are <span className="pv-mono text-pv-cyan-soft">192.168.10.10</span>. Your first packet to <span className="pv-mono text-pv-cyan-soft">10.20.20.20</span> can&apos;t leave until you know a MAC address. Drive every frame yourself — the ARP exchange, the switch, the router — until that packet arrives.
@@ -661,6 +663,7 @@ export function ArpLesson() {
               <Badge tone="success">Lesson complete</Badge>
               <h2 className="text-2xl font-semibold text-pv-text">FIRST PACKET DELIVERED</h2>
               <p className="max-w-md text-sm text-pv-text-muted">You resolved the gateway with ARP, watched the switch forward the frame and the router rewrite it — the packet reached the Server. +75 XP awarded.</p>
+              <CertNextStep lessonId="arp-resolution" />
               <div className="flex flex-wrap justify-center gap-3">
                 <Button onClick={handleRestart} variant="secondary">
                   Restart lesson

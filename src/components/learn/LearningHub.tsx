@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { clsx } from "clsx";
 import { learningPaths } from "@/lib/content/learningPaths";
 import { getDefaultTrackId, getLearningSummary, getNextPlayableLesson, getTrackProgress, type TrackProgress } from "@/lib/content/learningProgress";
@@ -36,7 +37,7 @@ export function LearningHub() {
       <section aria-labelledby="learn-heading" className="grid gap-6 lg:grid-cols-[1fr_360px] lg:items-end">
         <div>
           <Badge tone="cyan" className="mb-3">
-            Learning Map
+            Career Tracks
           </Badge>
           <h1 id="learn-heading" className="text-2xl font-semibold text-pv-text sm:text-3xl">
             Choose your path. Follow the packet.
@@ -71,6 +72,15 @@ export function LearningHub() {
           <Stat label="Coming later" value={String(summary.comingLater)} />
         </GlassPanel>
       </section>
+
+      {/* CERTIFICATION ENTRY: the same lessons, organized by exam */}
+      <Link href="/certifications/ccna" className="mt-8 flex flex-col gap-2 rounded-2xl border border-pv-cyan/30 bg-pv-cyan/[0.05] p-4 transition-colors hover:bg-pv-cyan/[0.08] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pv-cyan sm:flex-row sm:items-center sm:justify-between">
+        <span>
+          <span className="block text-sm font-semibold text-pv-text">Studying for CCNA?</span>
+          <span className="block text-xs text-pv-text-muted">The CCNA journey organizes these same lessons by exam domain, with checkpoints and a study order.</span>
+        </span>
+        <span className="shrink-0 text-sm font-semibold text-pv-cyan-soft">Open the CCNA journey →</span>
+      </Link>
 
       {/* TRACK SELECTOR */}
       <section aria-labelledby="tracks-heading" className="mt-12">

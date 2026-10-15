@@ -252,7 +252,7 @@ export function LessonGuideDialog({ open, onClose, title, subtitle, tabs, recomm
 
           <div className="relative min-h-0 min-w-0 flex-1">
             {/* `relative` keeps absolutely positioned descendants (e.g. sr-only text) inside this scroller instead of leaking overflow into the card. */}
-            <div ref={scrollRef} className="relative h-full overflow-y-auto overscroll-contain" role="tabpanel" aria-label={tab.label}>
+            <div ref={scrollRef} tabIndex={0} className="relative h-full overflow-y-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-pv-cyan" role="tabpanel" aria-label={tab.label}>
               {sections.length > 1 && (
                 <div className="sticky top-0 z-10 border-b border-pv-border bg-pv-bg-elevated/95 px-4 py-2 backdrop-blur md:hidden">
                   <label className="flex items-center gap-2 text-[11px] text-pv-text-faint">

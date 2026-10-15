@@ -274,7 +274,7 @@ export function FieldTable({ title, columns, rows, accent = "cyan" }: { title: s
       <div className="border-b border-white/10 bg-white/[0.03] px-4 py-2 text-[10px] font-bold uppercase tracking-wide" style={{ color: c }}>
         {title}
       </div>
-      <div className="overflow-x-auto">
+      <div tabIndex={0} className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
             <tr>

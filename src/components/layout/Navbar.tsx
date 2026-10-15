@@ -5,10 +5,11 @@ import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
 import { Button } from "@/components/ui/Button";
 
+// Certification-first: studying for an exam is the main way in; career tracks and the catalog use the same lessons.
 const links = [
-  { href: "/learn", label: "Learning Map" },
+  { href: "/certifications", label: "Certifications" },
+  { href: "/learn", label: "Career Tracks" },
   { href: "/lessons", label: "Lessons" },
-  { href: "/demo/arp-resolution", label: "Interactive Demo" },
   { href: "/dashboard", label: "Dashboard" },
 ];
 
@@ -47,6 +48,19 @@ export function Navbar() {
             <Button size="sm">Try Interactive Demo</Button>
           </Link>
         </div>
+      </nav>
+      {/* small screens: the same links, one scrollable row (the desktop row is hidden below md) */}
+      <nav aria-label="Main" className="flex gap-1 overflow-x-auto border-t border-pv-border px-4 py-2 md:hidden">
+        {links.map((l) => (
+          <Link
+            key={l.href}
+            href={l.href}
+            aria-current={isActive(pathname, l.href) ? "page" : undefined}
+            className={clsx("shrink-0 rounded-full px-3 py-1.5 text-sm", isActive(pathname, l.href) ? "bg-white/[0.06] text-pv-text" : "text-pv-text-muted")}
+          >
+            {l.label}
+          </Link>
+        ))}
       </nav>
     </header>
   );

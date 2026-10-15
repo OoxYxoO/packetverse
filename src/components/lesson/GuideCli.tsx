@@ -27,7 +27,7 @@ export function CliPanel({ run, caption, note }: { run: GuideCliRun; caption?: s
     <figure className="min-w-0">
       {caption && <figcaption className="mb-1 text-[10px] font-bold uppercase tracking-wide text-pv-text-faint">{caption}</figcaption>}
       <div className="min-w-0 overflow-hidden rounded-lg border border-white/10 bg-[#05080d]">
-        <pre className="overflow-x-auto px-3 py-2 pv-mono text-[10.5px] leading-relaxed text-pv-text-muted">
+        <pre tabIndex={0} className="overflow-x-auto px-3 py-2 pv-mono text-[10.5px] leading-relaxed text-pv-text-muted">
           <span className="text-pv-success">{run.prompt}</span>
           <span className="text-pv-text">{run.command}</span>
           {"\n"}
