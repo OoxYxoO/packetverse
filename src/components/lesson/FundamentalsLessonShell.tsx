@@ -33,6 +33,7 @@ import { MissionBriefingCard, MissionBriefingStrip } from "./MissionBriefingCard
 import { resolveBriefing, type BriefingPhaseDef, type BriefingStepNote } from "./briefing";
 import { bubblePacket } from "./mplsStack";
 import type { FundHop } from "./fundamentalsTrace";
+import { CertNextStep, CertTrail } from "@/components/certifications/CertTrail";
 import { PresentationButton, PresentationCard, PresentationOpenerContext, usePresentationFlow } from "@/components/presentation/LessonPresentation";
 
 /**
@@ -431,6 +432,7 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
             {c.badge}
           </Badge>
           <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">{c.title}</h1>
+          <CertTrail lessonId={c.lessonId} className="mt-2" />
           <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">{c.intro}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -541,6 +543,7 @@ export function FundamentalsLessonShell<S extends { hops: FundHop[] }>({ config 
               <p className="max-w-md text-sm text-pv-text-muted">
                 {c.complete.message} +{c.xp} XP awarded.
               </p>
+              <CertNextStep lessonId={c.lessonId} />
               <div className="flex gap-3">
                 <Button onClick={handleRestart} variant="secondary">
                   Restart Lesson

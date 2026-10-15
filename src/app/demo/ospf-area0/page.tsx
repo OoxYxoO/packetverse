@@ -1,5 +1,6 @@
 "use client";
 
+import { CertNextStep, CertTrail } from "@/components/certifications/CertTrail";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
@@ -646,6 +647,7 @@ export default function OspfArea0Demo() {
             Enterprise · Routing · OSPF Area 0
           </Badge>
           <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">R1 Learns The Network — Automatically</h1>
+          <CertTrail lessonId="ospf-fundamentals" className="mt-2" />
           <p className="mt-2 max-w-3xl text-sm text-pv-text-muted">
             Four routers, Area 0, point-to-point links. Form the adjacencies yourself, synchronize the link-state database, watch SPF pick
             the best path, then change the physics of the network by changing a single number.
@@ -1049,6 +1051,7 @@ export default function OspfArea0Demo() {
                 You formed every adjacency, synchronized four LSDBs, ran SPF twice, broke and fixed an area mismatch, and steered
                 traffic by changing a single cost. +150 XP awarded.
               </p>
+              <CertNextStep lessonId="ospf-fundamentals" />
               <div className="flex gap-3">
                 <Button onClick={handleRestart} variant="secondary">
                   Restart Lesson

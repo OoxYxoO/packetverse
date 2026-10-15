@@ -1,5 +1,6 @@
 "use client";
 
+import { CertNextStep, CertTrail } from "@/components/certifications/CertTrail";
 import { useCallback, useMemo, useState, useEffect } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
@@ -496,6 +497,7 @@ export function TcpLesson() {
             Fundamentals · TCP &amp; UDP
           </Badge>
           <h1 className="text-2xl font-semibold text-pv-text sm:text-3xl">TCP &amp; UDP</h1>
+          <CertTrail lessonId="tcp-three-way-handshake" className="mt-2" />
           <p className="mt-1 pv-mono text-xs text-pv-text-faint">Laptop → Switch → Router → Server</p>
           <p className="mt-2 max-w-2xl text-sm text-pv-text-muted">
             You are <span className="pv-mono text-pv-cyan-soft">192.168.10.10</span>, and the path to <span className="pv-mono text-pv-cyan-soft">10.20.20.20</span> already works. Open an HTTPS connection to it — SYN, SYN-ACK, ACK — one segment at a time, and watch both endpoints change state.
@@ -672,6 +674,7 @@ export function TcpLesson() {
               <Badge tone="success">Session Established</Badge>
               <h2 className="text-2xl font-semibold text-pv-text">TCP SESSION ESTABLISHED</h2>
               <p className="max-w-md text-sm text-pv-text-muted">You walked the full TCP three-way handshake — both endpoints, every flag, sequence and acknowledgment — on a real routed path. +75 XP awarded.</p>
+              <CertNextStep lessonId="tcp-three-way-handshake" />
               <div className="flex flex-wrap justify-center gap-3">
                 <Button onClick={handleRestart} variant="secondary">
                   Restart lesson

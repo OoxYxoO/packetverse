@@ -84,7 +84,7 @@ export function CLIOutputPanel({ commands }: CLIOutputPanelProps) {
               <span className="text-pv-text-faint">{"> "}</span>
               {entry.cmd}
             </p>
-            <pre className="mt-2 overflow-x-auto whitespace-pre pv-mono text-[10.5px] leading-relaxed text-pv-text-muted">{entry.output}</pre>
+            <pre tabIndex={0} className="mt-2 overflow-x-auto whitespace-pre pv-mono text-[10.5px] leading-relaxed text-pv-text-muted">{entry.output}</pre>
           </>
         )}
       </div>

@@ -24,6 +24,21 @@ export interface LessonSection {
   body: string;
 }
 
+/** What a learner finds inside a lesson — shown on certification and catalog cards. Facts about the lesson, kept here. */
+export interface LessonFeatures {
+  /** The guided, step-by-step interactive lesson (every playable lesson has one). */
+  guided: true;
+  /** A separate practice lab: levels, tickets and challenges on the same network. */
+  lab?: boolean;
+  /** An interactive narrated video (three teachers). */
+  video?: boolean;
+  /** An "understand it first" presentation before the interactive lesson. */
+  presentation?: boolean;
+  deepDive?: boolean;
+  /** Device CLIs the lesson emulates. */
+  cli?: ("cisco" | "junos")[];
+}
+
 export interface Lesson {
   id: string;
   title: string;
@@ -34,6 +49,7 @@ export interface Lesson {
   estimatedMinutes: number;
   /** Route to the interactive simulation for this lesson, if built */
   simulationPath?: string;
+  features?: LessonFeatures;
   sections: LessonSection[];
   tier: "free" | "pro";
 }
